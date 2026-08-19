@@ -1,0 +1,7 @@
+{"kind":"header","conformanceVersion":1,"name":"unknown-sequences","profile":"unicode-ambiguous-narrow","oracle":"conservative-only","seed":63}
+{"kind":"resize","width":10,"height":2}
+{"kind":"write","data":"\u001b[?1337h"}
+{"kind":"write","data":"\u001b[999z"}
+{"kind":"write","data":"\u001b]999;bogus\u0007"}
+{"kind":"write","data":"\u001b$X"}
+{"kind":"expectUnsupported","count":4}

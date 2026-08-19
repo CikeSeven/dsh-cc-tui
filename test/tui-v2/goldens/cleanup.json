@@ -1,0 +1,1087 @@
+{
+  "name": "cleanup",
+  "profile": "kitty-sync",
+  "input": [
+    {
+      "kind": "resize",
+      "width": 16,
+      "height": 4
+    },
+    {
+      "kind": "write",
+      "data": "\u001b[?1049h\u001b[?1003h\u001b[?1006h\u001b[?2004h\u001b[?2026h\u001b[?25l\u001b[2;3r\u001b[1;35mALT\u001b]2;dirty\u0007"
+    },
+    {
+      "kind": "write",
+      "data": "\u001b[?1049l\u001b[?1003l\u001b[?1006l\u001b[?2004l\u001b[?2026l\u001b[?25h\u001b[r\u001b[0m\u001b]2;\u0007\u001b[H"
+    },
+    {
+      "kind": "write",
+      "data": "clean"
+    }
+  ],
+  "expected": {
+    "gridEncoding": "readable",
+    "value": {
+      "width": 16,
+      "height": 4,
+      "cells": [
+        {
+          "grapheme": "c",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "l",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "e",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "a",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "n",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        },
+        {
+          "grapheme": "",
+          "width": 1,
+          "continuation": false,
+          "resolvedStyle": {
+            "foreground": null,
+            "background": null,
+            "bold": false,
+            "dim": false,
+            "italic": false,
+            "underline": false,
+            "inverse": false,
+            "strike": false
+          },
+          "hyperlink": null
+        }
+      ],
+      "cursor": {
+        "x": 5,
+        "y": 0,
+        "visible": true
+      },
+      "modes": {
+        "alternateScreen": false,
+        "rawInput": false,
+        "mouse": "off",
+        "bracketedPaste": false,
+        "syncOutput": false,
+        "autowrap": true,
+        "wrapPending": false,
+        "scrollRegion": {
+          "top": 0,
+          "bottom": 3
+        },
+        "cursorStyle": "block",
+        "cursorVisible": true,
+        "kittyKeyboard": false,
+        "modifyOtherKeys": false,
+        "focusReporting": false,
+        "windowsDec9001": false,
+        "osc133": false,
+        "title": "",
+        "progress": {
+          "state": "none"
+        }
+      },
+      "scrollback": [],
+      "images": []
+    }
+  }
+}

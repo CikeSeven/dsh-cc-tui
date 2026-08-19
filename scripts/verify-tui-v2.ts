@@ -12,6 +12,14 @@
  *                        (fields/enums/UTC RFC 3339), re-run the entry scan
  *                        and compare listHash, and require every scanned CI
  *                        entry point to be covered by a row.
+ *   - trace (WP-02):     fixtures/tui-v2/traces/*.jsonl load+validate;
+ *                        fixtures/tui-v2/conformance/*.jsonl load, replay
+ *                        through the local VirtualTerminal (and the pinned
+ *                        xterm oracle for cross-check cases) and compare via
+ *                        compareGrid; all five required golden grids exist,
+ *                        validate and replay; every stored expected grid is
+ *                        scanned for line-width violations and control-char
+ *                        injection.
  *
  * Every check writes an atomic JSON artifact
  *   { schemaVersion: 1, check, status, details, startedAt, durationMs,
@@ -328,12 +336,148 @@ async function checkRegressionMatrix(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
+// trace check (WP-02): trace fixtures + conformance corpus + golden grids
+// ---------------------------------------------------------------------------
+
+async function checkTrace(): Promise<CheckResult> {
+  const {
+    evaluateConformanceCase,
+    evaluateGoldenFile,
+    findGridControlInjection,
+    readConformance,
+    readGoldenFile,
+    validateGoldenFile,
+    REQUIRED_GOLDENS,
+  } = await import('../src/tui-v2/testkit/conformance.js')
+  const { findLineWidthViolations } = await import('../src/tui-v2/testkit/frame-assert.js')
+  const { readTrace } = await import('../src/tui-v2/testkit/trace.js')
+
+  const errors: string[] = []
+  const tracesDir = path.join(repoRoot, 'fixtures', 'tui-v2', 'traces')
+  const conformanceDir = path.join(repoRoot, 'fixtures', 'tui-v2', 'conformance')
+  const goldensDir = path.join(repoRoot, 'test', 'tui-v2', 'goldens')
+
+  // 1. Trace fixtures: load + validate (redaction integrity is covered by
+  //    trace.test.ts; here we require the corpus to stay parseable).
+  let traceCount = 0
+  let traceFiles: string[] = []
+  try {
+    traceFiles = (await readdir(tracesDir)).filter((f) => f.endsWith('.jsonl')).sort()
+    for (const file of traceFiles) {
+      try {
+        await readTrace(path.join(tracesDir, file))
+        traceCount += 1
+      } catch (error: any) {
+        errors.push(`trace fixture ${file}: ${String(error?.message || error)}`)
+      }
+    }
+  } catch (error: any) {
+    errors.push(`traces dir unreadable: ${String(error?.message || error)}`)
+  }
+
+  // 2. Conformance corpus: load + validate + replay (local VT, plus the
+  //    pinned xterm oracle for cross-check cases).
+  const conformanceReport: {
+    cases: number
+    passed: number
+    mismatches: { name: string; vtHash: string; xtermHash: string | null }[]
+    byOracle: Record<string, number>
+  } = { cases: 0, passed: 0, mismatches: [], byOracle: {} }
+  let conformanceFiles: string[] = []
+  try {
+    conformanceFiles = (await readdir(conformanceDir)).filter((f) => f.endsWith('.jsonl')).sort()
+  } catch (error: any) {
+    errors.push(`conformance dir unreadable: ${String(error?.message || error)}`)
+  }
+  for (const file of conformanceFiles) {
+    let kase: Awaited<ReturnType<typeof readConformance>>
+    try {
+      kase = await readConformance(path.join(conformanceDir, file))
+    } catch (error: any) {
+      errors.push(`conformance fixture ${file}: ${String(error?.message || error)}`)
+      continue
+    }
+    conformanceReport.cases += 1
+    const oracle = kase.header.oracle
+    conformanceReport.byOracle[oracle] = (conformanceReport.byOracle[oracle] ?? 0) + 1
+    for (const line of kase.lines) {
+      if (line.kind === 'expectedGrid' && line.value.gridEncoding === 'readable') {
+        for (const violation of findLineWidthViolations(line.value.value)) {
+          errors.push(`conformance ${kase.header.name}: expected grid line-width invariant: ${violation}`)
+        }
+        for (const injection of findGridControlInjection(line.value.value)) {
+          errors.push(`conformance ${kase.header.name}: expected grid ${injection}`)
+        }
+      }
+    }
+    const evaluation = await evaluateConformanceCase(kase)
+    if (evaluation.ok) {
+      conformanceReport.passed += 1
+    } else {
+      conformanceReport.mismatches.push({
+        name: kase.header.name,
+        vtHash: evaluation.vtHash,
+        xtermHash: evaluation.xtermHash ?? null,
+      })
+      errors.push(`conformance ${kase.header.name}: ${evaluation.errors.join('; ')}`)
+    }
+  }
+
+  // 3. Golden grids: all five required classes exist, validate, replay.
+  let goldenCount = 0
+  const seenGoldens = new Set<string>()
+  let goldenFiles: string[] = []
+  try {
+    goldenFiles = (await readdir(goldensDir)).filter((f) => f.endsWith('.json')).sort()
+  } catch (error: any) {
+    errors.push(`goldens dir unreadable: ${String(error?.message || error)}`)
+  }
+  for (const file of goldenFiles) {
+    let golden: Awaited<ReturnType<typeof readGoldenFile>>
+    try {
+      golden = await readGoldenFile(path.join(goldensDir, file))
+    } catch (error: any) {
+      errors.push(`golden ${file}: ${String(error?.message || error)}`)
+      continue
+    }
+    seenGoldens.add(golden.name)
+    goldenCount += 1
+    const evaluation = evaluateGoldenFile(golden)
+    if (!evaluation.ok) {
+      errors.push(`golden ${golden.name}: ${evaluation.errors.join('; ')}`)
+    }
+    if (golden.expected.gridEncoding === 'readable') {
+      for (const violation of findLineWidthViolations(golden.expected.value)) {
+        errors.push(`golden ${golden.name}: expected grid line-width invariant: ${violation}`)
+      }
+      for (const injection of findGridControlInjection(golden.expected.value)) {
+        errors.push(`golden ${golden.name}: expected grid ${injection}`)
+      }
+    }
+  }
+  for (const required of REQUIRED_GOLDENS) {
+    if (!seenGoldens.has(required)) errors.push(`missing required golden: ${required}.json`)
+  }
+
+  return {
+    status: errors.length === 0 ? 'pass' : 'fail',
+    details: {
+      traces: { files: traceFiles.length, loaded: traceCount },
+      parserConformance: conformanceReport,
+      goldens: { files: goldenFiles.length, loaded: goldenCount, required: [...REQUIRED_GOLDENS] },
+      errors,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // registry + CLI
 // ---------------------------------------------------------------------------
 
 const checks = new Map<string, (ctx: CheckContext) => Promise<CheckResult>>([
   ['baseline', () => checkBaseline()],
   ['regression-matrix', () => checkRegressionMatrix()],
+  ['trace', () => checkTrace()],
 ])
 
 function defaultOutput(check: string): string {

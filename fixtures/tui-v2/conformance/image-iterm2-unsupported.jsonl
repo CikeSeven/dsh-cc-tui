@@ -1,0 +1,4 @@
+{"kind":"header","conformanceVersion":1,"name":"image-iterm2-unsupported","profile":"unicode-ambiguous-narrow","oracle":"conservative-only","seed":69}
+{"kind":"resize","width":10,"height":2}
+{"kind":"write","data":"\u001b]1337;File=inline=1;width=2:QUJD\u0007"}
+{"kind":"expectUnsupported","count":1}
