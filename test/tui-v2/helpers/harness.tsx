@@ -29,6 +29,8 @@ export interface ChatHarness {
   render: () => Promise<{ unmount: () => void }>
   /** True when the xterm oracle's active buffer contains `s`. */
   screenHas: (s: string) => boolean
+  /** The oracle's active buffer as plain text lines (0..rows), for hashing. */
+  gridText: () => string
 }
 
 export interface ChatHarnessOptions {
@@ -136,6 +138,12 @@ export async function createChatHarness(options: ChatHarnessOptions = {}): Promi
         if ((buf.getLine(y)?.translateToString(true) ?? '').includes(s)) return true
       }
       return false
+    },
+    gridText: () => {
+      const buf = term.buffer.active
+      const lines: string[] = []
+      for (let y = 0; y < rows; y++) lines.push(buf.getLine(y)?.translateToString(true) ?? '')
+      return lines.join('\n')
     },
   }
 }

@@ -11,6 +11,12 @@
 - `clean-stop.json` — `v1-clean-stop` fixture：连续 3 次 spawn
   `test/tui-v2/helpers/lifecycle-child.tsx`，每次渲染真实 `Chat` 后干净退出，
   `results[0].details.exitCodes` 必须全为 0。
+- `compare-skeleton.json` — WP-04 中间审阅报告（非 WP-09 `V1CaptureRenderer` 契约）：
+  同一脚本化场景（welcome/user/流式 assistant/tool 卡）分别驱动 WP-01 harness
+  （mock channel + 真实 Ink `Chat` + xterm oracle）与 v2 walking skeleton
+  （fake channel → adapter → reducer → base-renderer → planner → writer →
+  `VirtualTerminal`），记录两侧帧数、写入字节、峰值 heapUsed 与最终 grid hash。
+  数值只作健全性对照，永不作为发布门槛。
 
 ## 基线运行环境
 
@@ -30,6 +36,8 @@ pnpm bench:tui-v2 -- --fixture v1-chat-startup,v1-stream-200 --seed 1 \
   --output docs/tui-v2/baseline/baseline.json
 pnpm bench:tui-v2 -- --fixture v1-clean-stop --seed 1 \
   --output docs/tui-v2/baseline/clean-stop.json
+node --expose-gc --import tsx/esm scripts/compare-tui-v2-skeleton.ts -- \
+  --output docs/tui-v2/baseline/compare-skeleton.json
 ```
 
 `bench:tui-v2` 固定为 `node --expose-gc --import tsx/esm scripts/bench-tui-v2.ts`；

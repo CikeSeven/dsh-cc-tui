@@ -19,7 +19,8 @@ import { createHash } from 'node:crypto'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { validateAppEvent, type AppEvent } from '../model/events.js'
-import { isSerializableValue, type SerializableValue } from '../model/schema.js'
+import { computeSnapshotHash } from '../model/projections.js'
+import { isSerializableValue, type SerializableValue, type UiRowSnapshot } from '../model/schema.js'
 import type { TerminalProfile } from '../terminal/profile.js'
 import { validateGoldenGrid, type GoldenGrid, type GridDiff } from './canonical.js'
 
@@ -323,11 +324,17 @@ function redactEvent(event: AppEvent, policy: RedactionPolicy): AppEvent {
   switch (event.type) {
     case 'session/row-upsert':
       return { ...e, row: redactRow(e.row as Record<string, unknown>, policy) } as unknown as AppEvent
-    case 'session/rows-reset':
+    case 'session/rows-reset': {
+      // Redaction changes row content, so the content-derived snapshotHash
+      // must be recomputed at the same boundary — otherwise a redacted trace
+      // could never pass the reducer's rows-reset validation on replay (§5.2).
+      const rows = (e.rows as Record<string, unknown>[]).map((row) => redactRow(row, policy))
       return {
         ...e,
-        rows: (e.rows as Record<string, unknown>[]).map((row) => redactRow(row, policy)),
+        rows,
+        snapshotHash: computeSnapshotHash(rows as unknown as readonly UiRowSnapshot[]),
       } as unknown as AppEvent
+    }
     case 'stream/chunk':
       return { ...e, text: redactString(event.text, true, policy) } as unknown as AppEvent
     case 'input/command': {

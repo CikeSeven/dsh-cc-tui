@@ -1734,6 +1734,7 @@ v2 不修改 session log 格式。resume、rewind、fold/loadOlder 使用现有 
 - golden 统一 `CanonicalGridV1`/`readable|sha256-v1`，性能窗口、`--expose-gc` 和 rollback manifest 均为机器校验的发布门槛。
 - WP-01 落地时扩展 regression matrix 的 `disposition` 枚举，新增 `unaffected` 取值（原为 `rewrite-v2 | remove | offline-baseline`）。原因：原枚举无法表达「该回归入口不触及被迁移的渲染/插件面，原样保留并由 CI 持续证明」（如 `verify-model-route`、`verify-session-index`、cordis patch/plugin 契约校验等纯逻辑入口），强制归入 `rewrite-v2` 会虚报迁移工作量。影响：`verify:tui-v2 -- --check regression-matrix` 接受该值；`unaffected` 行 `blockDefault: false`，在最终 gate 视为关闭的条件是其 `ciCommand` 在最终树中仍存在且通过；入口一旦被移除，对应行必须同时删除（清单重扫 hash 会强制同步）。回滚方式：删除该取值、把 `unaffected` 行重新分类为 `rewrite-v2`/`remove` 并同步更新校验脚本枚举。
 - WP-02 落地时明确两条 testkit 边界。其一：§6.1 的「tabstop 固定为 3」只约束产品逻辑宽度管线（组件→compositor 的 wrap/truncate）；`testkit/virtual-terminal.ts` 作为字节流终端模拟器按 xterm/真实终端惯例用 tabstop 8，两者属于不同层，不构成同一管线的双重标准。其二：golden 文件的 `input` 用 steps 数组（write/resize 步骤）而非单一字节串，因为 resize 无法用字节流表达；`expected` 的 `GoldenGrid` 编码（`readable`/`sha256-v1`）不变。影响：仅 testkit 内部表示，产品宽度管线仍在 §6.1 约束下实现并在 WP-03+ 用 conformance fixture 验证。回滚方式：testkit 改回 tabstop 3 / 单字节串并重新生成 golden。
+- WP-04 落地时核实（`grep -rn DSH_TUI_RENDERER src/ scripts/ docs/`）：`DSH_TUI_RENDERER` 环境变量选择逻辑在仓库源码/脚本中从未存在，仅本文档的前瞻条款提及，因此 WP-09 的「删除 v1/v2 运行时选择」落实为「不引入」——v2 bootstrap（`src/tui-v2/app/bootstrap.ts`）不提供任何 renderer 选择开关，v1 入口的切换与旧路径拆除全部留给 WP-09。原因：walking skeleton 阶段引入选择开关会把未完成的 v2 暴露给生产入口，且双路径并发运行违反单一 writer 原则。影响：WP-09 之前的生产行为零变化；v2 只能经测试/verify/离线 compare 触达。回滚方式：无需回滚（无代码被删除）；若最终确实需要切换开关，在 WP-09 按 §5 设计新增并同步本文。
 
 ### 15.2 编码前和最终提交前必须落档
 

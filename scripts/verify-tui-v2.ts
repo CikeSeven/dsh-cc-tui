@@ -28,7 +28,7 @@
  */
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -621,6 +621,184 @@ async function checkFork(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
+// skeleton check (WP-04): traces through reducer+selectors+base-renderer,
+// plus the three skeleton child-process cleanup scenarios
+// ---------------------------------------------------------------------------
+
+async function checkSkeleton(): Promise<CheckResult> {
+  const { validateAppEvent } = await import('../src/tui-v2/model/events.js')
+  const { createReducer } = await import('../src/tui-v2/model/reducer.js')
+  const { serializeCanonicalUiState } = await import('../src/tui-v2/model/canonical-state.js')
+  const { initialUiState } = await import('../src/tui-v2/model/state.js')
+  const {
+    selectDockView,
+    selectEditorView,
+    selectStatusLine,
+    selectTranscriptView,
+  } = await import('../src/tui-v2/model/selectors.js')
+  const { createBaseRenderer } = await import('../src/tui-v2/renderer/base-renderer.js')
+  const { measureLineWidth } = await import('../src/tui-v2/renderer/lines.js')
+  const { createStatusLine } = await import('../src/tui-v2/components/chrome/status-line.js')
+  const { createPromptEditor } = await import('../src/tui-v2/components/editor/prompt-editor.js')
+  const { DEFAULT_COMPONENT_THEME } = await import('../src/tui-v2/components/theme.js')
+  const { createAssistantMessage } = await import('../src/tui-v2/components/transcript/assistant-message.js')
+  const { asRowBlocks } = await import('../src/tui-v2/components/transcript/row-view.js')
+  const { createToolRow } = await import('../src/tui-v2/components/transcript/tool-row.js')
+  const { createUserMessage } = await import('../src/tui-v2/components/transcript/user-message.js')
+  const { getProfile } = await import('../src/tui-v2/testkit/terminal-profiles.js')
+  const { readTrace } = await import('../src/tui-v2/testkit/trace.js')
+  const { runSkeletonChild } = await import('../test/tui-v2/helpers/run-skeleton-child.js')
+
+  const errors: string[] = []
+  const warnings: string[] = []
+  const clock = { now: () => 0, setTimeout: () => 0, clearTimeout: () => {} }
+
+  // ---- part 1: every trace through reducer + selectors + base-renderer ----
+  // All current fixtures are oracle='differential-only': no golden grid is
+  // consulted; we assert the pipeline never throws, physical line widths stay
+  // inside the viewport, and the final canonical state serializes.
+  const WIDTH = 120
+  const HEIGHT = 40
+  const tracesDir = path.join(repoRoot, 'fixtures', 'tui-v2', 'traces')
+  const traceReports: {
+    name: string
+    oracle: string
+    events: number
+    frames: number
+    maxLineWidth: number
+    canonicalHash: string
+    diagnostics: Record<string, number>
+  }[] = []
+
+  const traceFiles = (await readdir(tracesDir)).filter((f) => f.endsWith('.jsonl')).sort()
+  for (const file of traceFiles) {
+    const name = file.replace(/\.jsonl$/, '')
+    try {
+      const trace = await readTrace(path.join(tracesDir, file))
+      const profile =
+        typeof trace.header.terminalProfile === 'string'
+          ? { ...getProfile(trace.header.terminalProfile), columns: WIDTH, rows: HEIGHT }
+          : { ...trace.header.terminalProfile, columns: WIDTH, rows: HEIGHT }
+      if (trace.header.oracle !== 'differential-only') {
+        warnings.push(`${name}: oracle=${trace.header.oracle} rendered without golden comparison (skeleton scope)`)
+      }
+
+      const editor = createPromptEditor({ profile, theme: DEFAULT_COMPONENT_THEME, terminalRows: HEIGHT })
+      const renderer = createBaseRenderer({
+        profile,
+        theme: 'verify-skeleton',
+        registry: {
+          componentFor: (kind) => {
+            if (kind === 'user') return (row) => createUserMessage(viewOf(row, false), profile)
+            if (kind === 'assistant') return (row, streaming) => createAssistantMessage(viewOf(row, streaming), profile)
+            if (kind === 'tool') return (row, streaming) => createToolRow(viewOf(row, streaming), profile)
+            return undefined
+          },
+        },
+        dock: {
+          editor: (view) => {
+            editor.syncFromView(view)
+            return editor
+          },
+          status: (view) => createStatusLine(view, { profile, theme: DEFAULT_COMPONENT_THEME }),
+          activity: () => null,
+        },
+      })
+      const viewOf = (row: any, streaming: boolean) => ({
+        rowId: row.rowId,
+        revision: row.revision,
+        blocks: asRowBlocks(row.blocks),
+        streaming,
+        ...(row.tool !== undefined ? { tool: row.tool } : {}),
+        theme: DEFAULT_COMPONENT_THEME,
+      })
+
+      const reducer = createReducer({ clock })
+      let state = initialUiState({
+        width: WIDTH,
+        height: HEIGHT,
+        profileId: profile.id,
+        theme: 'verify-skeleton',
+        language: 'en',
+      })
+      let events = 0
+      let frames = 0
+      let maxLineWidth = 0
+      for (const line of trace.lines) {
+        if (line.kind !== 'event') continue
+        events += 1
+        state = reducer.reduce(state, validateAppEvent(line.event))
+        const width = state.viewport.width
+        const output = renderer.render({
+          transcript: selectTranscriptView(state),
+          dock: selectDockView(state),
+          editor: selectEditorView(state),
+          status: selectStatusLine(state),
+          width,
+          height: state.viewport.height,
+          sessionEpoch: state.session.sessionEpoch,
+          sticky: state.viewport.sticky,
+        })
+        frames += 1
+        if (output.lines.length !== state.viewport.height && output.lines.length !== 0) {
+          errors.push(`${name}: event ${events}: rendered ${output.lines.length} lines for height ${state.viewport.height}`)
+        }
+        for (const [lineNo, rendered] of output.lines.entries()) {
+          const w = measureLineWidth(rendered, profile)
+          if (w > maxLineWidth) maxLineWidth = w
+          if (w > width) {
+            errors.push(`${name}: event ${events} line ${lineNo}: physical width ${w} exceeds viewport ${width}`)
+          }
+        }
+      }
+      const canonical = serializeCanonicalUiState(state)
+      traceReports.push({
+        name,
+        oracle: trace.header.oracle,
+        events,
+        frames,
+        maxLineWidth,
+        canonicalHash: createHash('sha256').update(canonical).digest('hex').slice(0, 16),
+        diagnostics: { ...state.diagnostics },
+      })
+    } catch (error: any) {
+      errors.push(`trace ${name}: ${String(error?.message || error)}`)
+    }
+  }
+
+  // ---- part 2: child-process cleanup scenarios ----
+  const reportDir = await mkdtemp(path.join(os.tmpdir(), 'tui-v2-skeleton-verify-'))
+  const childReports: { scenario: string; exitCode: number | null; checks: Record<string, boolean> }[] = []
+  const expectedExit: Record<string, number> = { normal: 0, sigterm: 0, error: 3 }
+  for (const scenario of ['normal', 'sigterm', 'error'] as const) {
+    try {
+      const result = await runSkeletonChild(scenario, { reportDir })
+      childReports.push({ scenario, exitCode: result.exitCode, checks: result.report.checks })
+      if (result.exitCode !== expectedExit[scenario]) {
+        errors.push(`skeleton child ${scenario}: exit ${result.exitCode} (want ${expectedExit[scenario]}); stderr: ${result.stderrTail.slice(-400)}`)
+      }
+      for (const [checkName, ok] of Object.entries(result.report.checks)) {
+        if (!ok) errors.push(`skeleton child ${scenario}: check ${checkName} failed`)
+      }
+      if (result.report.vtModesAfterStop.alternateScreen === true) {
+        errors.push(`skeleton child ${scenario}: alternate screen still on after stop`)
+      }
+      const rawModes = result.report.stdinRawModes
+      if (rawModes.length === 0 || rawModes[rawModes.length - 1] !== false) {
+        errors.push(`skeleton child ${scenario}: stdin raw mode not restored: ${JSON.stringify(rawModes)}`)
+      }
+    } catch (error: any) {
+      errors.push(`skeleton child ${scenario}: ${String(error?.message || error)}`)
+    }
+  }
+
+  return {
+    status: errors.length === 0 ? 'pass' : 'fail',
+    details: { traces: traceReports, children: childReports, warnings, errors },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // registry + CLI
 // ---------------------------------------------------------------------------
 
@@ -629,6 +807,7 @@ const checks = new Map<string, (ctx: CheckContext) => Promise<CheckResult>>([
   ['regression-matrix', () => checkRegressionMatrix()],
   ['trace', () => checkTrace()],
   ['fork', () => checkFork()],
+  ['skeleton', () => checkSkeleton()],
 ])
 
 function defaultOutput(check: string): string {

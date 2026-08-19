@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "kind": "compare-skeleton",
+  "note": "WP-04 intermediate review artifact: scripted scenario through the WP-01 v1 harness and the v2 walking skeleton. NOT the WP-09 V1CaptureRenderer contract; numbers are a sanity signal, never a gate.",
+  "scenario": {
+    "welcome": "welcome-to-skeleton",
+    "user": "hello skeleton",
+    "assistantStart": "Hello",
+    "assistantChunks": [
+      ", ",
+      "stream",
+      " grows",
+      " here"
+    ],
+    "toolName": "bash",
+    "toolArgs": "{\"cmd\":\"ls\"}",
+    "toolResult": "file-a.txt"
+  },
+  "profile": "headless-120x40 (v1: xterm oracle + Ink Chat; v2: kitty-sync profile + VirtualTerminal)",
+  "results": {
+    "v1": {
+      "frames": 20,
+      "bytesWritten": 7957,
+      "heapBefore": 35290768,
+      "heapPeak": 72589176,
+      "heapAfterGc": 50383376,
+      "gridHash": "81d286894495b2f9f6ec36ec33d1d69885d9c1557acde6e73be6231a91a916be",
+      "durationMs": 237.79917600000005
+    },
+    "v2": {
+      "frames": 8,
+      "renders": 8,
+      "bytesWritten": 43507,
+      "heapBefore": 53339816,
+      "heapPeak": 76766424,
+      "heapAfterGc": 54377328,
+      "gridHash": "3443cd67bd8ed517ef3b79af5246306be901483c44a1f683e523eb5384549bb9",
+      "durationMs": 198.94017199999996
+    }
+  },
+  "startedAt": "2026-08-19T21:54:54.406Z",
+  "durationMs": 868.822,
+  "node": "v26.7.0",
+  "os": "linux x64",
+  "kernel": "7.1.8-zen1-3-zen",
+  "gitHead": "b1d63a030b86aee45b7df25fcf4d0d914ae8ac52",
+  "lockfileSha256": "87f4f2bcfe7d8497b57dbd544458869852c2585f824bc98a1bdd06d538c34fca"
+}

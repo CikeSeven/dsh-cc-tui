@@ -11,6 +11,10 @@
  * (model/renderer/terminal) but is itself only used by test/ and scripts/.
  */
 import { createHash } from 'node:crypto'
+// canonicalJson moved to the model layer in WP-04 so model and testkit share
+// one implementation (§4.3: testkit -> model, never model -> testkit). The
+// re-export keeps this module's public API unchanged.
+import { canonicalJson } from '../model/canonical-json.js'
 import type { SerializableValue } from '../model/schema.js'
 import type {
   Frame,
@@ -70,47 +74,10 @@ function fail(field: string): never {
 // ---------------------------------------------------------------------------
 // canonicalJson: UTF-8, keys in Unicode code-point order, arrays in semantic
 // order, numbers in ECMAScript shortest round-trip form, no whitespace, no
-// trailing newline (§9.2).
+// trailing newline (§9.2). Implementation: ../model/canonical-json.ts.
 // ---------------------------------------------------------------------------
 
-/** Compare two strings by Unicode code point (NOT UTF-16 code unit). */
-function compareCodePoints(a: string, b: string): number {
-  const pa = Array.from(a)
-  const pb = Array.from(b)
-  const n = Math.min(pa.length, pb.length)
-  for (let i = 0; i < n; i++) {
-    const ca = pa[i].codePointAt(0) as number
-    const cb = pb[i].codePointAt(0) as number
-    if (ca !== cb) return ca - cb
-  }
-  return pa.length - pb.length
-}
-
-export function canonicalJson(value: unknown): string {
-  if (value === null) return 'null'
-  switch (typeof value) {
-    case 'string':
-    case 'boolean':
-      return JSON.stringify(value)
-    case 'number':
-      if (!Number.isFinite(value)) {
-        throw new TypeError('canonicalJson: non-finite numbers are not representable')
-      }
-      // JSON.stringify uses the ECMAScript shortest round-trip decimal form.
-      return JSON.stringify(value)
-    case 'object': {
-      if (Array.isArray(value)) {
-        return `[${value.map((item) => canonicalJson(item)).join(',')}]`
-      }
-      const record = value as Record<string, unknown>
-      const keys = Object.keys(record).sort(compareCodePoints)
-      const parts = keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-      return `{${parts.join(',')}}`
-    }
-    default:
-      throw new TypeError(`canonicalJson: unsupported value of type ${typeof value}`)
-  }
-}
+export { canonicalJson } from '../model/canonical-json.js'
 
 /** sha256 over the UTF-8 bytes of the canonical JSON, lowercase hex (§9.2 `sha256-v1`). */
 export function gridSha256(canonical: CanonicalGridV1): string {

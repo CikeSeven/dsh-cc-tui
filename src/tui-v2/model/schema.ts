@@ -36,6 +36,7 @@ export type InputCommand =
   | { readonly type: 'scroll'; readonly delta: number }
   | { readonly type: 'overlay'; readonly command: 'open' | 'close' | 'focus'; readonly overlayId?: string }
   | { readonly type: 'app'; readonly command: 'interrupt' | 'exit' | 'redraw' }
+export type TerminalMode = 'fullscreen' | 'inline'
 export type OverlayAnchor = 'center' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'top-center' | 'bottom-center' | 'left-center' | 'right-center'
 export interface UiRowSnapshot {
   readonly rowId: string
