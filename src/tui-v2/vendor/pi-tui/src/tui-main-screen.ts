@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as piOutput from "./dsh/pi-output-encoder.js";
 import { deleteKittyImage, isImageLine } from "./terminal-image.js";
 import { type TUI, TuiBase, type TuiStopOptions } from "./tui.js";
 import { visibleWidth } from "./utils.js";
@@ -103,9 +104,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		this.terminal.write(" ");
 		const targetRow = this.previousLines.length;
 		const lineDiff = targetRow - this.hardwareCursorRow;
-		if (lineDiff > 0) this.terminal.write(`\x1b[${lineDiff}B`);
-		else if (lineDiff < 0) this.terminal.write(`\x1b[${-lineDiff}A`);
-		this.terminal.write("\r\n");
+		if (lineDiff > 0) this.terminal.write(piOutput.cursorDown(lineDiff));
+		else if (lineDiff < 0) this.terminal.write(piOutput.cursorUp(-lineDiff));
+		this.terminal.write(piOutput.newline());
 	}
 
 	private collectKittyImageIds(lines: string[]): Set<number> {
@@ -209,29 +210,29 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Helper to clear scrollback and viewport and render all new lines
 		const fullRender = (clear: boolean): void => {
 			this.fullRedrawCount += 1;
-			let buffer = "\x1b[?2026h"; // Begin synchronized output
+			let buffer = piOutput.syncOutputBegin();
 			if (clear) {
 				buffer += this.deleteKittyImages(this.previousKittyImageIds);
-				buffer += "\x1b[2J\x1b[H\x1b[3J"; // Clear screen, home, then clear scrollback
+				buffer += piOutput.clearScreenHomeScrollback();
 			}
 			for (let i = 0; i < newLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
+				if (i > 0) buffer += piOutput.newline();
 				const line = newLines[i];
 				const isImage = isImageLine(line);
 				const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i) : 1;
 				if (imageReservedRows > 1 && imageReservedRows <= height) {
 					for (let row = 1; row < imageReservedRows; row++) {
-						buffer += "\r\n";
+						buffer += piOutput.newline();
 					}
-					buffer += `\x1b[${imageReservedRows - 1}A`;
+					buffer += piOutput.cursorUp(imageReservedRows - 1);
 					buffer += line;
-					buffer += `\x1b[${imageReservedRows - 1}B`;
+					buffer += piOutput.cursorDown(imageReservedRows - 1);
 					i += imageReservedRows - 1;
 					continue;
 				}
 				buffer += line;
 			}
-			buffer += "\x1b[?2026l"; // End synchronized output
+			buffer += piOutput.syncOutputEnd();
 			this.terminal.write(buffer);
 			this.cursorRow = Math.max(0, newLines.length - 1);
 			this.hardwareCursorRow = this.cursorRow;
@@ -331,7 +332,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// All changes are in deleted lines (nothing to render, just clear)
 		if (firstChanged >= newLines.length) {
 			if (this.previousLines.length > newLines.length) {
-				let buffer = "\x1b[?2026h";
+				let buffer = piOutput.syncOutputBegin();
 				buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
 				// Move to end of new content (clamp to 0 for empty content)
 				const targetRow = Math.max(0, newLines.length - 1);
@@ -341,9 +342,9 @@ export class TuiMainScreen extends TuiBase implements TUI {
 					return;
 				}
 				const lineDiff = computeLineDiff(targetRow);
-				if (lineDiff > 0) buffer += `\x1b[${lineDiff}B`;
-				else if (lineDiff < 0) buffer += `\x1b[${-lineDiff}A`;
-				buffer += "\r";
+				if (lineDiff > 0) buffer += piOutput.cursorDown(lineDiff);
+				else if (lineDiff < 0) buffer += piOutput.cursorUp(-lineDiff);
+				buffer += piOutput.carriageReturn();
 				// Clear extra lines without scrolling
 				const extraLines = this.previousLines.length - newLines.length;
 				if (extraLines > height) {
@@ -353,17 +354,17 @@ export class TuiMainScreen extends TuiBase implements TUI {
 				}
 				const clearStartOffset = newLines.length === 0 ? 0 : 1;
 				if (extraLines > 0 && clearStartOffset > 0) {
-					buffer += `\x1b[${clearStartOffset}B`;
+					buffer += piOutput.cursorDown(clearStartOffset);
 				}
 				for (let i = 0; i < extraLines; i++) {
-					buffer += "\r\x1b[2K";
-					if (i < extraLines - 1) buffer += "\x1b[1B";
+					buffer += piOutput.carriageReturn() + piOutput.eraseLine();
+					if (i < extraLines - 1) buffer += piOutput.cursorDown(1);
 				}
 				const moveBack = Math.max(0, extraLines - 1 + clearStartOffset);
 				if (moveBack > 0) {
-					buffer += `\x1b[${moveBack}A`;
+					buffer += piOutput.cursorUp(moveBack);
 				}
-				buffer += "\x1b[?2026l";
+				buffer += piOutput.syncOutputEnd();
 				this.terminal.write(buffer);
 				this.cursorRow = targetRow;
 				this.hardwareCursorRow = targetRow;
@@ -387,7 +388,7 @@ export class TuiMainScreen extends TuiBase implements TUI {
 
 		// Render from first changed line to end
 		// Build buffer with all updates wrapped in synchronized output
-		let buffer = "\x1b[?2026h"; // Begin synchronized output
+		let buffer = piOutput.syncOutputBegin();
 		buffer += this.deleteChangedKittyImages(firstChanged, lastChanged);
 		const prevViewportBottom = prevViewportTop + height - 1;
 		const moveTargetRow = appendStart ? firstChanged - 1 : firstChanged;
@@ -395,10 +396,10 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			const currentScreenRow = Math.max(0, Math.min(height - 1, hardwareCursorRow - prevViewportTop));
 			const moveToBottom = height - 1 - currentScreenRow;
 			if (moveToBottom > 0) {
-				buffer += `\x1b[${moveToBottom}B`;
+				buffer += piOutput.cursorDown(moveToBottom);
 			}
 			const scroll = moveTargetRow - prevViewportBottom;
-			buffer += "\r\n".repeat(scroll);
+			buffer += piOutput.newline().repeat(scroll);
 			prevViewportTop += scroll;
 			viewportTop += scroll;
 			hardwareCursorRow = moveTargetRow;
@@ -407,18 +408,18 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		// Move cursor to first changed line (use hardwareCursorRow for actual position)
 		const lineDiff = computeLineDiff(moveTargetRow);
 		if (lineDiff > 0) {
-			buffer += `\x1b[${lineDiff}B`; // Move down
+			buffer += piOutput.cursorDown(lineDiff); // Move down
 		} else if (lineDiff < 0) {
-			buffer += `\x1b[${-lineDiff}A`; // Move up
+			buffer += piOutput.cursorUp(-lineDiff); // Move up
 		}
 
-		buffer += appendStart ? "\r\n" : "\r"; // Move to column 0
+		buffer += appendStart ? piOutput.newline() : piOutput.carriageReturn(); // Move to column 0
 
 		// Only render changed lines (firstChanged to lastChanged), not all lines to end
 		// This reduces flicker when only a single line changes (e.g., spinner animation)
 		const renderEnd = Math.min(lastChanged, newLines.length - 1);
 		for (let i = firstChanged; i <= renderEnd; i++) {
-			if (i > firstChanged) buffer += "\r\n";
+			if (i > firstChanged) buffer += piOutput.newline();
 			const line = newLines[i];
 			const isImage = isImageLine(line);
 			const imageReservedRows = isImage ? this.getKittyImageReservedRows(newLines, i, renderEnd) : 1;
@@ -432,18 +433,18 @@ export class TuiMainScreen extends TuiBase implements TUI {
 					return;
 				}
 
-				buffer += "\x1b[2K";
+				buffer += piOutput.eraseLine();
 				for (let row = 1; row < imageReservedRows; row++) {
-					buffer += "\r\n\x1b[2K";
+					buffer += piOutput.newline() + piOutput.eraseLine();
 				}
-				buffer += `\x1b[${imageReservedRows - 1}A`;
+				buffer += piOutput.cursorUp(imageReservedRows - 1);
 				buffer += line;
-				buffer += `\x1b[${imageReservedRows - 1}B`;
+				buffer += piOutput.cursorDown(imageReservedRows - 1);
 				i += imageReservedRows - 1;
 				continue;
 			}
 
-			buffer += "\x1b[2K"; // Clear current line
+			buffer += piOutput.eraseLine(); // Clear current line
 			if (!isImage && visibleWidth(line) > width) {
 				// Log all lines to crash file for debugging
 				const crashLogPath = path.join(this.logDirectory, "pi-crash.log");
@@ -483,18 +484,18 @@ export class TuiMainScreen extends TuiBase implements TUI {
 			// Move to end of new content first if we stopped before it
 			if (renderEnd < newLines.length - 1) {
 				const moveDown = newLines.length - 1 - renderEnd;
-				buffer += `\x1b[${moveDown}B`;
+				buffer += piOutput.cursorDown(moveDown);
 				finalCursorRow = newLines.length - 1;
 			}
 			const extraLines = this.previousLines.length - newLines.length;
 			for (let i = newLines.length; i < this.previousLines.length; i++) {
-				buffer += "\r\n\x1b[2K";
+				buffer += piOutput.newline() + piOutput.eraseLine();
 			}
 			// Move cursor back to end of new content
-			buffer += `\x1b[${extraLines}A`;
+			buffer += piOutput.cursorUp(extraLines);
 		}
 
-		buffer += "\x1b[?2026l"; // End synchronized output
+		buffer += piOutput.syncOutputEnd();
 
 		if (process.env.PI_TUI_DEBUG === "1") {
 			const debugDir = "/tmp/tui";
@@ -565,12 +566,12 @@ export class TuiMainScreen extends TuiBase implements TUI {
 		const rowDelta = targetRow - this.hardwareCursorRow;
 		let buffer = "";
 		if (rowDelta > 0) {
-			buffer += `\x1b[${rowDelta}B`; // Move down
+			buffer += piOutput.cursorDown(rowDelta); // Move down
 		} else if (rowDelta < 0) {
-			buffer += `\x1b[${-rowDelta}A`; // Move up
+			buffer += piOutput.cursorUp(-rowDelta); // Move up
 		}
 		// Move to absolute column (1-indexed)
-		buffer += `\x1b[${targetCol + 1}G`;
+		buffer += piOutput.cursorColumn(targetCol + 1);
 
 		if (buffer) {
 			this.terminal.write(buffer);

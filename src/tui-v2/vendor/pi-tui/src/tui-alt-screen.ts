@@ -6,6 +6,7 @@ import {
 } from "./alt-screen-search.js";
 import { AltScreenFlashContainer } from "./components/alt-screen-flash.js";
 import { ScrollView } from "./components/scroll-view.js";
+import * as piOutput from "./dsh/pi-output-encoder.js";
 import { getKeybindings } from "./keybindings.js";
 import { isKeyRelease } from "./keys.js";
 import {
@@ -48,17 +49,10 @@ import {
 	visibleWidth,
 } from "./utils.js";
 
-const ENTER_ALT_SCREEN = "\x1b[?1049h";
-const EXIT_ALT_SCREEN = "\x1b[?1049l";
-const DISABLE_AUTOWRAP = "\x1b[?7l";
-const ENABLE_AUTOWRAP = "\x1b[?7h";
-const ENABLE_BUTTON_MOTION_MOUSE = "\x1b[?1000h\x1b[?1002h\x1b[?1004h\x1b[?1006h";
-const ENABLE_ALL_MOTION_MOUSE = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1004h\x1b[?1006h";
-const DISABLE_MOUSE = "\x1b[?1006l\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+// Input-side matchers (these are stdin sequences the viewport parses, never
+// bytes written to the terminal).
 const FOCUS_IN = "\x1b[I";
 const FOCUS_OUT = "\x1b[O";
-const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
-const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 const OSC133_ZONE_PREFIX = /^(?:\x1b\]133;[ABC](?:\x07|\x1b\\))+/;
 const OSC133_PROMPT_START = /^\x1b\]133;A(?:\x07|\x1b\\)/;
 const PAGE_SCROLL_OVERLAP = 4;
@@ -278,16 +272,21 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		const term = process.env.TERM?.toLowerCase() ?? "";
 		// Multiplexers can lag when every pointer movement is forwarded. Button-motion
 		// tracking preserves clicks, wheel events, selections, and scrollbar dragging.
-		const mouseSequence =
+		const mouseSequence = () =>
 			process.env.TMUX !== undefined ||
 			process.env.ZELLIJ !== undefined ||
 			process.env.STY !== undefined ||
 			term.startsWith("tmux") ||
 			term.startsWith("screen")
-				? ENABLE_BUTTON_MOTION_MOUSE
-				: ENABLE_ALL_MOTION_MOUSE;
+				? piOutput.enableButtonMotionMouse()
+				: piOutput.enableAllMotionMouse();
 		this.terminal.write(
-			`${ENTER_ALT_SCREEN}${DISABLE_AUTOWRAP}${this.mouseEnabled ? mouseSequence : ""}\x1b[2J\x1b[H\x1b[?25l`,
+			piOutput.enterAltScreen() +
+				piOutput.setAutowrap(false) +
+				(this.mouseEnabled ? mouseSequence() : "") +
+				piOutput.eraseDisplay() +
+				piOutput.cursorHome() +
+				piOutput.setCursorVisible(false),
 		);
 	}
 
@@ -300,7 +299,11 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		this.flashes.dispose();
 		if (!this.altScreenActive) return;
 		this.terminal.write(
-			`${BEGIN_SYNCHRONIZED_OUTPUT}${this.deleteKittyImages()}${this.mouseEnabled ? DISABLE_MOUSE : ""}${ENABLE_AUTOWRAP}${END_SYNCHRONIZED_OUTPUT}`,
+			piOutput.syncOutputBegin() +
+				this.deleteKittyImages() +
+				(this.mouseEnabled ? piOutput.disableMouse() : "") +
+				piOutput.setAutowrap(true) +
+				piOutput.syncOutputEnd(),
 		);
 		this.uploadedKittyImages.clear();
 	}
@@ -309,19 +312,24 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 		if (!this.altScreenActive) return;
 		this.altScreenActive = false;
 		if (options.preserveScreen) {
-			this.terminal.write(`${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`);
+			this.terminal.write(piOutput.syncOutputBegin() + piOutput.exitAltScreen() + piOutput.setCursorVisible(true) + piOutput.syncOutputEnd());
 		} else {
 			const width = Math.max(1, this.terminal.columns);
 			const documentLines = this.render(width).map((line) => line.replace(OSC133_ZONE_PREFIX, ""));
 			this.lastDocument = this.applyLineResets(documentLines.map((line) => line.replaceAll(CURSOR_MARKER, ""))).map(
 				(line) => (isImageLine(line) || visibleWidth(line) <= width ? line : sliceByColumn(line, 0, width, true)),
 			);
-			let buffer = `${BEGIN_SYNCHRONIZED_OUTPUT}${EXIT_ALT_SCREEN}${DISABLE_AUTOWRAP}`;
+			let buffer = piOutput.syncOutputBegin() + piOutput.exitAltScreen() + piOutput.setAutowrap(false);
 			for (let row = 0; row < this.lastDocument.length; row++) {
-				if (row > 0) buffer += "\r\n";
-				buffer += `\r\x1b[2K${this.lastDocument[row] ?? ""}`;
+				if (row > 0) buffer += piOutput.newline();
+				buffer += piOutput.carriageReturn() + piOutput.eraseLine() + (this.lastDocument[row] ?? "");
 			}
-			buffer += `\x1b[0m${ENABLE_AUTOWRAP}\r\n\x1b[?25h${END_SYNCHRONIZED_OUTPUT}`;
+			buffer +=
+				piOutput.sgrReset() +
+				piOutput.setAutowrap(true) +
+				piOutput.newline() +
+				piOutput.setCursorVisible(true) +
+				piOutput.syncOutputEnd();
 			this.terminal.write(buffer);
 		}
 		if (this.savedCapabilities) {
@@ -1085,7 +1093,7 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 			this.flash(ok ? "Copied!" : "Copy failed");
 			return;
 		}
-		this.terminal.write(`\x1b]52;c;${Buffer.from(text).toString("base64")}\x07`);
+		this.terminal.write(piOutput.osc52Clipboard(Buffer.from(text).toString("base64")));
 		this.flash("Copied!");
 	}
 
@@ -1278,32 +1286,32 @@ export class TuiAltScreen extends TuiBase implements ViewportTUI {
 				? this.prepareKittyScreen(screen)
 				: { lines: screen, evictedImageDeletion: "" };
 
-		let buffer = BEGIN_SYNCHRONIZED_OUTPUT;
+		let buffer = piOutput.syncOutputBegin();
 		if (fullRedraw) {
 			this.fullRedrawCount += 1;
 			const clearImages =
 				this.imageProtocol === "kitty" && hadUploadedKittyImages
 					? deleteAllKittyPlacements()
 					: this.deleteKittyImages();
-			buffer += `${clearImages}\x1b[2J`;
+			buffer += clearImages + piOutput.eraseDisplay();
 		} else if (imagesNeedRedraw) {
-			if (this.imageProtocol === "iterm2") buffer += "\x1b[2J";
+			if (this.imageProtocol === "iterm2") buffer += piOutput.eraseDisplay();
 			else if (this.imageProtocol === "kitty") buffer += deleteAllKittyPlacements();
 		}
 		buffer += preparedKittyScreen.evictedImageDeletion;
 
 		for (let row = 0; row < height; row++) {
 			if (!fullRedraw && !imagesNeedRedraw && screen[row] === this.previousScreen[row]) continue;
-			buffer += `\x1b[${row + 1};1H\x1b[2K${preparedKittyScreen.lines[row] ?? ""}`;
+			buffer += piOutput.cursorTo(row + 1, 1) + piOutput.eraseLine() + (preparedKittyScreen.lines[row] ?? "");
 		}
 
 		if (cursorPos) {
-			buffer += `\x1b[${cursorPos.row + 1};${Math.min(width, cursorPos.col) + 1}H`;
-			buffer += this.getShowHardwareCursor() ? "\x1b[?25h" : "\x1b[?25l";
+			buffer += piOutput.cursorTo(cursorPos.row + 1, Math.min(width, cursorPos.col) + 1);
+			buffer += piOutput.setCursorVisible(this.getShowHardwareCursor());
 		} else {
-			buffer += "\x1b[?25l";
+			buffer += piOutput.setCursorVisible(false);
 		}
-		buffer += END_SYNCHRONIZED_OUTPUT;
+		buffer += piOutput.syncOutputEnd();
 		this.terminal.write(buffer);
 
 		this.previousScreen = screen;

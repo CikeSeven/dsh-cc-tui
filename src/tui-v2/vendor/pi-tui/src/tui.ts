@@ -5,6 +5,13 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
+import {
+	queryBackgroundColor as piQueryBackgroundColor,
+	queryCellSize as piQueryCellSize,
+	queryColorScheme as piQueryColorScheme,
+	segmentReset,
+	setColorSchemeNotifications,
+} from "./dsh/pi-output-encoder.js";
 import { isKeyRelease, matchesKey } from "./keys.js";
 import type { Terminal } from "./terminal.js";
 import {
@@ -247,7 +254,9 @@ export class Container implements Component {
 /**
  * TUI - Main class for managing terminal UI with differential rendering
  */
-const SEGMENT_RESET = "\x1b[0m\x1b]8;;\x07";
+// Data-plane boundary marker (SGR reset + OSC 8 close) embedded in composed
+// line content; produced by the fork output encoder (PATCH-LEDGER WP-03c).
+const SEGMENT_RESET = segmentReset();
 
 /** Composite overlay content into a terminal line at a fixed column. */
 export function compositeTuiLine(
@@ -705,7 +714,7 @@ export abstract class TuiBase extends Container implements TUI {
 		this.afterTerminalStart();
 		this.terminal.hideCursor();
 		if (this.terminalColorSchemeNotificationsEnabled) {
-			this.terminal.write("\x1b[?2031h");
+			this.terminal.write(setColorSchemeNotifications(true));
 		}
 		this.queryCellSize();
 		this.requestRender();
@@ -735,7 +744,7 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		this.terminalColorSchemeNotificationsEnabled = enabled;
 		if (!this.stopped) {
-			this.terminal.write(enabled ? "\x1b[?2031h" : "\x1b[?2031l");
+			this.terminal.write(setColorSchemeNotifications(enabled));
 		}
 	}
 
@@ -746,14 +755,14 @@ export abstract class TuiBase extends Container implements TUI {
 		}
 		// Query terminal for cell size in pixels: CSI 16 t
 		// Response format: CSI 6 ; height ; width t
-		this.terminal.write("\x1b[16t");
+		this.terminal.write(piQueryCellSize());
 	}
 
 	stop(options: TuiStopOptions = {}): void {
 		this.stopped = true;
 		this.cancelRenderTimer();
 		if (this.terminalColorSchemeNotificationsEnabled) {
-			this.terminal.write("\x1b[?2031l");
+			this.terminal.write(setColorSchemeNotifications(false));
 		}
 		this.beforeTerminalStop(options);
 		this.terminal.showCursor();
@@ -1230,7 +1239,7 @@ export abstract class TuiBase extends Container implements TUI {
 			}, timeoutMs);
 			this.pendingOsc11BackgroundQueries.push(query);
 			this.pendingOsc11BackgroundReplies += 1;
-			this.terminal.write("\x1b]11;?\x07");
+			this.terminal.write(piQueryBackgroundColor());
 		});
 	}
 
@@ -1257,7 +1266,7 @@ export abstract class TuiBase extends Container implements TUI {
 
 			unsubscribe = this.onTerminalColorSchemeChange(settle);
 			timer = setTimeout(() => settle(undefined), timeoutMs);
-			this.terminal.write("\x1b[?996n");
+			this.terminal.write(piQueryColorScheme());
 		});
 	}
 }

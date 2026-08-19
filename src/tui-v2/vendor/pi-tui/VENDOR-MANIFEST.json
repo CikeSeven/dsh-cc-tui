@@ -4,12 +4,27 @@
   "commit": "086c32e74530564922d011ade23ff582c9d63116",
   "packageVersion": "0.84.2",
   "license": "MIT",
-  "vendoredAt": "2026-08-19T11:17:28.854Z",
+  "vendoredAt": "2026-08-19T15:25:37.299Z",
   "files": [
     {
       "path": "src/tui-v2/vendor/pi-tui/LICENSE",
       "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
       "upstreamSha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/NOTICE",
+      "sha256": "6512691468634bbf6118cae50cfc0d571db631b67c2d1ea8f7fbd4f19cd3c4e2",
+      "upstreamSha256": null
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/PATCH-LEDGER.md",
+      "sha256": "5581925aafada99e37b0f60ea1f1de198bd9a0dc206c619db4c1ab774362e202",
+      "upstreamSha256": null
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/darwin/README.md",
+      "sha256": "610b5d0ad15af4ac467242bded1786e19812b1d1aed9c6ee1e64d1e31aebe6c7",
+      "upstreamSha256": "610b5d0ad15af4ac467242bded1786e19812b1d1aed9c6ee1e64d1e31aebe6c7"
     },
     {
       "path": "src/tui-v2/vendor/pi-tui/native/darwin/build.sh",
@@ -27,14 +42,14 @@
       "upstreamSha256": "0e51e550acf559bf33bdbbdf047f69168b64694f46d27cb4195928b26be0ca0b"
     },
     {
-      "path": "src/tui-v2/vendor/pi-tui/native/darwin/README.md",
-      "sha256": "610b5d0ad15af4ac467242bded1786e19812b1d1aed9c6ee1e64d1e31aebe6c7",
-      "upstreamSha256": "610b5d0ad15af4ac467242bded1786e19812b1d1aed9c6ee1e64d1e31aebe6c7"
-    },
-    {
       "path": "src/tui-v2/vendor/pi-tui/native/darwin/src/darwin-modifiers.c",
       "sha256": "e8205db1e31244aa3bda5fec0f120fdeb819f176b9e1131718e4142ed921e1cc",
       "upstreamSha256": "e8205db1e31244aa3bda5fec0f120fdeb819f176b9e1131718e4142ed921e1cc"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/win32/README.md",
+      "sha256": "be2998fa695ffa7974104b0a045fbcfdaa7380e6e98c270402b50acdd3ef8f3c",
+      "upstreamSha256": "be2998fa695ffa7974104b0a045fbcfdaa7380e6e98c270402b50acdd3ef8f3c"
     },
     {
       "path": "src/tui-v2/vendor/pi-tui/native/win32/build.mjs",
@@ -52,24 +67,9 @@
       "upstreamSha256": "e40df72050ed02d451dee887b2e2a7408d7de27c5f483af8c489801bb3ae098d"
     },
     {
-      "path": "src/tui-v2/vendor/pi-tui/native/win32/README.md",
-      "sha256": "be2998fa695ffa7974104b0a045fbcfdaa7380e6e98c270402b50acdd3ef8f3c",
-      "upstreamSha256": "be2998fa695ffa7974104b0a045fbcfdaa7380e6e98c270402b50acdd3ef8f3c"
-    },
-    {
       "path": "src/tui-v2/vendor/pi-tui/native/win32/src/win32-console-mode.c",
       "sha256": "443aa6d3fffcc460784e21b9c9395fcd3bac1c89145d2211cd33c6cfa4b3d552",
       "upstreamSha256": "443aa6d3fffcc460784e21b9c9395fcd3bac1c89145d2211cd33c6cfa4b3d552"
-    },
-    {
-      "path": "src/tui-v2/vendor/pi-tui/NOTICE",
-      "sha256": "6512691468634bbf6118cae50cfc0d571db631b67c2d1ea8f7fbd4f19cd3c4e2",
-      "upstreamSha256": null
-    },
-    {
-      "path": "src/tui-v2/vendor/pi-tui/PATCH-LEDGER.md",
-      "sha256": "1ada04972938610032a5b030dfcc0e9601d6904514bfcd78081aef6cec004da8",
-      "upstreamSha256": null
     },
     {
       "path": "src/tui-v2/vendor/pi-tui/src/alt-screen-search.ts",
@@ -142,6 +142,16 @@
       "upstreamSha256": "0f36c9417bfffe5f6b9cc5fd40d420390cf9bebae70a073a409ac5f931f1f813"
     },
     {
+      "path": "src/tui-v2/vendor/pi-tui/src/dsh/pi-output-encoder.ts",
+      "sha256": "7c92b6c06ab2b5f18833b30c76d1530c3b7ab654fef4c5557bb991862862791f",
+      "upstreamSha256": null
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/dsh/pi-string-parser.ts",
+      "sha256": "15610e15f9a7ba56e7e52c216e7b8ab3c1106b5203e9bdc7a8fe7c901913fc2e",
+      "upstreamSha256": null
+    },
+    {
       "path": "src/tui-v2/vendor/pi-tui/src/editor-component.ts",
       "sha256": "2e2144b5f936f5bc6b2196ff5a5ca5fe578ff6e298fc3a20c9e9e75104fa7602",
       "upstreamSha256": "0e40ba454b74e2ce21dfc6d831c185e5fb5619b0987fa158be98ed98564e8716"
@@ -203,17 +213,17 @@
     },
     {
       "path": "src/tui-v2/vendor/pi-tui/src/tui-alt-screen.ts",
-      "sha256": "18b7a541b787faf8d6385bbeac0a04187e0786cf741b96073426990a4ae2abbc",
+      "sha256": "ab6deb6f48feb2baae2279707bd6874b759a4b4392cd44d887fe9d829f83e10f",
       "upstreamSha256": "0e47540ca355e5cfcc65ee84d159d6846b80cf93fcf30453cb2a854f878a3fb9"
     },
     {
       "path": "src/tui-v2/vendor/pi-tui/src/tui-main-screen.ts",
-      "sha256": "2788b4455d2af55bf9b874ead02cb30af9cdfbe90dedfbdaef210cb801fa44b2",
+      "sha256": "21f6dc6273161b296f380206297018d72ad5387a5cb725fac9ae88aa51151cac",
       "upstreamSha256": "6df5c45771ac333f742e0e39ad58e3e889abb1a4d7ed765b31e77947309643c3"
     },
     {
       "path": "src/tui-v2/vendor/pi-tui/src/tui.ts",
-      "sha256": "eb285d9ea51c5737dbc18985cfcc02b657c0191a3b7283c31db68ba9943dec3c",
+      "sha256": "232d659b23224d996ee493dff2228cef482e53ea6b92f91b3affafe5f84b4f6d",
       "upstreamSha256": "8a075ca5db4704aa2f25f9fbfb7012ae90baf98491ec216e9495c12bb0e19afd"
     },
     {

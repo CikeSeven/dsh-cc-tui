@@ -164,3 +164,18 @@ export type {
 export { ScrollView } from '../vendor/pi-tui/src/components/scroll-view.js'
 export { Spacer } from '../vendor/pi-tui/src/components/spacer.js'
 export { Box } from '../vendor/pi-tui/src/components/box.js'
+
+// --- dsh fork-added compat-boundary modules (WP-03c; see PATCH-LEDGER.md) ----
+// The strict write(string) parser + the typed output encoder the forked call
+// sites use. Consumed by terminal/pi-adapter.ts; business code never imports
+// the vendor tree directly (import guard, verify --check fork).
+export {
+  parsePiTerminalString,
+  PI_STRING_MAX_PAYLOAD_BYTES,
+} from '../vendor/pi-tui/src/dsh/pi-string-parser.js'
+export type {
+  PiParsedOperation,
+  PiParseError,
+  PiParseResult,
+} from '../vendor/pi-tui/src/dsh/pi-string-parser.js'
+export * as piOutput from '../vendor/pi-tui/src/dsh/pi-output-encoder.js'

@@ -9,6 +9,8 @@
  *   node scripts/vendor-pi-tui.mjs --source /path/to/pi --check   check + verify
  *                                                                 upstream hashes
  *   node scripts/vendor-pi-tui.mjs --check                        repo-only check
+ *   node scripts/vendor-pi-tui.mjs --record-fork-patch            re-record hashes
+ *                                                                 after a fork patch
  *
  * Vendor mode:
  *   1. Fails unless <source>/.git HEAD equals PINNED_COMMIT and the worktree
@@ -28,6 +30,15 @@
  * manifest exactly (hashes, no drift, no extra/missing files, excluded files
  * absent, no leftover `.ts` relative specifiers). With `--source`, additionally
  * verifies every upstreamSha256 against the upstream checkout.
+ *
+ * Record mode (`--record-fork-patch`): does NOT copy anything from the
+ * upstream source. Re-hashes the CURRENT vendor tree and rewrites each
+ * manifest entry's vendored sha256 (upstreamSha256 is preserved; files new to
+ * the tree, e.g. `src/dsh/**`, are added with upstreamSha256: null; vanished
+ * files are dropped). Refuses to run when PATCH-LEDGER.md has no
+ * non-mechanical row — every fork patch must be registered first
+ * (PATCH-LEDGER.md is the re-vendor replay log). Ends with the same
+ * self-check as vendor mode.
  *
  * The checker is exported as `checkVendorTree` so scripts/verify-tui-v2.ts
  * (`--check fork`) runs the identical logic in-process.
@@ -492,11 +503,75 @@ export async function checkVendorTree({ sourceDir = null } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// record mode (--record-fork-patch): re-hash the current tree after a fork patch
+// ---------------------------------------------------------------------------
+
+/** Data rows of the PATCH-LEDGER table, excluding header/separator/mechanical. */
+export function ledgerForkPatchRows(ledgerContent) {
+  return ledgerContent
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line.startsWith('|') &&
+        !/^\|(\s*:?-+:?\s*\|)+$/.test(line) && // separator row
+        !line.startsWith('| 文件 |') && // header row
+        !line.startsWith('| mechanical:'),
+    )
+}
+
+async function recordForkPatch() {
+  const vendorDir = path.join(repoRoot, VENDOR_REL)
+  const manifestAbs = path.join(vendorDir, 'VENDOR-MANIFEST.json')
+  const manifest = JSON.parse(await readFile(manifestAbs, 'utf8'))
+
+  // Guard: PATCH-LEDGER.md is the re-vendor replay log; refusing to record
+  // without a non-mechanical row keeps manifest/ledger in lockstep.
+  const ledger = await readFile(path.join(vendorDir, 'PATCH-LEDGER.md'), 'utf8')
+  const ledgerRows = ledgerForkPatchRows(ledger)
+  if (ledgerRows.length === 0) {
+    throw new Error(
+      'PATCH-LEDGER.md has no non-mechanical row — register the fork patch there first',
+    )
+  }
+
+  const previous = new Map()
+  for (const entry of Array.isArray(manifest.files) ? manifest.files : []) {
+    if (typeof entry?.path === 'string') previous.set(entry.path, entry)
+  }
+
+  const onDisk = (await listFilesRecursive(vendorDir))
+    .map((f) => `${VENDOR_REL}/${f}`)
+    .filter((rel) => rel !== `${VENDOR_REL}/VENDOR-MANIFEST.json`)
+    .sort()
+
+  const files = []
+  const added = []
+  const updated = []
+  for (const rel of onDisk) {
+    const sha256 = sha256Hex(await readFile(path.join(repoRoot, rel)))
+    const prior = previous.get(rel)
+    if (!prior) added.push(rel)
+    else if (prior.sha256 !== sha256) updated.push(rel)
+    // upstreamSha256 is preserved for known files; fork-added files get null.
+    files.push({ path: rel, sha256, upstreamSha256: prior?.upstreamSha256 ?? null })
+    previous.delete(rel)
+  }
+  const removed = [...previous.keys()].sort()
+
+  manifest.files = files
+  manifest.vendoredAt = new Date().toISOString()
+  await writeFile(manifestAbs, JSON.stringify(manifest, null, 2) + '\n', 'utf8')
+
+  return { added, updated, removed, total: files.length, ledgerRows: ledgerRows.length }
+}
+
+// ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const out = { source: null, check: false }
+  const out = { source: null, check: false, record: false }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === '--source') {
@@ -504,15 +579,40 @@ function parseArgs(argv) {
       if (!out.source) throw new Error('--source requires a path')
     } else if (arg === '--check') {
       out.check = true
+    } else if (arg === '--record-fork-patch') {
+      out.record = true
     } else {
       throw new Error(`unknown argument: ${arg}`)
     }
+  }
+  if (out.record && (out.check || out.source)) {
+    throw new Error('--record-fork-patch is mutually exclusive with --source/--check')
   }
   return out
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2))
+  if (args.record) {
+    const result = await recordForkPatch()
+    console.log(
+      `recorded fork patch state: ${result.total} files ` +
+        `(${result.added.length} added, ${result.updated.length} updated, ${result.removed.length} removed); ` +
+        `ledger rows: ${result.ledgerRows}`,
+    )
+    if (result.added.length > 0) console.log(`  added: ${result.added.join(', ')}`)
+    if (result.updated.length > 0) console.log(`  updated: ${result.updated.join(', ')}`)
+    if (result.removed.length > 0) console.log(`  removed: ${result.removed.join(', ')}`)
+    const recheck = await checkVendorTree({})
+    if (!recheck.ok) {
+      console.error('post-record self-check FAILED:')
+      for (const error of recheck.errors) console.error(`  - ${error}`)
+      process.exitCode = 1
+      return
+    }
+    console.log('post-record self-check OK')
+    return
+  }
   if (args.check) {
     const result = await checkVendorTree({ sourceDir: args.source ? path.resolve(args.source) : null })
     if (!result.ok) {
