@@ -24,6 +24,12 @@
  *      a stale sessionEpoch are dropped (droppedOldEpoch++). rows-reset is
  *      atomic: every check passes or no row is accepted.
  *
+ * Viewport scroll (WP-05): the reducer maintains `viewport.maxScroll` in row
+ * units (max(0, rows - height)) on every content/resize mutation, and the
+ * `input/command` {type:'scroll'} variant applies scroll semantics (sticky /
+ * unseenCount / clamped scrollTop) so live and replay derive identical
+ * viewport state. All other input commands stay journal-only.
+ *
  * Immutability: output states are fresh object graphs (structural sharing for
  * untouched sections). Row/overlay snapshots are deep-frozen when stored —
  * the adapter is assumed to have frozen event payloads at ingress (§5.2); the
@@ -266,17 +272,21 @@ function applyEvent(state: UiState, event: AppEvent): UiState {
       return applyStreamChunk(state, event.rowId, event.text)
     case 'stream/settled':
       return applyStreamSettled(state, event.rowId, event.revision)
-    case 'input/command':
-      // Input commands never mutate business state in the reducer: the journal
-      // below is a bounded echo for canonical-state comparison; the visible
-      // editor/overlay effects are driven back in by controller-emitted
-      // row/overlay events (§5.2 controller/reducer split).
-      return {
+    case 'input/command': {
+      // Journal (bounded echo for canonical-state comparison), then — for the
+      // scroll variant only — apply viewport semantics. Every other command
+      // stays journal-only: its visible effects are driven back in by
+      // controller-emitted row/overlay events (§5.2 controller/reducer split).
+      const journaled: UiState = {
         ...state,
         pendingCommands: [...state.pendingCommands, { seq: event.seq, command: event.command }].slice(
           -PENDING_COMMANDS_MAX,
         ),
       }
+      return event.command.type === 'scroll'
+        ? applyScrollCommand(journaled, event.command.delta)
+        : journaled
+    }
     case 'viewport/resize':
       return applyResize(state, event.width, event.height)
     case 'overlay/open':
@@ -301,6 +311,69 @@ function applyEvent(state: UiState, event: AppEvent): UiState {
     case 'app/error':
       return withLastError(state, event.error.code, event.error.message, event.seq)
   }
+}
+
+// ---------------------------------------------------------------------------
+// viewport scroll semantics (WP-05)
+// ---------------------------------------------------------------------------
+
+/** Maximum scrollTop the content allows, in row units (WP-06 maps to lines). */
+function maxScrollFor(rowCount: number, viewportHeight: number): number {
+  return Math.max(0, rowCount - viewportHeight)
+}
+
+/**
+ * Apply a scroll input command. Rules (repro-pill / verify-scroll scripts):
+ *   - maxScroll === 0: force-pinned to the live tail (scrollTop 0, sticky).
+ *   - delta < 0: unstick; scrollTop clamps into [0, maxScroll].
+ *   - delta > 0: scrollTop clamps; reaching maxScroll re-engages sticky.
+ *   - sticky clears unseenCount; otherwise unseenCount is capped to the rows
+ *     below the window (maxScroll - scrollTop), so the pill count decreases
+ *     monotonically while scrolling down and never grows via scroll commands.
+ *   - While sticky, the base position is the tail window (maxScroll), not the
+ *     stale scrollTop, so the first wheel-up starts from the visible window.
+ */
+function applyScrollCommand(state: UiState, delta: number): UiState {
+  if (delta === 0) return state
+  const viewport = state.viewport
+  const maxScroll = maxScrollFor(state.session.rowOrder.length, viewport.height)
+  if (maxScroll === 0) {
+    if (viewport.scrollTop === 0 && viewport.maxScroll === 0 && viewport.sticky && viewport.unseenCount === 0) {
+      return state
+    }
+    return {
+      ...state,
+      viewport: { ...viewport, scrollTop: 0, maxScroll: 0, sticky: true, unseenCount: 0 },
+    }
+  }
+  const base = viewport.sticky ? maxScroll : Math.min(viewport.scrollTop, maxScroll)
+  const scrollTop = Math.min(Math.max(0, base + delta), maxScroll)
+  const sticky = delta > 0 ? scrollTop >= maxScroll : false
+  const unseenCount = sticky ? 0 : Math.min(viewport.unseenCount, maxScroll - scrollTop)
+  if (
+    scrollTop === viewport.scrollTop &&
+    sticky === viewport.sticky &&
+    unseenCount === viewport.unseenCount &&
+    maxScroll === viewport.maxScroll
+  ) {
+    return state
+  }
+  return { ...state, viewport: { ...viewport, scrollTop, maxScroll, sticky, unseenCount } }
+}
+
+/**
+ * Recompute viewport after a content-size or viewport-height mutation.
+ * A sticky viewport follows the tail (scrollTop = maxScroll); a non-sticky
+ * viewport keeps scrollTop (shrink freeze) and only caps unseenCount.
+ */
+function viewportAfterContentChange(viewport: UiState['viewport'], maxScroll: number): UiState['viewport'] {
+  if (maxScroll === 0) {
+    return { ...viewport, scrollTop: 0, maxScroll: 0, sticky: true, unseenCount: 0 }
+  }
+  const sticky = viewport.sticky
+  const scrollTop = sticky ? maxScroll : viewport.scrollTop
+  const unseenCount = sticky ? 0 : Math.min(viewport.unseenCount, Math.max(0, maxScroll - scrollTop))
+  return { ...viewport, scrollTop, maxScroll, sticky, unseenCount }
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +464,13 @@ function applyRowsReset(state: UiState, event: RowsResetEvent): UiState {
     ...state,
     session,
     focus: { target: 'editor', overlayId: null },
-    viewport: { ...state.viewport, scrollTop: 0, maxScroll: 0, sticky: true, unseenCount: 0 },
+    // Follow-end after any reset (rewind truncation, snapshot-gap heal, …):
+    // pinned sticky at the tail window, scrollTop = maxScroll so the first
+    // wheel-up starts from the visible window rather than the document top.
+    viewport: viewportAfterContentChange(
+      { ...state.viewport, sticky: true },
+      maxScrollFor(rowOrder.length, state.viewport.height),
+    ),
     dock: {
       ...state.dock,
       pendingMessages: [],
@@ -458,11 +537,12 @@ function upsertRow(state: UiState, row: UiRowSnapshot, key: string): UiState {
 
   const frozen = deepFreeze({ ...row }) as UiRowSnapshot
   const isSessionRow = frozen.source === 'session'
+  const rowOrder = [...session.rowOrder, frozen.rowId]
   return {
     ...state,
     session: {
       ...session,
-      rowOrder: [...session.rowOrder, frozen.rowId],
+      rowOrder,
       rowsById: { ...session.rowsById, [frozen.rowId]: frozen },
       streamingRowId: frozen.settled ? session.streamingRowId : frozen.rowId,
       oldestLoadedSourceSeq:
@@ -471,10 +551,22 @@ function upsertRow(state: UiState, row: UiRowSnapshot, key: string): UiState {
           : session.oldestLoadedSourceSeq,
       newestLoadedSourceSeq: isSessionRow ? frozen.sourceSeq : session.newestLoadedSourceSeq,
     },
-    viewport: {
-      ...state.viewport,
-      unseenCount: state.viewport.sticky ? state.viewport.unseenCount : state.viewport.unseenCount + 1,
-    },
+    viewport: (() => {
+      const viewport = viewportAfterContentChange(
+        state.viewport,
+        maxScrollFor(rowOrder.length, state.viewport.height),
+      )
+      if (viewport.sticky) return viewport
+      // Rows appended below a non-sticky window count as unseen (pill), capped
+      // to the rows actually below the window.
+      return {
+        ...viewport,
+        unseenCount: Math.min(
+          state.viewport.unseenCount + 1,
+          Math.max(0, viewport.maxScroll - viewport.scrollTop),
+        ),
+      }
+    })(),
     bookkeeping: {
       ...state.bookkeeping,
       sourceIndex: { ...state.bookkeeping.sourceIndex, [key]: frozen.rowId },
@@ -578,14 +670,24 @@ function applyRowComplete(state: UiState, rowId: string, revision: number): UiSt
 
 function applyResize(state: UiState, width: number, height: number): UiState {
   const widthChanged = width !== state.viewport.width
+  const maxScroll = maxScrollFor(state.session.rowOrder.length, height)
+  const sized = { ...state.viewport, width, height }
+  // Shrink freeze (WP-05, verify-scroll): when the viewport grows so scrollTop
+  // now exceeds maxScroll, hold the position instead of jumping to 0 — the
+  // selector clamps defensively and the next scroll command re-validates.
+  // A sticky viewport keeps following the tail; a fully-fitting transcript
+  // re-pins (handled inside viewportAfterContentChange).
+  const viewport =
+    maxScroll === 0 || state.viewport.sticky
+      ? viewportAfterContentChange(sized, maxScroll)
+      : {
+          ...sized,
+          maxScroll,
+          unseenCount: Math.min(sized.unseenCount, Math.max(0, maxScroll - sized.scrollTop)),
+        }
   return {
     ...state,
-    viewport: {
-      ...state.viewport,
-      width,
-      height,
-      scrollTop: Math.min(state.viewport.scrollTop, state.viewport.maxScroll),
-    },
+    viewport,
     terminal: widthChanged
       ? { ...state.terminal, needsFullRedraw: true }
       : state.terminal,

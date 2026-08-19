@@ -15,6 +15,11 @@
  *     subsequent chunks for it are discarded (counted, not dispatched) until
  *     the row settles (`stream/settled`, `row-complete`, `row-upsert`), which
  *     releases the mark after flushing any buffered text for that row.
+ *     Re-marking an already-marked row is a no-op (not double-counted). A
+ *     `session/rows-reset` clears every mark (counted): reset rows are a new
+ *     epoch, so stale marks would leak. The pending BUFFER is deliberately
+ *     not cleared — buffered chunks belong to the pre-reset epoch and the
+ *     flush-then-reset order below keeps them causal.
  *  3. Own the outgoing event sequence: because cancelled chunks create gaps
  *     in the upstream sequence, every event leaving this controller is
  *     re-stamped with a contiguous controller-owned `seq` (the reducer
@@ -72,6 +77,8 @@ export interface StreamingControllerDiagnostics {
   readonly droppedAfterStop: number;
   readonly windowsFlushed: number;
   readonly cancelledStreams: number;
+  /** Cancellation marks cleared by a rows-reset (new epoch). */
+  readonly cancelMarksReset: number;
 }
 
 const MIN_WINDOW_MS = 16;
@@ -95,6 +102,7 @@ export function createStreamingController(options: StreamingControllerOptions): 
   let droppedAfterStop = 0;
   let windowsFlushed = 0;
   let cancelledStreams = 0;
+  let cancelMarksReset = 0;
 
   const diagnostic = (code: string, data?: Record<string, unknown>): void => {
     try {
@@ -177,7 +185,14 @@ export function createStreamingController(options: StreamingControllerOptions): 
     }
     // Stream lifecycle barriers release a cancellation mark after the row's
     // buffered chunks so per-row order stays causal.
-    if (event.type === 'stream/settled' || event.type === 'session/row-complete') {
+    if (event.type === 'session/rows-reset') {
+      // New epoch: every outstanding cancellation mark is stale (its rowId is
+      // about to be re-issued). Clear marks, keep the pending buffer — the
+      // flush below emits pre-reset chunks ahead of the reset, preserving
+      // causality.
+      cancelMarksReset += cancelled.size;
+      cancelled.clear();
+    } else if (event.type === 'stream/settled' || event.type === 'session/row-complete') {
       releaseRow(event.rowId);
     } else if (event.type === 'session/row-upsert') {
       releaseRow(event.row.rowId);
@@ -189,6 +204,7 @@ export function createStreamingController(options: StreamingControllerOptions): 
   return {
     ingest,
     cancelStream: (rowId) => {
+      if (cancelled.has(rowId)) return;
       cancelled.add(rowId);
       cancelledStreams += 1;
     },
@@ -206,6 +222,7 @@ export function createStreamingController(options: StreamingControllerOptions): 
       droppedAfterStop,
       windowsFlushed,
       cancelledStreams,
+      cancelMarksReset,
     }),
   };
 }

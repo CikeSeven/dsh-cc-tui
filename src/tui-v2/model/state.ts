@@ -98,7 +98,7 @@ export interface UiViewportState {
   readonly height: number
   /** First visible transcript row index (model rows, not physical lines). */
   readonly scrollTop: number
-  /** Maximum scrollTop the content allows (maintained by controllers). */
+  /** Maximum scrollTop the content allows (maintained by the reducer, row units). */
   readonly maxScroll: number
   /** When true the viewport pins to the newest rows on every change. */
   readonly sticky: boolean

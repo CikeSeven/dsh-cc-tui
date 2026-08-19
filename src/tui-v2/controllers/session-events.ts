@@ -55,26 +55,37 @@
  *  - Commands: submit/steer/cancel/clear/loadOlder/newSession/resumeTo/
  *    rewindTo are exposed as the `ChannelCommands` surface; components never
  *    touch the channel (§5.1). Reset-causing commands set the mapped reason
- *    and flush the reset synchronously once the channel call settled, with
- *    the diff suspended in between so a mid-resume wakeup cannot fire a
- *    wrong-reason structural reset.
+ *    and flush the reset once the channel call settled, with the diff
+ *    suspended in between so a mid-resume wakeup cannot fire a wrong-reason
+ *    structural reset. `withReset` is async-aware (WP-05): when the channel
+ *    operation returns a promise, the diff stays suspended until it settles;
+ *    a rejection clears the pending reason, reports a diagnostic and flushes
+ *    so the structural-break detector re-syncs.
  *  - Reset suppression: `suspendDiff()`/`resumeDiff()` bracket reset-causing
  *    channel operations.
+ *  - Dock mirror (WP-05): dock dynamics (status/working/model/tokens/cwd/
+ *    branch + notifications + pending) are NOT AppEvents — the canonical
+ *    state excludes them by design (§5.2). The adapter publishes a deduped
+ *    `DockStoreView` (canonicalJson signature) through `onDockChange` at the
+ *    end of every flush; the coordinator merges it into the DockView the way
+ *    it mirrors the editor. If a later WP needs dock data in canonical state,
+ *    the §5.2 event schema must be extended first.
  *
- * Store subscription priorities (§7.2 bullet 4 — WP-05 wires these; WP-04
- * attaches ONLY the channel main subscription):
+ * Store subscription priorities (§7.2 bullet 4 — WP-05 wires the dock mirror
+ * through `onDockChange`; question/approval/dialog stores remain a later WP):
  *   1. session rows (this adapter's channel subscribe) — drives transcript;
  *   2. question/approval/dialog stores — overlay capture priority above the
  *      editor (input routing must see them before the editor);
  *   3. status/notification/pending stores — dock-level, lowest priority,
- *      coalesced with stream wakeups.
+ *      coalesced with stream wakeups (the dock mirror below).
  *   The wakeup handler below therefore keeps a single subscription and leaves
- *   `attachStores` as the documented WP-05 seam.
+ *   `attachStores` as the documented seam for bullet 2.
  *
  * Dependency rule (§4.3): controllers import model + dsh-adapter TYPES; they
  * never write stdout, never build ANSI, never touch component internals.
  */
 import type { AppEvent } from '../model/events.js'
+import { canonicalJson } from '../model/canonical-json.js'
 import { computeSnapshotHash, projectRow, type ProjectionRowKind, type ProjectionToolInput } from '../model/projections.js'
 import { createRevisionAllocator, type RevisionAllocator } from '../model/revisions.js'
 import {
@@ -199,8 +210,9 @@ export interface ChannelCommands {
   newSession(): Promise<boolean>
   /** Switch to a persisted session (reason 'resume'). */
   resumeTo(sessionId: string): Promise<ResumeResult>
-  /** Rewind to the user message behind `rowId` (reason 'rewind'). */
-  rewindTo(rowId: string): Promise<string | null>
+  /** Rewind to the user message behind `rowId` (reason 'rewind'). `mode` is
+   *  the plugin-offered rewind mode the user picked, null for the plain one. */
+  rewindTo(rowId: string, mode?: string | null): Promise<string | null>
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +235,41 @@ export interface AdapterDiagnostics {
   readonly droppedToolViews: number
 }
 
+// ---------------------------------------------------------------------------
+// dock mirror (WP-05): dock dynamics are deliberately NOT AppEvents — the
+// canonical state excludes them (§5.2). The adapter publishes a deduped view
+// through `onDockChange`; the coordinator merges it into the DockView.
+// ---------------------------------------------------------------------------
+
+export interface DockStatusView {
+  readonly status: string
+  readonly working: boolean
+  readonly model: string
+  readonly tokens: { readonly input: number; readonly output: number }
+  readonly cwd: string
+  readonly branch: string | null
+}
+
+export interface DockNotificationView {
+  readonly notificationId: string
+  readonly text: string
+  readonly color?: 'error' | 'warning' | 'success'
+}
+
+export interface DockPendingView {
+  readonly id: string
+  readonly text: string
+  readonly placement: 'steer' | 'followup'
+}
+
+export interface DockStoreView {
+  /** Monotonic per-adapter publication counter (changes only on real diffs). */
+  readonly revision: number
+  readonly status: DockStatusView
+  readonly notifications: readonly DockNotificationView[]
+  readonly pending: readonly DockPendingView[]
+}
+
 export interface ChannelUiAdapterOptions {
   readonly channel: ChannelUiChannel
   /** Shared event identity/seq space (coordinator-owned). */
@@ -237,6 +284,8 @@ export interface ChannelUiAdapterOptions {
    * reset (the legacy Chat welcome panel's skeleton stand-in).
    */
   readonly welcomeText?: string
+  /** Dock mirror sink (WP-05); called at flush end when the dock diff changed. */
+  readonly onDockChange?: (dock: DockStoreView) => void
   readonly onDiagnostic?: (diagnostic: { code: string; message: string }) => void
 }
 
@@ -257,6 +306,8 @@ export interface ChannelUiAdapter {
   recoverSnapshotGap(): void
   /** Latest published immutable snapshot (rows + hash + status). */
   currentSnapshot(): UiSnapshot
+  /** Legacy ChatRow behind a canonical rowId (rewind command mapping, WP-05). */
+  chatRowForRowId(rowId: string): ChatRow | undefined
   diagnostics(): AdapterDiagnostics
 }
 
@@ -611,6 +662,9 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
         deepFreeze(row)
         events.push({ ...meta.next('session', snap.identity.sourceSeq), type: 'session/row-upsert', row })
         upserts += 1
+        // Pin the rowId -> ChatRow mapping (rewind command mapping); resets
+        // rebuild the whole map, appends must extend it (WP-05).
+        rowsByRowId.set(row.rowId, snap.row)
         mirror.push({ identity: snap.identity, snapshot: row, signature, chunkChannel: isChunkChannel && !row.settled, settled: row.settled })
         continue
       }
@@ -739,9 +793,43 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
     return true
   }
 
+  // ---------------------------------------------------------- dock mirror
+
+  let dockRevision = 0
+  let lastDockSignature: string | null = null
+
+  /** Publish the dock view when its signature changed since the last flush. */
+  const publishDock = (): void => {
+    if (options.onDockChange === undefined) return
+    const status: DockStatusView = {
+      status: String(channel.status),
+      working: channel.working === true,
+      model: String(channel.model ?? ''),
+      tokens: { input: channel.tokens?.input ?? 0, output: channel.tokens?.output ?? 0 },
+      cwd: String(channel.cwd ?? ''),
+      branch: channel.gitBranch === undefined ? null : String(channel.gitBranch),
+    }
+    const notifications: DockNotificationView[] = channel.notifications.map((item) => ({
+      notificationId: String(item.id),
+      text: String(item.text),
+      ...(item.color !== undefined ? { color: item.color } : {}),
+    }))
+    const pending: DockPendingView[] = channel.pending.map((message) => ({
+      id: String(message.id),
+      text: String(message.text),
+      placement: message.placement,
+    }))
+    const signature = canonicalJson({ status, notifications, pending })
+    if (signature === lastDockSignature) return
+    lastDockSignature = signature
+    dockRevision += 1
+    options.onDockChange(deepFreeze({ revision: dockRevision, status, notifications, pending }) as DockStoreView)
+  }
+
   // --------------------------------------------------------------- driver
 
-  const flush = (): void => {
+  /** Row diff/reset driver; `flush` additionally publishes the dock mirror. */
+  const flushRows = (): void => {
     const fresh = snapshotRows()
     if (published.length === 0 && resetRevision === 0) {
       emitReset(fresh, options.initialResetReason ?? 'new-session')
@@ -762,6 +850,12 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
     runDiff(fresh)
   }
 
+  /** Flush rows, then publish the dock mirror (deduped by signature). */
+  const flush = (): void => {
+    flushRows()
+    publishDock()
+  }
+
   const handleWakeup = (): void => {
     if (!started) return
     wakeups += 1
@@ -780,15 +874,47 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
     if (started) flush()
   }
 
-  /** Bracket a reset-causing channel call: suspend the diff, run it, flush. */
+  /**
+   * Bracket a reset-causing channel call: suspend the diff, run it, flush.
+   * Async-aware (WP-05): a promise-returning channel operation keeps the diff
+   * suspended until it settles, so a mid-resume/newSession/rewind wakeup
+   * cannot fire a wrong-reason structural reset. On rejection the pending
+   * reason is cleared, a diagnostic is reported and the flush re-syncs via
+   * the structural-break detector.
+   */
   const withReset = <T>(reason: ResetReason, run: () => T): T => {
     suspendDiffCount += 1
     pendingResetReason = reason
-    try {
-      return run()
-    } finally {
+    const settleSync = (): void => {
       suspendDiffCount -= 1
       if (suspendDiffCount === 0 && started) flush()
+    }
+    const settleAsync = (failed: boolean, error: unknown): void => {
+      suspendDiffCount -= 1
+      if (failed) {
+        pendingResetReason = null
+        diagnostic('reset-command-failed', `${reason} command rejected: ${String(error)}`)
+      }
+      if (suspendDiffCount === 0 && started) flush()
+    }
+    try {
+      const result = run()
+      if (
+        result !== null &&
+        (typeof result === 'object' || typeof result === 'function') &&
+        typeof (result as unknown as PromiseLike<T>).then === 'function'
+      ) {
+        void (result as unknown as PromiseLike<T>).then(
+          () => settleAsync(false, undefined),
+          (error: unknown) => settleAsync(true, error),
+        )
+        return result
+      }
+      settleSync()
+      return result
+    } catch (error) {
+      settleAsync(true, error)
+      throw error
     }
   }
 
@@ -809,6 +935,10 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
     },
 
     handleWakeup,
+
+    chatRowForRowId(rowId) {
+      return rowsByRowId.get(rowId)
+    },
 
     requestReset(reason) {
       pendingResetReason = reason
@@ -887,10 +1017,10 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
       resumeTo(sessionId) {
         return withReset('resume', () => channel.resumeTo(sessionId))
       },
-      async rewindTo(rowId) {
+      async rewindTo(rowId, mode = null) {
         const row = rowsByRowId.get(rowId)
         if (row === undefined) return null
-        return withReset('rewind', () => channel.rewindTo(row))
+        return withReset('rewind', () => channel.rewindTo(row, mode))
       },
     },
   }

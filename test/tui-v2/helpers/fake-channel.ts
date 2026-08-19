@@ -1,11 +1,23 @@
 /**
- * Fake Channel for the WP-04 walking-skeleton tests and the verify script.
+ * Fake Channel for the WP-04 walking-skeleton tests, the WP-05 controller
+ * tests and the verify script.
  *
- * Implements the `ChannelUiChannel` subset the adapter reads (mutable rows
- * with in-place growth, exactly like the real channel: `row.text += chunk`,
- * `streaming` flips, tool status transitions) plus scripted helpers. No
- * agent, no session log — `submit` echoes a user row and starts an assistant
- * stream that tests drive manually.
+ * Implements the `CoordinatorChannel` surface the coordinator reads (mutable
+ * rows with in-place growth, exactly like the real channel: `row.text +=
+ * chunk`, `streaming` flips, tool status transitions) plus scripted helpers.
+ * No agent, no session log — `submit` echoes a user row and starts an
+ * assistant stream that tests drive manually.
+ *
+ * WP-05 additions:
+ *  - a real `pending` queue (steer while working enqueues placement 'steer';
+ *    interruptAndDeliver drains it) and a notifications list (`notify`),
+ *  - a folded-history pool (`foldedPool`) restored by `loadOlder` as a
+ *    PREPEND of `restored: true` rows,
+ *  - scriptable async session ops: newSession/resumeTo/rewindTo/promptRewind
+ *    all await a microtask first so the adapter's async withReset path is
+ *    genuinely exercised; results/rows are scriptable,
+ *  - scriptable command surfaces: commandList/runExternalCommand/
+ *    workspaceCommands/runWorkspaceCommand/switchWorkspace.
  */
 import type {
   Channel,
@@ -15,9 +27,16 @@ import type {
   ResumeResult,
   TokenUsage,
 } from '../../src/dsh-adapter/channel.js';
-import type { ChannelUiChannel } from '../../src/tui-v2/controllers/session-events.js';
+import type { TuiRewindMode } from '../../src/dsh-adapter/extension-events.js';
+import type {
+  TuiWorkspaceCommand,
+  TuiWorkspaceCommandResult,
+  TuiWorkspaceTarget,
+} from '../../src/dsh-adapter/workspaces.js';
+import type { LocalCommand } from '../../src/commands.js';
+import type { CoordinatorChannel } from '../../src/tui-v2/app/coordinator.js';
 
-export interface FakeChannel extends ChannelUiChannel {
+export interface FakeChannel extends CoordinatorChannel {
   /** Wake subscribers (channel.subscribe contract: version bump + listener). */
   bump(): void;
   /** Append a user row; returns it. */
@@ -32,11 +51,36 @@ export interface FakeChannel extends ChannelUiChannel {
   addToolRow(name: string, argsText?: string): ChatRow;
   /** Settle a tool row with ok/result text (in-place mutation). */
   settleTool(row: ChatRow, resultText: string): void;
-  /** Submitted texts, in order. */
+  /** Settle a tool row with an error (in-place mutation). */
+  failTool(row: ChatRow, errorText: string): void;
+  /** Flip the working flag without touching rows. */
+  setWorking(value: boolean): void;
+  /** Submitted/steered texts, in order. */
   readonly submitted: readonly string[];
   readonly cancelCount: number;
-  /** Scripting hook: runs inside submit() after the user row lands. */
+  readonly interruptCount: number;
+  /** Texts delivered through interruptAndDeliver. */
+  readonly interruptedTexts: readonly string[];
+  /** notify() calls, in order. */
+  readonly notifyLog: readonly { text: string; color?: 'error' | 'warning' | 'success' }[];
+  /** pushLocal() calls, in order. */
+  readonly localReports: readonly { title: string; lines: readonly string[] }[];
+  /** Folded older history (oldest first); loadOlder prepends from the END. */
+  foldedPool: ChatRow[];
+  /** Max rows restored per loadOlder call (default: all of foldedPool). */
+  loadOlderBatch: number;
+  /** Scripting hooks. */
   onSubmit: (() => void) | null;
+  newSessionResult: boolean;
+  resumeResult: ResumeResult;
+  /** Rows installed by resumeTo (default: keep current rows). */
+  resumeRows: ChatRow[] | null;
+  promptRewindResult: { modes: readonly TuiRewindMode[] } | 'cancel' | null;
+  commandList: LocalCommand[];
+  runExternalCommand: (name: string, rawInput: string) => Promise<string | undefined>;
+  workspaceCommands(): readonly Pick<TuiWorkspaceCommand, 'name' | 'aliases' | 'description'>[];
+  runWorkspaceCommand(name: string, input: string): Promise<TuiWorkspaceCommandResult | undefined>;
+  switchWorkspace(target: TuiWorkspaceTarget): Promise<boolean>;
 }
 
 export function createFakeChannel(): FakeChannel {
@@ -45,9 +89,17 @@ export function createFakeChannel(): FakeChannel {
   let nextRowId = 1;
   let nextSeq = 1;
   let working = false;
+  let nextNotificationId = 1;
+  let nextPendingId = 1;
+  let notifications: NotificationItem[] = [];
+  let pending: PendingMessage[] = [];
   const listeners = new Set<() => void>();
   const submitted: string[] = [];
   let cancelCount = 0;
+  let interruptCount = 0;
+  const interruptedTexts: string[] = [];
+  const notifyLog: { text: string; color?: 'error' | 'warning' | 'success' }[] = [];
+  const localReports: { title: string; lines: readonly string[] }[] = [];
 
   const bump = (): void => {
     version += 1;
@@ -87,10 +139,10 @@ export function createFakeChannel(): FakeChannel {
       return 'main';
     },
     get notifications(): readonly NotificationItem[] {
-      return [];
+      return notifications;
     },
     get pending(): readonly PendingMessage[] {
-      return [];
+      return pending;
     },
     subscribe(listener) {
       listeners.add(listener);
@@ -105,6 +157,11 @@ export function createFakeChannel(): FakeChannel {
     },
     steer(text) {
       submitted.push(text);
+      // The real channel queues messages submitted mid-turn.
+      if (working) {
+        pending = [...pending, { id: `p${nextPendingId++}`, text, placement: 'steer' }];
+        bump();
+      }
     },
     cancel() {
       cancelCount += 1;
@@ -113,28 +170,87 @@ export function createFakeChannel(): FakeChannel {
       if (streaming !== undefined) streaming.streaming = false;
       bump();
     },
+    interruptAndDeliver(texts) {
+      interruptCount += 1;
+      interruptedTexts.push(...texts);
+      const delivered = new Set(texts);
+      const claimed = pending.filter((message) => delivered.has(message.text)).length;
+      pending = [];
+      working = false;
+      const streaming = rows.find((row) => row.streaming === true);
+      if (streaming !== undefined) streaming.streaming = false;
+      bump();
+      return claimed;
+    },
     clear() {
       rows = [];
       bump();
     },
     loadOlder() {
-      return 0;
+      if (channel.foldedPool.length === 0) return 0;
+      const count = Math.min(channel.loadOlderBatch, channel.foldedPool.length);
+      const restoredRows = channel.foldedPool.splice(channel.foldedPool.length - count, count);
+      // loadOlder lands as a PREPEND (structural break → adapter snapshot-gap
+      // reset); restored rows carry the marker like the real channel's.
+      rows = [...restoredRows.map((row) => ({ ...row, restored: true })), ...rows];
+      bump();
+      return count;
     },
+    // Async session ops await a microtask first so the adapter's async
+    // withReset path (suspend-until-settle) is genuinely exercised.
     async newSession() {
+      await Promise.resolve();
+      if (!channel.newSessionResult) return false;
       rows = [];
+      pending = [];
       bump();
       return true;
     },
     async resumeTo(): Promise<ResumeResult> {
-      rows = [];
+      await Promise.resolve();
+      if (!channel.resumeResult.ok) return channel.resumeResult;
+      if (channel.resumeRows !== null) {
+        rows = channel.resumeRows;
+      }
+      pending = [];
       bump();
-      return { ok: true };
+      return channel.resumeResult;
     },
-    async rewindTo(row: ChatRow) {
+    async rewindTo(row: ChatRow, _mode?: string | null) {
+      await Promise.resolve();
       const at = rows.indexOf(row);
-      if (at >= 0) rows = rows.slice(0, at + 1);
+      if (at < 0) return null;
+      // Rewind THROUGH the message: it leaves the transcript and its text
+      // goes back to the editor draft.
+      rows = rows.slice(0, at);
       bump();
-      return null;
+      return String(row.text ?? '');
+    },
+    async promptRewind(_row: ChatRow) {
+      await Promise.resolve();
+      return channel.promptRewindResult;
+    },
+    notify(text, options = {}) {
+      const item: NotificationItem = {
+        id: nextNotificationId++,
+        text,
+        ...(options.color !== undefined ? { color: options.color } : {}),
+        timeoutMs: options.timeoutMs ?? 4000,
+      };
+      notifications = [...notifications, item];
+      notifyLog.push({ text, ...(options.color !== undefined ? { color: options.color } : {}) });
+      bump();
+      return () => {
+        notifications = notifications.filter((candidate) => candidate.id !== item.id);
+        bump();
+      };
+    },
+    pushLocal(title, lines) {
+      localReports.push({ title, lines });
+      pushRow({ kind: 'local', text: title });
+      for (const line of lines) {
+        pushRow({ kind: 'local-output', text: line });
+      }
     },
 
     bump,
@@ -170,13 +286,54 @@ export function createFakeChannel(): FakeChannel {
       row.tool.durationMs = 1;
       bump();
     },
+    failTool(row, errorText) {
+      if (row.tool === undefined) throw new Error('fake-channel: not a tool row');
+      row.tool.status = 'error';
+      row.tool.errorText = errorText;
+      bump();
+    },
+    setWorking(value) {
+      working = value;
+      bump();
+    },
     get submitted() {
       return submitted;
     },
     get cancelCount() {
       return cancelCount;
     },
+    get interruptCount() {
+      return interruptCount;
+    },
+    get interruptedTexts() {
+      return interruptedTexts;
+    },
+    get notifyLog() {
+      return notifyLog;
+    },
+    get localReports() {
+      return localReports;
+    },
+    foldedPool: [],
+    loadOlderBatch: Number.POSITIVE_INFINITY,
     onSubmit: null,
+    newSessionResult: true,
+    resumeResult: { ok: true },
+    resumeRows: null,
+    promptRewindResult: null,
+    commandList: [],
+    async runExternalCommand() {
+      return undefined;
+    },
+    workspaceCommands() {
+      return [];
+    },
+    async runWorkspaceCommand() {
+      return undefined;
+    },
+    async switchWorkspace() {
+      return true;
+    },
   };
 
   return channel;

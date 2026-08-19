@@ -1,19 +1,33 @@
 /**
- * Input controller (WP-04).
+ * Input controller (WP-04, deepened WP-05).
  *
  * Routes decoded `TerminalInputEvent`s to the prompt editor, the session
- * command surface, and the app-exit path. Owns the WP-04 Ctrl+C contract:
+ * command surface, and the app-exit path. Owns the Ctrl+C contract:
  *
- *   assistant working      → commands.cancel() + journal `app interrupt`
+ *   assistant working      → journal `app interrupt` + commands.cancel() +
+ *                            onInterrupt() (coordinator hooks streaming cancel)
  *   editor text non-empty  → clear editor + journal `editor cancel`
  *   armed (within window)  → journal `app exit` + onExitRequest()
- *   otherwise              → arm for ctrlCArmMs
+ *   otherwise              → arm for ctrlCArmMs + onExitArm() (coordinator
+ *                            hooks the "press again to exit" notification)
+ *
+ * WP-05 additions:
+ *   - Escape while working  → journal `app interrupt` + (commands.interrupt ??
+ *                            commands.cancel)() + onInterrupt(). `interrupt`
+ *                            is the richer channel op (interrupt-and-deliver
+ *                            pending texts); cancel is the fallback.
+ *   - Paste payloads go through `editor.insertPaste` when available: an
+ *                            atomic insertion that never triggers submit
+ *                            (pasted newlines stay text).
+ *   - Submissions are mirrored into a bounded per-controller history
+ *                            (newest-first, consecutive-deduped, cap 64) and
+ *                            forwarded to the editor's own addToHistory when
+ *                            present.
  *
  * The editor itself stays the single owner of editor text: this controller
- * journals every editor command as an `input/command` event (the reducer
- * journals it; model editor state is a WP-05 seam) and forwards submit to
- * the channel commands. It holds no UI truth beyond the Ctrl+C arming
- * timestamp.
+ * journals every editor command as an `input/command` event and forwards
+ * submit to the channel commands. It holds no UI truth beyond the Ctrl+C
+ * arming timestamp and the history mirror.
  */
 
 import type { AppEvent } from '../model/events.js';
@@ -27,12 +41,28 @@ export interface InputEditorBinding {
   readonly getText: () => string;
   /** Clear editor text (Ctrl+C on non-empty draft). */
   readonly clearText: () => void;
+  /**
+   * Atomic paste insertion (never triggers submit, keeps pasted newlines as
+   * text). When absent the controller falls back to handleRawInput.
+   */
+  readonly insertPaste?: (text: string) => void;
+  /** UTF-16 offset of the cursor in getText() (coordinator mirror seam). */
+  readonly getCursorOffset?: () => number;
+  /** Push a submitted line into the editor's own history (dedup/cap inside). */
+  readonly addToHistory?: (text: string) => void;
+  /** Replace the editor draft (rewind refill). */
+  readonly setDraft?: (text: string) => void;
 }
 
 /** Minimal session command surface (subset of ChannelCommands). */
 export interface InputCommandSink {
   readonly submit: (text: string) => void;
   readonly cancel: () => void;
+  /**
+   * Working-state interrupt (WP-05): the channel's interrupt-and-deliver —
+   * pending queued texts are delivered with the abort. Falls back to cancel.
+   */
+  readonly interrupt?: () => void;
 }
 
 export interface InputControllerOptions {
@@ -51,6 +81,13 @@ export interface InputControllerOptions {
   readonly isWorking: () => boolean;
   /** Called after the exit journal event when the armed second Ctrl+C lands. */
   readonly onExitRequest: () => void;
+  /**
+   * Working-state interrupt hook (WP-05): fired for Ctrl+C AND Escape while
+   * working; the coordinator hooks streaming.cancelStream(streamingRowId).
+   */
+  readonly onInterrupt?: () => void;
+  /** Armed-Ctrl+C hook (WP-05): the coordinator surfaces the notify. */
+  readonly onExitArm?: () => void;
   /** Arming window for the double-Ctrl+C exit. Default 2000ms. */
   readonly ctrlCArmMs?: number;
 }
@@ -63,6 +100,7 @@ export interface InputControllerDiagnostics {
   readonly ctrlCClears: number;
   readonly ctrlCArms: number;
   readonly exitRequests: number;
+  readonly escapeInterrupts: number;
   readonly submittedCommands: number;
 }
 
@@ -71,10 +109,17 @@ export interface InputController {
   readonly handleEvent: (event: TerminalInputEvent) => void;
   /** Entry point for editor commands emitted by the prompt editor component. */
   readonly handleEditorCommand: (command: InputCommand) => void;
+  /**
+   * Submission history mirror (newest-first, consecutive-deduped, cap 64).
+   * The editor's own history stays authoritative for Up/Down navigation;
+   * this mirror exists for tests and future model journaling (WP-05b).
+   */
+  readonly history: () => readonly string[];
   readonly diagnostics: () => InputControllerDiagnostics;
 }
 
 const DEFAULT_CTRL_C_ARM_MS = 2000;
+const HISTORY_CAP = 64;
 
 export function createInputController(options: InputControllerOptions): InputController {
   const armMs = options.ctrlCArmMs ?? DEFAULT_CTRL_C_ARM_MS;
@@ -88,8 +133,11 @@ export function createInputController(options: InputControllerOptions): InputCon
     ctrlCClears: 0,
     ctrlCArms: 0,
     exitRequests: 0,
+    escapeInterrupts: 0,
     submittedCommands: 0,
   };
+  /** Submission history mirror: newest first, consecutive duplicates merged. */
+  const historyMirror: string[] = [];
 
   const journal = (command: InputCommand): void => {
     journalSeq += 1;
@@ -110,6 +158,7 @@ export function createInputController(options: InputControllerOptions): InputCon
       disarm();
       journal({ type: 'app', command: 'interrupt' });
       options.commands.cancel();
+      options.onInterrupt?.();
       return;
     }
     if (options.editor.getText().length > 0) {
@@ -129,6 +178,22 @@ export function createInputController(options: InputControllerOptions): InputCon
     }
     counts.ctrlCArms += 1;
     armedAt = now;
+    options.onExitArm?.();
+  };
+
+  /** Escape while working: interrupt (delivering pending texts) or cancel. */
+  const handleEscape = (): void => {
+    if (!options.isWorking()) return;
+    counts.escapeInterrupts += 1;
+    disarm();
+    journal({ type: 'app', command: 'interrupt' });
+    const interrupt = options.commands.interrupt;
+    if (interrupt !== undefined) {
+      interrupt();
+    } else {
+      options.commands.cancel();
+    }
+    options.onInterrupt?.();
   };
 
   const handleEvent = (event: TerminalInputEvent): void => {
@@ -139,6 +204,10 @@ export function createInputController(options: InputControllerOptions): InputCon
         handleCtrlC();
         return;
       }
+      if (payload.key === 'escape' && options.isWorking()) {
+        handleEscape();
+        return;
+      }
       disarm();
       options.editor.handleRawInput(payload.raw);
       return;
@@ -146,11 +215,19 @@ export function createInputController(options: InputControllerOptions): InputCon
     if (event.kind === 'paste') {
       counts.pasteEvents += 1;
       disarm();
-      options.editor.handleRawInput((event.payload as PastePayload).text);
+      const text = (event.payload as PastePayload).text;
+      // insertPaste is atomic and never triggers submit; handleRawInput would
+      // replay a pasted '\r' as Enter.
+      const insertPaste = options.editor.insertPaste;
+      if (insertPaste !== undefined) {
+        insertPaste(text);
+      } else {
+        options.editor.handleRawInput(text);
+      }
       return;
     }
     // resize/mouse/focus/signal/query-response are routed elsewhere (or are
-    // not WP-04 surface); count them so dropped input is observable.
+    // not WP-05 surface); count them so dropped input is observable.
     counts.ignoredEvents += 1;
   };
 
@@ -160,7 +237,13 @@ export function createInputController(options: InputControllerOptions): InputCon
       const text = (command.text ?? '').trim();
       if (text.length > 0) {
         counts.submittedCommands += 1;
-        options.commands.submit(command.text ?? '');
+        const raw = command.text ?? '';
+        if (historyMirror[0] !== raw) {
+          historyMirror.unshift(raw);
+          if (historyMirror.length > HISTORY_CAP) historyMirror.length = HISTORY_CAP;
+        }
+        options.editor.addToHistory?.(raw);
+        options.commands.submit(raw);
       }
     }
   };
@@ -168,6 +251,7 @@ export function createInputController(options: InputControllerOptions): InputCon
   return {
     handleEvent,
     handleEditorCommand,
+    history: () => [...historyMirror],
     diagnostics: () => ({ ...counts }),
   };
 }

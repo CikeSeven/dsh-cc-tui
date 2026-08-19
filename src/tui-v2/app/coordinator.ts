@@ -22,12 +22,23 @@
  *    (NOT `createPiTerminalStack`, whose fixed wiring forwards raw input to
  *    the vendored TUI): resize → lifecycle controller, key/paste → input
  *    controller, signal/query-response → counted and dropped (WP-05 surface).
- *  - Model editor state is never written by events (WP-05 seam): the
- *    coordinator mirrors the editor text (`editorMirror`) and syncs the
- *    singleton PromptEditor from `{...selectEditorView(state), text: mirror}`.
+ *  - Model editor state is never written by events (WP-05b seam): the
+ *    coordinator mirrors the editor text (`editorMirror`) and the TRUE
+ *    cursor (the vendored editor's UTF-16 offset) and syncs the singleton
+ *    PromptEditor from `{...selectEditorView(state), text, cursor}`.
+ *  - Dock dynamics (status/notifications/pending) are NOT AppEvents: the
+ *    adapter publishes a deduped DockStoreView via onDockChange and the
+ *    coordinator merges that mirror into the DockView at render time (the
+ *    canonical state deliberately excludes them, §5.2).
  *  - Every event producer shares one EventMetaFactory seq space; the
  *    streaming controller re-sequences onto the contiguous outgoing order
  *    (cancel drops would otherwise gap the reducer's seq check).
+ *  - WP-05 controllers: replay (session navigation/rewind/update-restart),
+ *    commands (slash routing), scrolling (wheel/keys/loadOlder anchor). Input
+ *    routing order: resize → lifecycle; mouse wheel → scrolling; scroll keys
+ *    (pageUp/pageDown/ctrl+home/ctrl+end) → scrolling BEFORE the editor (the
+ *    vendored editor's own pageScroll yields to transcript scrolling);
+ *    everything else → input controller.
  */
 import { randomUUID } from 'node:crypto';
 import type { Writable } from 'node:stream';
@@ -45,7 +56,9 @@ import {
   selectEditorView,
   selectStatusLine,
   selectTranscriptView,
+  type DockView,
   type EditorView,
+  type StatusLineView,
 } from '../model/selectors.js';
 import { initialUiState, type UiState } from '../model/state.js';
 import { createBaseRenderer, type BaseRenderer } from '../renderer/base-renderer.js';
@@ -64,7 +77,13 @@ import { asRowBlocks } from '../components/transcript/row-view.js';
 import { createToolRow } from '../components/transcript/tool-row.js';
 import { createUserMessage } from '../components/transcript/user-message.js';
 import { PiTuiAltScreenBackend } from '../terminal/alt-screen.js';
-import { createInputSource, type InputStdin, type ResizePayload } from '../terminal/input.js';
+import {
+  createInputSource,
+  type InputStdin,
+  type KeyPayload,
+  type MousePayload,
+  type ResizePayload,
+} from '../terminal/input.js';
 import {
   createTerminalLifecycle,
   type LifecycleStopReason,
@@ -75,16 +94,25 @@ import { PiTuiMainScreenBackend } from '../terminal/main-screen.js';
 import { createPiTerminalAdapter, type PiTerminalStack } from '../terminal/pi-adapter.js';
 import type { TerminalProfile } from '../terminal/profile.js';
 import { createTerminalWriter } from '../terminal/writer.js';
+import type { Channel } from '../../dsh-adapter/channel.js';
 import {
   createChannelUiAdapter,
   createEventMetaFactory,
   type ChannelCommands,
   type ChannelUiAdapter,
   type ChannelUiChannel,
+  type DockStoreView,
 } from '../controllers/session-events.js';
 import { createInputController, type InputEditorBinding } from '../controllers/input.js';
 import { createStreamingController } from '../controllers/streaming.js';
 import { createTerminalLifecycleController } from '../controllers/terminal-lifecycle.js';
+import { createReplayController, type ReplayController } from '../controllers/replay.js';
+import { createScrollingController, type ScrollingController } from '../controllers/scrolling.js';
+import {
+  createCommandsController,
+  type CommandChannel,
+  type CommandsController,
+} from '../controllers/commands.js';
 import { linesToFrame } from './lines-frame.js';
 import { selectTerminalMode } from './modes.js';
 
@@ -96,8 +124,16 @@ export interface CoordinatorDiagnostic {
   readonly details?: Record<string, unknown>;
 }
 
+/**
+ * Channel surface the coordinator needs: the adapter's narrow UI channel plus
+ * the WP-05 command/dock/notify seams (still a structural subset of Channel).
+ */
+export type CoordinatorChannel = ChannelUiChannel &
+  CommandChannel &
+  Pick<Channel, 'promptRewind' | 'interruptAndDeliver' | 'notify'>;
+
 export interface TuiV2CoordinatorOptions {
-  readonly channel: ChannelUiChannel;
+  readonly channel: CoordinatorChannel;
   readonly stdin: InputStdin;
   /** Dimensions (+ TTY flag) source; `process.stdout` in production. */
   readonly stdout: { readonly columns?: number | undefined; readonly rows?: number | undefined; readonly isTTY?: boolean };
@@ -133,6 +169,19 @@ export interface CoordinatorDiagnostics {
   readonly streaming: ReturnType<ReturnType<typeof createStreamingController>['diagnostics']>;
   readonly input: ReturnType<ReturnType<typeof createInputController>['diagnostics']>;
   readonly terminal: ReturnType<ReturnType<typeof createTerminalLifecycleController>['diagnostics']>;
+  readonly replay: ReturnType<ReplayController['diagnostics']>;
+  readonly scrolling: ReturnType<ScrollingController['diagnostics']>;
+  readonly commands: ReturnType<CommandsController['diagnostics']>;
+}
+
+/** WP-05 controller handles (tests/verify introspection). */
+export interface CoordinatorControllers {
+  readonly input: ReturnType<typeof createInputController>;
+  readonly streaming: ReturnType<typeof createStreamingController>;
+  readonly terminal: ReturnType<typeof createTerminalLifecycleController>;
+  readonly replay: ReplayController;
+  readonly scrolling: ScrollingController;
+  readonly commands: CommandsController;
 }
 
 export interface TuiV2Coordinator {
@@ -144,6 +193,10 @@ export interface TuiV2Coordinator {
   readonly commands: ChannelCommands;
   /** Current immutable UiState (test/verify introspection). */
   readonly state: UiState;
+  /** WP-05 controller handles. */
+  readonly controllers: CoordinatorControllers;
+  /** Latest dock mirror published by the adapter (null until first flush). */
+  readonly dockMirror: DockStoreView | null;
   diagnostics(): CoordinatorDiagnostics;
 }
 
@@ -251,20 +304,36 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   const editorView = (): EditorView => ({
     ...selectEditorView(state),
     text: editorMirror.text,
-    cursor: editorMirror.text.length,
+    // True cursor (WP-05): the vendored editor owns it; the WP-04
+    // `text.length` fudge is gone.
+    cursor: promptEditor.getCursorUtf16Offset(),
   });
+
+  const syncEditor = (): void => {
+    syncingEditorView = true;
+    try {
+      promptEditor.syncFromView(editorView());
+    } finally {
+      syncingEditorView = false;
+    }
+  };
 
   const editorBinding: InputEditorBinding = {
     handleRawInput: (raw) => promptEditor.handleInput?.(raw),
     getText: () => promptEditor.getText(),
     clearText: () => {
       editorMirror.text = '';
-      syncingEditorView = true;
-      try {
-        promptEditor.syncFromView(editorView());
-      } finally {
-        syncingEditorView = false;
-      }
+      syncEditor();
+    },
+    insertPaste: (text) => {
+      promptEditor.insertText(text);
+      editorMirror.text = promptEditor.getText();
+    },
+    getCursorOffset: () => promptEditor.getCursorUtf16Offset(),
+    addToHistory: (text) => promptEditor.addToHistory(text),
+    setDraft: (text) => {
+      editorMirror.text = text;
+      promptEditor.setDraft(text);
     },
   };
 
@@ -289,12 +358,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     },
     dock: {
       editor: (view) => {
-        syncingEditorView = true;
-        try {
-          promptEditor.syncFromView({ ...view, text: editorMirror.text, cursor: editorMirror.text.length });
-        } finally {
-          syncingEditorView = false;
-        }
+        void view; // the mirrored text/cursor come from editorView()
+        syncEditor();
         return promptEditor;
       },
       status: (view) => createStatusLine(view, { profile, theme }),
@@ -362,12 +427,18 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     onDiagnostic: (code, data) => diagnostic(`stream/${code}`, code, data),
   });
 
+  let dockMirror: DockStoreView | null = null;
+
   const adapter = createChannelUiAdapter({
     channel,
     meta,
     dispatch: (event) => streamingController.ingest(event),
     ...(options.initialResetReason !== undefined ? { initialResetReason: options.initialResetReason } : {}),
     ...(options.welcomeText !== undefined ? { welcomeText: options.welcomeText } : {}),
+    onDockChange: (dock) => {
+      dockMirror = dock;
+      if (phase === 'active') scheduler.requestRender('notify', getScheduledState);
+    },
     onDiagnostic: (d) => diagnostic(`adapter/${d.code}`, d.message),
   });
 
@@ -391,18 +462,82 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     },
   });
 
+  // ----------------------------------------------------- WP-05 controllers
+
+  const notify = (text: string, notifyOptions?: { color?: 'error' | 'warning' | 'success' }): void => {
+    channel.notify(text, notifyOptions);
+  };
+
+  const replayController = createReplayController({
+    dispatch: (event) => streamingController.ingest(event),
+    nextMeta: (sourceSeq) => meta.next('session', sourceSeq),
+    commands: adapter.commands,
+    chatRowForRowId: (rowId) => adapter.chatRowForRowId(rowId),
+    promptRewind: (row) => channel.promptRewind(row),
+    getState: () => state,
+    setEditorDraft: (text) => editorBinding.setDraft?.(text),
+    notify,
+    requestStop: (reason) => {
+      void stop(reason);
+    },
+  });
+
+  const commandsController = createCommandsController({
+    dispatch: (event) => streamingController.ingest(event),
+    nextMeta: (sourceSeq) => meta.next('input', sourceSeq),
+    channel,
+    replay: replayController,
+    submitToModel: (text) => adapter.commands.submit(text),
+    steerToModel: (text) => adapter.commands.steer(text),
+    notify,
+  });
+
+  const scrollingController = createScrollingController({
+    dispatch: (event) => streamingController.ingest(event),
+    nextMeta: (sourceSeq) => meta.next('input', sourceSeq),
+    getState: () => state,
+    commands: adapter.commands,
+    bridge: {
+      // Pin the render anchor to the current top visible line; the renderer's
+      // HeightIndex resolves it across the loadOlder prepend (WP-06 refines
+      // this to physical-line precision).
+      captureAnchor: () => baseRenderer.captureAnchorAt(0),
+    },
+    onDiagnostic: (d) => diagnostic(`scroll/${d.code}`, d.message),
+  });
+
   const inputController = createInputController({
     clock,
     dispatch: (event) => streamingController.ingest(event),
     nextMeta: (sourceSeq) => meta.next('input', sourceSeq),
     editor: editorBinding,
     commands: {
-      submit: (text) => adapter.commands.submit(text),
+      submit: (text) => {
+        commandsController.handleSubmittedText(text);
+      },
       cancel: () => adapter.commands.cancel(),
+      interrupt: () => {
+        // v1 Esc semantics: pending queued messages are delivered with the
+        // abort; otherwise a plain cancel.
+        const texts = channel.pending.map((message) => message.text);
+        if (texts.length > 0) {
+          const delivered = channel.interruptAndDeliver(texts);
+          channel.notify(`Interrupted — delivered ${delivered} queued message(s)`);
+        } else {
+          adapter.commands.cancel();
+        }
+      },
     },
     isWorking: () => channel.working === true,
     onExitRequest: () => {
       void stop('user-exit');
+    },
+    onInterrupt: () => {
+      const rowId = state.session.streamingRowId;
+      if (rowId !== null) streamingController.cancelStream(rowId);
+    },
+    onExitArm: () => {
+      channel.notify('Press Ctrl+C again to exit', { color: 'warning' });
     },
   });
 
@@ -416,10 +551,24 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         if (event.kind === 'resize') {
           const payload = event.payload as ResizePayload;
           lifecycleController.handleResize(payload.columns, payload.rows);
-        } else if (event.kind === 'key' || event.kind === 'paste') {
+        } else if (event.kind === 'mouse') {
+          const payload = event.payload as MousePayload;
+          // Wheel events scroll the transcript; other mouse events are
+          // counted-and-dropped (WP-05b surface).
+          if (payload.action === 'wheel' && (payload.wheel === 'up' || payload.wheel === 'down')) {
+            if (!scrollingController.handleWheel(payload.wheel)) inputController.handleEvent(event);
+          } else {
+            inputController.handleEvent(event);
+          }
+        } else if (event.kind === 'key') {
+          const payload = event.payload as KeyPayload;
+          // Scroll keys are transcript-bound and preempt the editor (the
+          // vendored editor's pageScroll yields); ctrl+c/escape stay with
+          // the input controller.
+          if (payload.eventType !== 'release' && scrollingController.handleKey(payload.key)) return;
           inputController.handleEvent(event);
         } else {
-          inputController.handleEvent(event); // counted as ignored
+          inputController.handleEvent(event);
         }
       } catch (error) {
         diagnostic('input/route-error', error instanceof Error ? error.message : String(error));
@@ -465,16 +614,57 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
 
   // ------------------------------------------------------------ render loop
 
+  /**
+   * Merge the adapter's dock mirror over the model dock state. The model dock
+   * is only ever cleared by resets (canonical state excludes dock dynamics,
+   * §5.2); the mirror carries live status/notifications/pending (WP-05).
+   */
+  const mergedStatusLine = (): StatusLineView => {
+    const base = selectStatusLine(state);
+    if (dockMirror === null) return base;
+    return {
+      ...base,
+      model: dockMirror.status.model === '' ? base.model : dockMirror.status.model,
+      tokens: dockMirror.status.tokens,
+      cwd: dockMirror.status.cwd === '' ? base.cwd : dockMirror.status.cwd,
+      branch: dockMirror.status.branch ?? base.branch,
+      extras: {
+        ...base.extras,
+        status: dockMirror.status.status,
+        working: dockMirror.status.working,
+      },
+    };
+  };
+
+  const mergedDockView = (): DockView => {
+    const base = selectDockView(state);
+    if (dockMirror === null) return base;
+    return {
+      ...base,
+      status: {
+        model: dockMirror.status.model === '' ? undefined : dockMirror.status.model,
+        tokens: dockMirror.status.tokens,
+        cwd: dockMirror.status.cwd === '' ? undefined : dockMirror.status.cwd,
+        ...(dockMirror.status.branch !== null ? { branch: dockMirror.status.branch } : {}),
+        extras: { status: dockMirror.status.status, working: dockMirror.status.working },
+      },
+      pendingMessages: dockMirror.pending.map((message) => message.text),
+      notifications: dockMirror.notifications,
+    };
+  };
+
   async function renderOnce(_scheduled: ScheduledFrame, _priority: RenderPriority): Promise<void> {
     // The scheduler serializes renders; a thrown render would strand its
     // pump (and reject an unhandled promise), so this callback never throws.
     try {
       const startedAt = clock.now();
+      const dock = mergedDockView();
+      const status = mergedStatusLine();
       const output = baseRenderer.render({
         transcript: selectTranscriptView(state),
-        dock: selectDockView(state),
+        dock,
         editor: editorView(),
-        status: selectStatusLine(state),
+        status,
         width: state.viewport.width,
         height: state.viewport.height,
         sessionEpoch: state.session.sessionEpoch,
@@ -583,12 +773,23 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     get state() {
       return state;
     },
+    get dockMirror() {
+      return dockMirror;
+    },
     start,
     stop,
     awaitStop: () => stopPromise ?? Promise.resolve(),
     adapter,
     get commands() {
       return adapter.commands;
+    },
+    controllers: {
+      input: inputController,
+      streaming: streamingController,
+      terminal: lifecycleController,
+      replay: replayController,
+      scrolling: scrollingController,
+      commands: commandsController,
     },
     diagnostics: () => ({
       phase,
@@ -603,6 +804,9 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       streaming: streamingController.diagnostics(),
       input: inputController.diagnostics(),
       terminal: lifecycleController.diagnostics(),
+      replay: replayController.diagnostics(),
+      scrolling: scrollingController.diagnostics(),
+      commands: commandsController.diagnostics(),
     }),
   };
 }

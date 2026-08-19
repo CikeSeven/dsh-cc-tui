@@ -17,9 +17,12 @@
  *    `requestRender()` are exercised, so a minimal stub is injected. This is
  *    the single sanctioned narrowing cast on the facade boundary.
  *
- * Deviation (registered for WP-05): `syncFromView` maps history by identity
- * only and ignores the model's UTF-16 cursor offset (the vendored editor owns
- * its cursor); precise cursor sync lands with the input controller.
+ * WP-05 cursor sync: the wrapper now exposes the vendored cursor as both a
+ * `{line, col}` pair and a UTF-16 offset into `getText()`
+ * (`getCursorUtf16Offset`), so the coordinator can mirror a TRUE cursor
+ * position into the EditorView instead of the WP-04 `text.length` fudge.
+ * `syncFromView` still maps text/history by identity only — the vendored
+ * editor remains the cursor's owner; the model never drives it back.
  */
 import type { EditorView } from '../../model/selectors.js'
 import type { InputCommand } from '../../model/schema.js'
@@ -57,6 +60,16 @@ export interface PromptEditor extends Component, Focusable {
   syncFromView(view: EditorView): void
   /** Current plain text. */
   getText(): string
+  /** Vendored cursor position (col is a UTF-16 code-unit index). */
+  getCursor(): { line: number; col: number }
+  /** UTF-16 offset of the cursor in getText() (lines joined with '\n'). */
+  getCursorUtf16Offset(): number
+  /** Atomic insertion at the cursor (paste path; never triggers submit). */
+  insertText(text: string): void
+  /** Push a submitted line into the vendored history (dedup/cap inside). */
+  addToHistory(text: string): void
+  /** Replace the whole draft; the cursor lands at the end. */
+  setDraft(text: string): void
 }
 
 const MARKER = CURSOR_MARKER // '\x1b_pi:c\x07' — zero-width APC cursor marker
@@ -132,6 +145,33 @@ export function createPromptEditor(options: PromptEditorOptions): PromptEditor {
 
     getText() {
       return editor.getText()
+    },
+
+    getCursor() {
+      return editor.getCursor()
+    },
+
+    getCursorUtf16Offset() {
+      const { line, col } = editor.getCursor()
+      const lines = editor.getLines()
+      let offset = 0
+      for (let i = 0; i < line && i < lines.length; i++) {
+        offset += (lines[i] as string).length + 1 // + '\n'
+      }
+      return offset + col
+    },
+
+    insertText(text) {
+      editor.insertTextAtCursor(text)
+    },
+
+    addToHistory(text) {
+      editor.addToHistory(text)
+    },
+
+    setDraft(text) {
+      if (editor.getText() !== text) editor.setText(text)
+      lastEmittedText = editor.getText()
     },
 
     render(width: number): string[] {

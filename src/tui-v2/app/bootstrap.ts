@@ -14,17 +14,18 @@ import type { Writable } from 'node:stream';
 
 import type { Clock } from '../model/schema.js';
 import type { TerminalMode } from '../model/schema.js';
-import type { ChannelCommands, ChannelUiAdapter, ChannelUiChannel } from '../controllers/session-events.js';
+import type { ChannelCommands, ChannelUiAdapter } from '../controllers/session-events.js';
 import type { InputStdin } from '../terminal/input.js';
 import { unknownConservativeDefaults, type TerminalProfile } from '../terminal/profile.js';
 import {
   createTuiV2Coordinator,
+  type CoordinatorChannel,
   type CoordinatorDiagnostic,
   type TuiV2Coordinator,
 } from './coordinator.js';
 
 export interface TuiV2AppOptions {
-  readonly channel: ChannelUiChannel;
+  readonly channel: CoordinatorChannel;
   readonly stdin?: InputStdin;
   readonly stdout?: NodeJS.WriteStream;
   /** Present for interface completeness; the skeleton does not write it. */
