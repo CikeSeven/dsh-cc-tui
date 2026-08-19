@@ -1,0 +1,282 @@
+{
+  "manifestVersion": 1,
+  "repo": "https://github.com/earendil-works/pi",
+  "commit": "086c32e74530564922d011ade23ff582c9d63116",
+  "packageVersion": "0.84.2",
+  "license": "MIT",
+  "vendoredAt": "2026-08-19T11:17:28.854Z",
+  "files": [
+    {
+      "path": "src/tui-v2/vendor/pi-tui/LICENSE",
+      "sha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48",
+      "upstreamSha256": "0457f5bcec3b3b211605dfb5d1a49042fd638f3686a410fe099c24a25af13c48"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/darwin/build.sh",
+      "sha256": "c78a35b137b58c2972587959b339a8bea99ec094a8fb6598cd860096bd1e19ae",
+      "upstreamSha256": "c78a35b137b58c2972587959b339a8bea99ec094a8fb6598cd860096bd1e19ae"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/darwin/prebuilds/darwin-arm64/darwin-modifiers.node",
+      "sha256": "7657cd6bd999227b5c8ed17a4c78eb50fa414835295636fddef6ec1567623a07",
+      "upstreamSha256": "7657cd6bd999227b5c8ed17a4c78eb50fa414835295636fddef6ec1567623a07"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/darwin/prebuilds/darwin-x64/darwin-modifiers.node",
+      "sha256": "0e51e550acf559bf33bdbbdf047f69168b64694f46d27cb4195928b26be0ca0b",
+      "upstreamSha256": "0e51e550acf559bf33bdbbdf047f69168b64694f46d27cb4195928b26be0ca0b"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/darwin/README.md",
+      "sha256": "610b5d0ad15af4ac467242bded1786e19812b1d1aed9c6ee1e64d1e31aebe6c7",
+      "upstreamSha256": "610b5d0ad15af4ac467242bded1786e19812b1d1aed9c6ee1e64d1e31aebe6c7"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/darwin/src/darwin-modifiers.c",
+      "sha256": "e8205db1e31244aa3bda5fec0f120fdeb819f176b9e1131718e4142ed921e1cc",
+      "upstreamSha256": "e8205db1e31244aa3bda5fec0f120fdeb819f176b9e1131718e4142ed921e1cc"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/win32/build.mjs",
+      "sha256": "cc6d74fed8eac484f7bf93073896c32876806b3d6c8e92d42252cecc1ccaa154",
+      "upstreamSha256": "cc6d74fed8eac484f7bf93073896c32876806b3d6c8e92d42252cecc1ccaa154"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/win32/prebuilds/win32-arm64/win32-console-mode.node",
+      "sha256": "5bc2f926c6a663df6c8b70d3387cab72a9387172e27eb598e93b490d96a5074e",
+      "upstreamSha256": "5bc2f926c6a663df6c8b70d3387cab72a9387172e27eb598e93b490d96a5074e"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/win32/prebuilds/win32-x64/win32-console-mode.node",
+      "sha256": "e40df72050ed02d451dee887b2e2a7408d7de27c5f483af8c489801bb3ae098d",
+      "upstreamSha256": "e40df72050ed02d451dee887b2e2a7408d7de27c5f483af8c489801bb3ae098d"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/win32/README.md",
+      "sha256": "be2998fa695ffa7974104b0a045fbcfdaa7380e6e98c270402b50acdd3ef8f3c",
+      "upstreamSha256": "be2998fa695ffa7974104b0a045fbcfdaa7380e6e98c270402b50acdd3ef8f3c"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/native/win32/src/win32-console-mode.c",
+      "sha256": "443aa6d3fffcc460784e21b9c9395fcd3bac1c89145d2211cd33c6cfa4b3d552",
+      "upstreamSha256": "443aa6d3fffcc460784e21b9c9395fcd3bac1c89145d2211cd33c6cfa4b3d552"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/NOTICE",
+      "sha256": "6512691468634bbf6118cae50cfc0d571db631b67c2d1ea8f7fbd4f19cd3c4e2",
+      "upstreamSha256": null
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/PATCH-LEDGER.md",
+      "sha256": "1ada04972938610032a5b030dfcc0e9601d6904514bfcd78081aef6cec004da8",
+      "upstreamSha256": null
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/alt-screen-search.ts",
+      "sha256": "8ea6c7a6e86e6eea57a289185fb296e1db5cc6326d2adb9f7f945644db8ae1d3",
+      "upstreamSha256": "5d59497baa217fe475c5b2f0539e02ed6261a1600becfffbb038d3ad377d4fa6"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/autocomplete.ts",
+      "sha256": "cf6637602e3b27786824ec7efdd639bdc64fa13434dd87ac59d8aee18570e2a5",
+      "upstreamSha256": "10f1e74efb9aa7dce770f450c6ea436a5daadaf22ec98cdb015bd283ae212db4"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/alt-screen-flash.ts",
+      "sha256": "09f331fbc426379e5c915df16ef001e02226d5462226ffc03a757a56500cd50b",
+      "upstreamSha256": "6d341546b59958e93e4d33fdc1766b10d13c98a779031e2c01b827f0a4c6e30c"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/box.ts",
+      "sha256": "8ef6766a1c4470986c88c3e3f9d285efdd27290154589f96947b87f3cc0fe0fc",
+      "upstreamSha256": "03119c2c97690fb0904edde784cc2c2a68a6ed80c4ba559bb715cab1daca3104"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/editor.ts",
+      "sha256": "9e6ad433922613567dd46664b5b41d98d5c2a1fc4c75483f91049899af611bca",
+      "upstreamSha256": "b2379d45aef41c4c19dcfab6c423a4242d3ab51310fe4df376a0a5e5da835845"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/h-stack.ts",
+      "sha256": "213b360b316bad8fc92c31060c57e7fb072104716c3d8f7275175aeff009211e",
+      "upstreamSha256": "6622e1e2605e500a420c3cdf3ffcae0548b2d86ec496a0f6bf1dd5c95aeb0b6b"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/input.ts",
+      "sha256": "db372e6e42f68d60b08296a6f26c92002f4590757736040b3b699ff86152f802",
+      "upstreamSha256": "607060233925fe7d33236e8bb5a7a6283d3b83c05e4f03f3bb6e8b856285c290"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/scroll-view.ts",
+      "sha256": "d41db3d69838655627e9672b037248cdaa22659803e4b93c63e8df04d5f2ba3c",
+      "upstreamSha256": "ba6326a8496533cc6618d8401e18d399b39817b83544b6b083dab91570b8e81f"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/select-list.ts",
+      "sha256": "531c91377ed5464bd4677c3a17601321da60e48e412765e99d2d7b3716967f7b",
+      "upstreamSha256": "a2fb6b65ea8fd96569343fa5948dabb35893809daadfb45a35472d179855e340"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/spacer.ts",
+      "sha256": "5fda071cd8c8585e138353fcd461fd5029bf29640431c89f1965a416bc271c1b",
+      "upstreamSha256": "b511acec1d33885dad23e7ab2108b2d04dff0589b3bfda53b1f7458be4381e66"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/stack.ts",
+      "sha256": "2b5c92a65767fea38ac0d3f5509df33823fed45b6b66f84bc66704b3219a4eb9",
+      "upstreamSha256": "93208d326fa43431b930eaa3250a1e19747063d696e97ec2f002f5feaa54fc18"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/text.ts",
+      "sha256": "9bdf10d0c41c83160db819728d893638365d14c4fb2fc80746b71c43846e9b62",
+      "upstreamSha256": "3765832fca4db0626fa2b787500912f3505c858ed147cb0beff42bfa15087108"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/truncated-text.ts",
+      "sha256": "907efd5d232b2fee5f96211df066e5d54b7cf8b6d04d39ebb1a8794c0f18da6f",
+      "upstreamSha256": "c383487099d1864b51493a5838dd28a1bd3e5e440a675ec1dbcaf0177534fad0"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/components/v-stack.ts",
+      "sha256": "7469483b25014ea94c901f474b17b888991ab360483d60fcea8b91d8cd5c0253",
+      "upstreamSha256": "0f36c9417bfffe5f6b9cc5fd40d420390cf9bebae70a073a409ac5f931f1f813"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/editor-component.ts",
+      "sha256": "2e2144b5f936f5bc6b2196ff5a5ca5fe578ff6e298fc3a20c9e9e75104fa7602",
+      "upstreamSha256": "0e40ba454b74e2ce21dfc6d831c185e5fb5619b0987fa158be98ed98564e8716"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/fuzzy.ts",
+      "sha256": "8286a6feb16672e52114df5300369d20f48e27c9e87da2dc87294ea3b1223b8e",
+      "upstreamSha256": "8286a6feb16672e52114df5300369d20f48e27c9e87da2dc87294ea3b1223b8e"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/keybindings.ts",
+      "sha256": "f6010314afa3f6f85724365be757fe30afe85a2a7c5d73940bc8f4203695eb8b",
+      "upstreamSha256": "64befd284543a016918517c729674d3ef9af1890572560fd2a4ecf534b46d7e2"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/keys.ts",
+      "sha256": "b972facce4233a4623239fc38029e28cae15d0fb326558c0c09dc02cf4345fa7",
+      "upstreamSha256": "b972facce4233a4623239fc38029e28cae15d0fb326558c0c09dc02cf4345fa7"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/kill-ring.ts",
+      "sha256": "d829ae816560b12d2800a38db9f7278f76d9ef43d0e53e004a86add9b56c559a",
+      "upstreamSha256": "d829ae816560b12d2800a38db9f7278f76d9ef43d0e53e004a86add9b56c559a"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/layout-node.ts",
+      "sha256": "db26cb8808a8a4e62a8c828d240332ed4d02e5fe0d49b6a18e92980dc0025819",
+      "upstreamSha256": "31dd68c9edafdc4f882bbb6c16f8deb1c514111020b647f0037b34d6b8c70a85"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/layout.ts",
+      "sha256": "ab0d85c476c47c48f5ec7c354a90946f088b3a9fae4129f8535070ec44718f64",
+      "upstreamSha256": "51616aebe6a4811279b61a8ed0d289750c3b96b04a61e4ec6fcab7e42c8a6883"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/native-modifiers.ts",
+      "sha256": "6f65028def03cb75fb127fecf0ec6078328e1141565c563ab5dd38026dca0329",
+      "upstreamSha256": "6f65028def03cb75fb127fecf0ec6078328e1141565c563ab5dd38026dca0329"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/stdin-buffer.ts",
+      "sha256": "a96af34c1c304a033b482b57ded426f4a51a5d1158f01c2d9daee5225fe60914",
+      "upstreamSha256": "a96af34c1c304a033b482b57ded426f4a51a5d1158f01c2d9daee5225fe60914"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/terminal-colors.ts",
+      "sha256": "2aa702f6e59dc51d78be64516f40c46981780a00d1f0900fb5504ad9da67b9e6",
+      "upstreamSha256": "2aa702f6e59dc51d78be64516f40c46981780a00d1f0900fb5504ad9da67b9e6"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/terminal-image.ts",
+      "sha256": "fab023f36a2076db2990a7b269a4310174c1bbd86e31f849a233070d0df376b4",
+      "upstreamSha256": "fab023f36a2076db2990a7b269a4310174c1bbd86e31f849a233070d0df376b4"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/terminal.ts",
+      "sha256": "8bdb5d3765169d1ac7688f080e1bde8ee1b3da3cc88b1b2602a2acd61c2e8021",
+      "upstreamSha256": "c5b4b1b7a01f34eebd823b59c798d719900b61e94d89713260758164f6199b0a"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/tui-alt-screen.ts",
+      "sha256": "18b7a541b787faf8d6385bbeac0a04187e0786cf741b96073426990a4ae2abbc",
+      "upstreamSha256": "0e47540ca355e5cfcc65ee84d159d6846b80cf93fcf30453cb2a854f878a3fb9"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/tui-main-screen.ts",
+      "sha256": "2788b4455d2af55bf9b874ead02cb30af9cdfbe90dedfbdaef210cb801fa44b2",
+      "upstreamSha256": "6df5c45771ac333f742e0e39ad58e3e889abb1a4d7ed765b31e77947309643c3"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/tui.ts",
+      "sha256": "eb285d9ea51c5737dbc18985cfcc02b657c0191a3b7283c31db68ba9943dec3c",
+      "upstreamSha256": "8a075ca5db4704aa2f25f9fbfb7012ae90baf98491ec216e9495c12bb0e19afd"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/undo-stack.ts",
+      "sha256": "1373c1e0a1e2c58ac90c93d32a9e5c1226d7f53314c77dd3d0f8ec349d2b3627",
+      "upstreamSha256": "1373c1e0a1e2c58ac90c93d32a9e5c1226d7f53314c77dd3d0f8ec349d2b3627"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/utils.ts",
+      "sha256": "484ef73bee9a3a3abecf9dc24b6dfcd951f4c460cd03d9a6d18f28025486803d",
+      "upstreamSha256": "484ef73bee9a3a3abecf9dc24b6dfcd951f4c460cd03d9a6d18f28025486803d"
+    },
+    {
+      "path": "src/tui-v2/vendor/pi-tui/src/word-navigation.ts",
+      "sha256": "de60957ee6a663cf3864c7845f0b0a42e475a49997a213acd6f271c1a9ad554b",
+      "upstreamSha256": "b73e915a524926ac8881731e89026b0bc7b5b0bd465de67257af81a420465c7f"
+    }
+  ],
+  "excluded": [
+    {
+      "path": "src/components/cancellable-loader.ts",
+      "reason": "same as components/loader.ts — not ported"
+    },
+    {
+      "path": "src/components/image.ts",
+      "reason": "Image component deferred to WP-08 media work; terminal-image.ts primitives are vendored. Image-component tests inside terminal-image/tui-render/tui-alt-screen tests were dropped during test porting"
+    },
+    {
+      "path": "src/components/loader.ts",
+      "reason": "spinner/loader is replaced by dsh status/chrome components (WP-04+), not part of the ported root set"
+    },
+    {
+      "path": "src/components/markdown.ts",
+      "reason": "Markdown component is out of WP-03a scope and depends on marked; re-implemented as v2 line component in WP-08"
+    },
+    {
+      "path": "src/components/settings-list.ts",
+      "reason": "settings UI is not part of the ported surface (WP-08)"
+    },
+    {
+      "path": "src/index.ts",
+      "reason": "package barrel re-exports excluded modules (markdown/latex/image/loader/settings-list, marked); the fork imports concrete modules directly"
+    },
+    {
+      "path": "src/latex.ts",
+      "reason": "LaTeX rendering is out of WP-03 scope and depends on marked; lands with components/media in WP-08 if needed"
+    },
+    {
+      "path": "test/latex.test.ts",
+      "reason": "tests the excluded src/latex.ts module"
+    },
+    {
+      "path": "test/markdown.test.ts",
+      "reason": "tests the excluded src/components/markdown.ts module"
+    },
+    {
+      "path": "test/settings-list.test.ts",
+      "reason": "tests the excluded src/components/settings-list.ts module"
+    }
+  ],
+  "importRewrite": ".ts->.js relative specifiers",
+  "notes": {
+    "native": "native trees are hash-registered source/prebuild artifacts only: they are built solely when image/Windows-input capabilities require them; on Linux CI without native artifacts native-modifiers.ts/terminal.ts keep their conservative pure-TS fallback (helper not found -> undefined/false). The npm tarball must not carry undeclared binaries.",
+    "tests": "Ported upstream tests live in test/tui-v2/pi-fork/ with a `pi fork: ` name prefix and .js specifiers into the vendor tree. Skipped: test/latex.test.ts, test/markdown.test.ts, test/settings-list.test.ts (modules excluded). Partial: Image-component cases dropped from terminal-image/tui-render/tui-alt-screen ports; terminal-colors.test.ts imports rewritten from the excluded index.ts barrel to concrete vendored modules; helper test-themes.ts trimmed to editor/select-list themes (markdown theme dropped)."
+  }
+}

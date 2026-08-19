@@ -1,0 +1,21 @@
+pi-tui vendored fork — attribution notice
+===========================================
+
+This directory contains a vendored fork of @earendil-works/pi-tui
+(package version 0.84.2), part of the pi monorepo.
+
+  Upstream repository : https://github.com/earendil-works/pi
+  Upstream directory  : packages/tui
+  Pinned commit       : 086c32e74530564922d011ade23ff582c9d63116
+  License             : MIT (see LICENSE in this directory)
+
+The upstream project is copyright its authors (Mario Zechner and
+contributors) and distributed under the MIT license, reproduced in
+LICENSE.
+
+This fork is maintained by the dsh-TUI project. Local differences from
+the pinned upstream snapshot are recorded in PATCH-LEDGER.md; the file
+list and per-file hashes are recorded in VENDOR-MANIFEST.json. Re-vendor
+with:
+
+  node scripts/vendor-pi-tui.mjs --source /path/to/pi

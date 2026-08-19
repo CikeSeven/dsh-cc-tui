@@ -28,11 +28,12 @@
  */
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { checkVendorTree, PINNED_COMMIT, VENDOR_REL } from './vendor-pi-tui.mjs'
 
 const execFileAsync = promisify(execFile)
 
@@ -471,6 +472,155 @@ async function checkTrace(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
+// fork check (WP-03): vendored pi-tui integrity + facade boundary guards
+// ---------------------------------------------------------------------------
+
+const VENDOR_DIR = path.join(repoRoot, VENDOR_REL)
+const FORK_REQUIRED_FILES = ['LICENSE', 'NOTICE', 'PATCH-LEDGER.md', 'VENDOR-MANIFEST.json']
+// Importers allowed to reference the vendored tree: the terminal facade, the
+// ported upstream tests and the re-vendor script itself.
+const FORK_IMPORT_ALLOWLIST = [
+  'src/tui-v2/terminal/pi.ts',
+  'scripts/vendor-pi-tui.mjs',
+]
+const FORK_IMPORT_ALLOWLIST_PREFIX = ['test/tui-v2/pi-fork/']
+const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs'])
+const WALK_SKIP_DIRS = new Set(['node_modules', '.git', 'lib', '.pnpm'])
+// react/react-reconciler/react/jsx-runtime/yoga* specifiers (d: hot-path guard).
+const FORBIDDEN_DEP_RE = /^(react|react-reconciler|yoga|yoga-layout)(\/.*)?$/
+const IMPORT_SPEC_RE =
+  /(?:\bfrom\s*|^import\s*|\bimport\s*\(\s*)(["'])([^"']+)\1/gm
+
+async function walkCodeFiles(dir: string, base: string): Promise<string[]> {
+  const out: string[] = []
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      if (WALK_SKIP_DIRS.has(entry.name)) continue
+      out.push(...(await walkCodeFiles(full, base)))
+    } else if (entry.isFile() && CODE_EXTENSIONS.has(path.extname(entry.name))) {
+      out.push(path.relative(base, full).split(path.sep).join('/'))
+    }
+  }
+  return out.sort()
+}
+
+/** Every import/export specifier referenced by a code file. */
+async function fileSpecifiers(rel: string): Promise<string[]> {
+  const content = await readFile(path.join(repoRoot, rel), 'utf8')
+  return [...content.matchAll(IMPORT_SPEC_RE)].map((m) => m[2])
+}
+
+function resolvesIntoVendor(importerRel: string, spec: string): boolean {
+  if (spec.includes('vendor/pi-tui')) return true
+  if (!spec.startsWith('./') && !spec.startsWith('../')) return false
+  const resolved = path
+    .resolve(repoRoot, path.dirname(importerRel), spec)
+    .split(path.sep)
+    .join('/')
+  return resolved.includes(`/${VENDOR_REL}/`) || resolved.endsWith(`/${VENDOR_REL}`)
+}
+
+function isAllowedForkImporter(rel: string): boolean {
+  if (FORK_IMPORT_ALLOWLIST.includes(rel)) return true
+  return FORK_IMPORT_ALLOWLIST_PREFIX.some((prefix) => rel.startsWith(prefix))
+}
+
+async function checkFork(): Promise<CheckResult> {
+  const errors: string[] = []
+  const details: Record<string, unknown> = {}
+
+  // (a) vendor tree == manifest (identical logic to vendor-pi-tui.mjs --check,
+  //     without the upstream checkout; CI-safe).
+  const vendorCheck = await checkVendorTree({})
+  details.manifest = {
+    commit: vendorCheck.manifest?.commit ?? null,
+    packageVersion: vendorCheck.manifest?.packageVersion ?? null,
+    files: vendorCheck.counts?.files ?? 0,
+    onDisk: vendorCheck.counts?.onDisk ?? 0,
+    vendoredTs: vendorCheck.counts?.vendoredTs ?? 0,
+  }
+  for (const error of vendorCheck.errors) errors.push(`manifest: ${error}`)
+
+  // (b) license/notice/ledger files exist.
+  for (const name of FORK_REQUIRED_FILES) {
+    if (!(await stat(path.join(VENDOR_DIR, name)).catch(() => null))?.isFile()) {
+      errors.push(`missing required vendor file: ${VENDOR_REL}/${name}`)
+    }
+  }
+
+  // (c) import guard: only the facade, the ported tests and the re-vendor
+  //     script may reference src/tui-v2/vendor/pi-tui. Vendored files import
+  //     each other relatively and are not importers for this guard.
+  const codeFiles = await walkCodeFiles(repoRoot, repoRoot)
+  const guardViolations: { file: string; specifier: string }[] = []
+  for (const rel of codeFiles) {
+    if (rel.startsWith(`${VENDOR_REL}/`)) continue
+    if (isAllowedForkImporter(rel)) continue
+    for (const spec of await fileSpecifiers(rel)) {
+      if (resolvesIntoVendor(rel, spec)) guardViolations.push({ file: rel, specifier: spec })
+    }
+  }
+  details.importGuard = { scannedFiles: codeFiles.length, violations: guardViolations }
+  for (const v of guardViolations) {
+    errors.push(`import guard: ${v.file} imports vendored path ${v.specifier} (only ${[...FORK_IMPORT_ALLOWLIST, ...FORK_IMPORT_ALLOWLIST_PREFIX].join(', ')} allowed)`)
+  }
+
+  // (d) no react/react-reconciler/yoga imports anywhere under src/tui-v2/**
+  //     (the vendored tree included).
+  const tuiV2Files = codeFiles.filter((f) => f.startsWith('src/tui-v2/'))
+  const forbiddenHits: { file: string; specifier: string }[] = []
+  for (const rel of tuiV2Files) {
+    for (const spec of await fileSpecifiers(rel)) {
+      if (FORBIDDEN_DEP_RE.test(spec)) forbiddenHits.push({ file: rel, specifier: spec })
+    }
+  }
+  details.forbiddenDeps = { scannedFiles: tuiV2Files.length, hits: forbiddenHits }
+  for (const hit of forbiddenHits) {
+    errors.push(`forbidden dependency in ${hit.file}: ${hit.specifier}`)
+  }
+
+  // (e) every PATCH-LEDGER row's referenced repo paths must exist.
+  const ledgerErrors: string[] = []
+  try {
+    const ledger = await readFile(path.join(VENDOR_DIR, 'PATCH-LEDGER.md'), 'utf8')
+    const rows = ledger
+      .split('\n')
+      .filter((line) => line.startsWith('|') && !/^\|[\s-|]+\|$/.test(line))
+      .filter((line) => !line.includes('| 文件 |'))
+    const pathTokenRe = /(?:src|test|scripts|docs|fixtures)\/[\w./-]+/g
+    let rowCount = 0
+    for (const row of rows) {
+      rowCount += 1
+      const tokens = [...row.matchAll(/`([^`]+)`/g)].flatMap(
+        (m) => [...m[1].matchAll(pathTokenRe)].map((t) => t[0]),
+      )
+      if (tokens.length === 0) {
+        ledgerErrors.push(`ledger row ${rowCount} references no backticked repo path`)
+        continue
+      }
+      for (const token of tokens) {
+        let probe = token
+        if (probe.includes('*')) probe = probe.slice(0, probe.indexOf('*'))
+        probe = probe.replace(/[/.]+$/, '')
+        if (probe === '') continue
+        if (!(await stat(path.join(repoRoot, probe)).catch(() => null))) {
+          ledgerErrors.push(`ledger row ${rowCount}: referenced path does not exist: ${token}`)
+        }
+      }
+    }
+    details.patchLedger = { rows: rowCount, errors: ledgerErrors }
+  } catch (error: any) {
+    ledgerErrors.push(`PATCH-LEDGER.md unreadable: ${String(error?.message || error)}`)
+  }
+  errors.push(...ledgerErrors)
+
+  details.pinnedCommit = PINNED_COMMIT
+  details.errors = errors
+  return { status: errors.length === 0 ? 'pass' : 'fail', details }
+}
+
+// ---------------------------------------------------------------------------
 // registry + CLI
 // ---------------------------------------------------------------------------
 
@@ -478,6 +628,7 @@ const checks = new Map<string, (ctx: CheckContext) => Promise<CheckResult>>([
   ['baseline', () => checkBaseline()],
   ['regression-matrix', () => checkRegressionMatrix()],
   ['trace', () => checkTrace()],
+  ['fork', () => checkFork()],
 ])
 
 function defaultOutput(check: string): string {

@@ -8,7 +8,7 @@
 
 - 命令：`rg -o 'scripts/[A-Za-z0-9_.-]+' .github/workflows package.json | LC_ALL=C sort -u`
 - sourceCommit：`9589deed9dc37ad4c37479132e30a70de23def43`
-- 清单条目数：107；listHash（sha256）：`dabdd9425af9687639681dcf323691c86a061d9991a65d7a7f30868c749be699`
+- 清单条目数：108；listHash（sha256）：`c83411d906df22fada68ae3b4d3ee7fbb8a3b6897f3d870bb5fa2720c23655cb`（WP-03a：compile 追加 `scripts/copy-vendor-assets.mjs`，新增 REG-103）
 - 说明：清单行格式为 `<文件>:<入口>`；校验脚本用等价的纯 Node 重扫实现
   （`computeEntryScan`，对本仓库 ASCII 入口名与 `LC_ALL=C sort -u` 字节一致），
   不依赖运行时 ripgrep。
@@ -19,7 +19,7 @@
 - disposition：`rewrite-v2`（旧入口删除，v2 fixture 替代）/ `remove` / `offline-baseline` /
   `unaffected`（不触及被迁移的渲染/插件面，原样保留并由 CI 持续证明；扩展原因见计划文档 15.1）。
 - status：`rewrite-v2` 行从 `open` 起步；`unaffected` 行当前 CI 已通过，记 `verified`。
-- 当前分布：severity {"P2":52,"P1":43,"P0":7}；disposition {"unaffected":52,"rewrite-v2":50}。
+- 当前分布：severity {"P2":53,"P1":43,"P0":7}；disposition {"unaffected":53,"rewrite-v2":50}。
 
 ## 机器可读矩阵
 
@@ -28,9 +28,9 @@
   "scan": {
     "sourceCommit": "9589deed9dc37ad4c37479132e30a70de23def43",
     "scanCommand": "rg -o 'scripts/[A-Za-z0-9_.-]+' .github/workflows package.json | LC_ALL=C sort -u",
-    "listHash": "dabdd9425af9687639681dcf323691c86a061d9991a65d7a7f30868c749be699",
-    "entryCount": 107,
-    "generatedAt": "2026-08-19T08:10:02.771Z"
+    "listHash": "c83411d906df22fada68ae3b4d3ee7fbb8a3b6897f3d870bb5fa2720c23655cb",
+    "entryCount": 108,
+    "generatedAt": "2026-08-19T11:06:05.426Z"
   },
   "rows": [
     {
@@ -1357,6 +1357,19 @@
       "ciCommand": "node scripts/verify-workspaces-degrade.mjs",
       "blockDefault": false,
       "deleteCondition": "该回归不触及被迁移的渲染/插件面，原样保留；最终 gate 要求 ciCommand 在最终树仍通过；仅在入口本身被移除时删除本行",
+      "disposition": "unaffected"
+    },
+    {
+      "id": "REG-103",
+      "severity": "P2",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-19T11:06:05.426Z",
+      "traceId": "vendor-license-assets@v1",
+      "assertion": "build: compile 后 vendored pi-tui LICENSE/NOTICE/PATCH-LEDGER/VENDOR-MANIFEST 复制进 lib 并随 tarball 发布（WP-03a）",
+      "ciCommand": "pnpm compile (node scripts/copy-vendor-assets.mjs) && pnpm verify:package",
+      "blockDefault": false,
+      "deleteCondition": "WP-03a 新增入口，不触及旧渲染面；仅在 compile 不再产出 vendored assets 时删除本行",
       "disposition": "unaffected"
     }
   ]
