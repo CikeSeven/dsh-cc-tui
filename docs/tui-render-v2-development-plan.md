@@ -1,41 +1,41 @@
 # dsh-TUI v2 渲染重构开发计划
 
-> **文档状态：** Architecture decision record + execution plan；第四轮测试/运行时复核提出的 P1/P2 已逐项落实为可执行契约，当前计划审计无未登记 P0/P1；实际实施仍必须按阶段门槛和 CI artifact 验证，不能把计划通过当作代码已完成
+> **文档状态：** Architecture decision record + single-shot execution plan；工作包只表达实现依赖，不产生中间版本或临时运行模式；当前计划审计无未登记 P0/P1，最终合并/发布前仍必须通过统一 CI artifact 验收
 > **编写分支：** `refactor/tui-render-v3`
 > **工作目录：** `/home/sisct/Code/projects/dsh-TUI/.claude/worktrees/tui-render-v3-plan`
-> **基线提交：** `6849a24` (`main`)
+> **基线提交：** `0f2c9da` (`main`)
 > **目标：** 在保留 DSH/Cordis 领域能力的前提下，重写 dsh-TUI 的渲染热路径，最终移除 React reconciler、Yoga 和自维护 Ink DOM 渲染链。
 
-本文是实施文档，不是对现有实现的简单描述。后续代码、测试、评审和发布都以本文的边界、阶段门槛和验收标准为准。若实现过程中需要偏离本文，必须先在本文的“决策记录”中补充原因、影响、迁移方案和回滚方式。本文中的路径、命令和版本以当前仓库及其 CI 为准；不能用“未来会有的脚本”作为阶段出口的证据。
+本文是一次性完整替换的实施文档，不是对现有实现的简单描述。所有工作在一个实现分支/一次 breaking release 中完成；下文的工作包只是依赖关系和责任边界，不代表可发布的中间阶段，也不要求提交无行为价值的脚手架改动。最终代码不得保留 v1/v2 双跑、临时 fallback 或仅为迁移存在的运行时分支。后续代码、测试、评审和发布都以本文的边界和统一验收标准为准。若实现过程中需要偏离本文，必须先在本文的“决策记录”中补充原因、影响和回滚方式。本文中的路径、命令和版本以当前仓库及其 CI 为准；不能用“未来会有的脚本”作为验收证据。
 
 ### 0.1 当前仓库的可执行约束
 
 - 当前包使用 `pnpm compile`、`pnpm verify:build` 和大量 `scripts/verify-*`/`scripts/repro-*` 回归脚本；没有根级 `test` 或 `lint` 命令。v2 必须先新增明确的测试入口，再把它接入 `.github/workflows/ci.yml`，不能只在文档中声明“有单测”。
 - 包声明支持 Node `^22.19 || >=24`，当前 CI 只运行 Node 24。v2 的 build、unit/replay/virtual-terminal 测试必须至少在 Node 22.19 和 Node 24 各跑一次；不能把 Node 24 的行为当作唯一基线。
-- 当前 `src/ui.ts`、`package.json` 的 `./scenes`/`./jsx-runtime` exports、`src/scenes.ts` 和 plugin host 属于公开/扩展边界。阶段 0--8 保持这些导出可导入；阶段 9 若要删除 React/JSX，必须选择 breaking release 并提供包级 import/export、插件 fixture 和弃用期限。
-- 当前 `package.json` 的 `files` 不会自动发布 `src/tui-v2` 之外的 license、patch ledger 或诊断 schema。运行时 tarball 必须带 vendored `LICENSE`/`NOTICE`；完整 source/hash/patch ledger 至少随仓库或 source release 发布，若 vendored source 进入 tarball 则 ledger/hash 也必须随之发布。路径和检查规则必须在阶段 2 落档。
-- 当前 `@xterm/headless` 声明为 `^6.0.0`、lockfile 解析为 `6.0.0`；阶段 1 将 manifest 改为 exact `6.0.0`（或先提交 ADR 说明替代版本），并在 conformance 报告中记录 xterm 与本地 parser 的支持边界。
-- 宽度和测试 loader 也必须 exact pin：当前 lockfile 解析为 `get-east-asian-width 1.6.0`、`tsx 4.23.12`，阶段 1 将 manifest 从 `^1.0.0`/`^4.0.0` 改为 `1.6.0`/`4.23.12`（若升级必须先更新 ADR、lockfile hash 和双 Node 报告）。阶段出口记录完整 lockfile SHA-256、Node loader 版本和 package manager 版本；不能只依赖 semver range 的解析结果。
+- 当前 `src/ui.ts`、`package.json` 的 `./scenes`/`./jsx-runtime` exports、`src/scenes.ts` 和 plugin host 属于公开/扩展边界。本次一次性实现采用 breaking release：所有仓库内 scene/plugin fixture 在同一变更中迁移到 `SceneV2`，并在同一变更中删除 React/JSX 热路径和旧 exports；外部插件需要按迁移文档升级，不在最终包中保留 legacy React runtime。
+- 当前 `package.json` 的 `files` 不会自动发布 `src/tui-v2` 之外的 license、patch ledger 或诊断 schema。最终 runtime tarball 必须带 vendored `LICENSE`/`NOTICE`；完整 source/hash/patch ledger 至少随仓库或 source release 发布，若 vendored source 进入 tarball 则 ledger/hash 也必须随之发布。路径和检查规则属于 WP-02/WP-07 的完成条件。
+- 当前 `@xterm/headless` 声明为 `^6.0.0`、lockfile 解析为 `6.0.0`；WP-01 将 manifest 改为 exact `6.0.0`（或先提交 ADR 说明替代版本），并在 conformance 报告中记录 xterm 与本地 parser 的支持边界。
+- 宽度和测试 loader 也必须 exact pin：当前 lockfile 解析为 `get-east-asian-width 1.6.0`、`tsx 4.23.12`，WP-01 将 manifest 从 `^1.0.0`/`^4.0.0` 改为 `1.6.0`/`4.23.12`（若升级必须先更新 ADR、lockfile hash 和双 Node 报告）。最终验收记录完整 lockfile SHA-256、Node loader 版本和 package manager 版本；不能只依赖 semver range 的解析结果。
 
-缺陷严重性在本文中固定为：**P0** = 数据/会话丢失、任意 raw/alternate/mouse/paste 状态泄漏、进程无法退出、未清洗控制序列注入、崩溃或安全边界绕过；**P1** = cell/mode/cursor 错误、输入/滚动/overlay 关键行为错误、回放不等价、资源或 backpressure 门槛失败；**P2** = 只影响未承诺能力的视觉差异、诊断缺字段或文案问题。P0 永远阻断所有阶段，P1 阻断默认切换/删除 v1，P2 必须登记 owner 和 release。
+缺陷严重性在本文中固定为：**P0** = 数据/会话丢失、任意 raw/alternate/mouse/paste 状态泄漏、进程无法退出、未清洗控制序列注入、崩溃或安全边界绕过；**P1** = cell/mode/cursor 错误、输入/滚动/overlay 关键行为错误、回放不等价、资源或 backpressure 门槛失败；**P2** = 只影响未承诺能力的视觉差异、诊断缺字段或文案问题。P0/P1 阻断最终合并和发布，P2 必须登记 owner 和 release；不存在“先带病发布、之后再切换”的中间出口。
 
 ### 0.2 参考实现快照
 
-本轮审查观察到：pi 的 `packages/tui` 为 `0.84.2`（仓库 `https://github.com/earendil-works/pi`，提交 `086c32e74530564922d011ade23ff582c9d63116`），Kimi Code 的 vendored `packages/pi-tui` 为 `0.84.3`（仓库提交 `1ab19190e9bd2f5bb5c40c8ba58fc121da6b4941`，其 `AGENTS.md` 记录上游基线 `0.80.2` 和本地差异）。本计划锁定 pi `packages/tui` 的上述 commit 作为唯一默认 source；Kimi 目录只作行为/patch 参考，不得混用其文件。阶段 2 需把该 source（含 `native/win32`、`native/darwin` 等实际 vendored 文件）、包版本、每个文件 hash、依赖版本和 MIT/NOTICE 路径写入仓库 ledger；若改用 Kimi source，必须先提交 ADR、全量差异和重新 pin，不能以“后续锁定”通过阶段门。
+本轮审查观察到：pi 的 `packages/tui` 为 `0.84.2`（仓库 `https://github.com/earendil-works/pi`，提交 `086c32e74530564922d011ade23ff582c9d63116`），Kimi Code 的 vendored `packages/pi-tui` 为 `0.84.3`（仓库提交 `1ab19190e9bd2f5bb5c40c8ba58fc121da6b4941`，其 `AGENTS.md` 记录上游基线 `0.80.2` 和本地差异）。本计划锁定 pi `packages/tui` 的上述 commit 作为唯一默认 source；Kimi 目录只作行为/patch 参考，不得混用其文件。WP-02 需把该 source（含 `native/win32`、`native/darwin` 等实际 vendored 文件）、包版本、每个文件 hash、依赖版本和 MIT/NOTICE 路径写入仓库 ledger；若改用 Kimi source，必须先提交 ADR、全量差异和重新 pin，不能以“后续锁定”通过最终验收。
 
 Kimi `AGENTS.md` 列出的候选局部修复包括：单 grapheme 窄宽换行递归保护、Container 宽度 clamp、超宽行裁剪、负宽 `repeat` 防护、steady-frame processed-line reuse、CJK URL 边界、inline slash autocomplete 以及 completion Enter 不提交。它们只进入 dsh 的 fork patch ledger，逐项以本项目的 width/profile/回放测试验证；不能因为“参考实现已有”就直接复制。
 
-Kimi 当前通过 `KIMI_CODE_TUI_FULL_SCREEN=1` 实验开关启用 fullscreen；dsh 不复制这个默认假设。fullscreen 只有在阶段 5 的 golden/真实宿主 gate 和阶段 8 的 soak、回滚演练全部通过后，才通过 `DSH_TUI_RENDERER` 的发布配置成为默认；默认变更必须记录版本、支持矩阵和 inline 降级说明。
+Kimi 当前通过 `KIMI_CODE_TUI_FULL_SCREEN=1` 实验开关启用 fullscreen；dsh 不复制这个默认假设。fullscreen/inline 两个 backend 都在本次实现中完成，最终默认配置和 inline 降级说明随同一版本发布，不通过长期实验开关或灰度切换。
 
 ### 0.3 评审闭环记录
 
 | 轮次 | 输入 | 结论 | 文档动作 |
 | --- | --- | --- | --- |
 | 1 | 架构、运行时、测试三路 review；当前仓库/CI/pi/Kimi 源码 | 测试入口、回滚、oracle、发布内容、生命周期和 guard 范围仍不可执行 | 本轮补充可执行命令、状态机、独立 golden、迁移台账和发布 gate |
-| 2 | 第一轮修订后的同样三路 review；契约、阶段出口、回滚、plugin scene、stdout ownership 和 row identity 复核 | 无 P0/P1；剩余事项均为实现阶段的具体落档任务 | 增加 versioned schema、ownership/scene 迁移台账、可执行 patch/control 类型，关闭评审环 |
+| 2 | 第一轮修订后的同样三路 review；契约、最终验收、回滚、plugin scene、stdout ownership 和 row identity 复核 | 无 P0/P1；剩余事项均为实现时必须落档的具体任务 | 增加 versioned schema、ownership/scene 迁移台账、可执行 patch/control 类型，关闭评审环 |
 | 3 | 主 agent 结构检查 + 测试/运行时独立复核 | 发现测试 runner、query/writer、compare、frame resources/modes、identity/reset、scene/takeover、发布 artifact 等 P1/P2 缺口 | 逐项补充可执行 contract；在下一轮复核确认前不关闭评审 |
-| 4 | 独立 arch/test review；Node 26 reporter 实测、当前 package verifier/workflow 对照 | 发现 custom reporter、deep immutable、query token/register、pi stop barrier、scene register API、V1 capture、image/mouse canonical、tarball producer 等 P1/P2 缺口 | 补 custom reporter/verified-tarball wrapper、deep readonly/freeze、opaque token registry、awaitStop、registerV2、离屏 capture、图片/鼠标 canonical 和 CI integration gate；修订后继续自审 |
-| 5 | 第四轮修订后的 contract、Node 命令、路径、schema 和工作树审计 | 未发现新的 P0/P1；剩余差异均是实现阶段必须按本文产物证明的工作 | 关闭计划 review 环；保留阶段出口、机器化 regression matrix 和 runtime/package gates 作为实施阻断 |
+| 4 | 独立 arch/test review；Node 26 reporter 实测、当前 package verifier/workflow 对照 | 发现 custom reporter、deep immutable、query token/register、pi stop barrier、scene register API、V1 capture、image/mouse canonical、tarball producer 等 P1/P2 缺口 | 补 custom reporter/verified-tarball wrapper、deep readonly/freeze、opaque token registry、awaitStop、最终 `register` API、离屏 capture、图片/鼠标 canonical 和 CI integration gate；修订后继续自审 |
+| 5 | 第四轮修订后的 contract、Node 命令、路径、schema 和工作树审计 | 未发现新的 P0/P1；剩余差异均是实现时必须按本文产物证明的工作 | 关闭计划 review 环；保留最终验收、机器化 regression matrix 和 runtime/package gates 作为实施阻断 |
 
 ---
 
@@ -58,8 +58,8 @@ Kimi 当前通过 `KIMI_CODE_TUI_FULL_SCREEN=1` 实验开关启用 fullscreen；
 
 - 不复制 Kimi Code 的 Agent、SDK、Session 或业务模型。
 - 不在旧 Ink/Yoga 之上继续增加大型能力。
-- 不把 OpenTUI native runtime、Go Bubble Tea 或 Rust Ratatui 作为本阶段默认运行时。
-- 不长期保留两套完整 UI 功能；双 renderer 只用于迁移、对照和灰度，v2 稳定后删除 v1 热路径。
+- 不把 OpenTUI native runtime、Go Bubble Tea 或 Rust Ratatui 作为本次默认运行时。
+- 不在最终包中保留两套完整 UI 或旧 renderer 热路径；旧实现只允许作为隔离的离线 compare 输入，外部 rollback 使用上一发布包，不作为当前进程的运行时 fallback。
 - 不用无上限缓存、完整 frame 历史、完整 session 快照或每个 token 一个永久对象换取短期性能。
 
 ---
@@ -87,15 +87,15 @@ DSH/Cordis session event
 
 | 责任 | 当前位置 | 重构含义 |
 | --- | --- | --- |
-| 公共 UI facade | `src/ui.ts` | v1 兼容层；v2 不再以 JSX API 作为热路径 |
+| 公共 UI facade | `src/ui.ts` | 现有 React/JSX facade；同一变更改为 v2 facade 并删除旧 exports |
 | 生产启动/退出 | `src/dsh-adapter/plugin.ts`、`src/index.ts`、`scripts/run.ts` | TTY 校验、service 注册、Agent 创建/恢复、React mount、update restart、stderr guard、teardown/退出区分；必须迁移到 v2 bootstrap/coordinator |
 | 主聊天屏幕 | `src/screens/Chat.tsx` | 当前承担 coordinator、订阅、交互、业务分支和布局；必须拆解 |
 | DSH UI projection | `src/dsh-adapter/channel.ts` | 继续提供领域适配，但改为稳定的 event/snapshot seam |
-| Ink root/生命周期 | `src/ink/root.ts`、`src/ink/ink.tsx` | v1 保留到灰度结束，最终删除 |
+| Ink root/生命周期 | `src/ink/root.ts`、`src/ink/ink.tsx` | 仅供离线基线对照；在本次变更中删除 |
 | reconciler/DOM/Yoga | `src/ink/reconciler.ts`、`src/ink/dom.ts`、`src/native-ts/yoga-layout/` | v2 不得被新组件依赖 |
 | 终端协议 | `src/ink/terminal.ts`、`src/ink/termio/` | 抽取为唯一 `TerminalWriter`/lifecycle 所有者 |
 | 视觉组件 | `src/components/` | 按消息、编辑器、chrome、dialog、pane 分批改为 line component |
-| 其他场景 | `src/screens/SessionBrowser.tsx`、`Settings.tsx`、`TrajectoryScene.tsx` | 先维持 v1，随后迁移到共享 component/overlay contract |
+| 其他场景 | `src/screens/SessionBrowser.tsx`、`Settings.tsx`、`TrajectoryScene.tsx` | 在本次变更中迁移到共享 component/overlay contract |
 
 截至基线的规模信号：
 
@@ -155,7 +155,7 @@ DSH/Cordis session event
 - v2 不改变 DSH session schema、Cordis 协议、Agent 行为和工具权限模型。
 - v2 不把 UI 组件直接暴露给 DSH/SDK；领域对象只能通过 adapter 投影进入 UI。
 - v2 不承诺所有终端的高级能力完全一致；不支持的能力必须由 profile 明确标记并走保守路径。
-- v2 不在第一阶段迁移所有视觉细节；先保证核心纵向切片和终端正确性。
+- 所有已承诺的视觉能力都必须在本次变更中迁移；核心纵向切片和终端正确性是统一验收的一部分，不是可单独发布的先行版本。
 
 ### 3.3 必须保持的不变量
 
@@ -222,7 +222,7 @@ DSH / Cordis / Session log
 
 ### 4.2 目录规划
 
-第一阶段先放在当前单包的 `src/tui-v2/`，避免为了重构立即修改 pnpm workspace 和发布边界。稳定后再按真实依赖拆成内部 package；目录结构如下（`vendor/pi-tui` 的许可证文件与 ledger 必须随源代码保存）：
+本次实现先放在当前单包的 `src/tui-v2/`，不为重构引入无关的 workspace 拆分；最终依赖和发布边界在同一变更中一次性确定。目录结构如下（`vendor/pi-tui` 的许可证文件与 ledger 必须随源代码保存）：
 
 ```text
 src/tui-v2/
@@ -230,7 +230,7 @@ src/tui-v2/
   app/
     bootstrap.ts              # 创建 adapter、model、controllers、renderer
     coordinator.ts            # 只编排生命周期，不承载业务规则
-    modes.ts                  # v1/v2、inline/fullscreen 选择
+    modes.ts                  # inline/fullscreen backend 选择
   model/
     events.ts                 # AppEvent、输入事件、生命周期事件
     state.ts                  # UiState，不持有 DSH service
@@ -276,11 +276,12 @@ src/tui-v2/
     trace.ts                   # JSONL trace schema/read/write
     virtual-terminal.ts       # xterm/headless adapter + cell grid
     frame-assert.ts            # full render vs diff replay
-    v1-capture.ts              # V1CaptureRenderer：离屏、无副作用 capture backend
-    compare-harness.ts         # v1/v2 同 snapshot/grid/metadata 对照
     terminal-profiles.ts       # deterministic terminal profiles
     fixtures/                  # 脱敏事件和预期 grid
     benchmarks.ts              # frame/input/memory benchmark harness
+tools/tui-v2-baseline/
+  capture.ts                   # 独立旧实现离线 capture；不进入 runtime/tarball
+  compare-harness.ts           # baseline artifact 与最终 renderer 对照
 ```
 
 ### 4.3 依赖方向
@@ -556,7 +557,7 @@ export interface TerminalProfile {
 
 `Capability` 为 `'yes' | 'no' | 'unknown'`。能力探测必须有超时、缓存和 unknown 分支。不能因为一个查询未返回就永久阻塞启动；unknown 时关闭高级协议并使用保守重绘，宽度管线必须消费 profile 的 ambiguousWidth，不能固定为 narrow。
 
-阶段 1/2 固定探测参数：单次查询超时 150 ms，最多 1 次重试；启动总等待不超过 300 ms，超时即 `unknown-conservative`。profile cache 只在进程内存活，resize 不重新探测能力；终端接管结束或 profile id 变化时清空。每个 profile fixture 必须记录 `TERM`、`COLORTERM`、`TMUX`、平台、尺寸、ambiguous width、查询响应和最终 capability；迟到响应不得回写已提交的 profile generation。
+最终实现固定探测参数：单次查询超时 150 ms，最多 1 次重试；启动总等待不超过 300 ms，超时即 `unknown-conservative`。profile cache 只在进程内存活，resize 不重新探测能力；终端接管结束或 profile id 变化时清空。每个 profile fixture 必须记录 `TERM`、`COLORTERM`、`TMUX`、平台、尺寸、ambiguous width、查询响应和最终 capability；迟到响应不得回写已提交的 profile generation。
 
 `unknown-conservative` 的确定性默认值是 `ambiguousWidth: 1`、`unicodeLevel: 'unknown'`、所有高级 capability 为 `unknown`，renderer 关闭 sync output/Kitty/OSC52/mouse/images 并选择 full redraw；`supportsAlternateScreen !== 'yes'` 时强制走 inline/非交互降级，不得进入 `TuiAltScreen`；若产品场景明确要求 fullscreen，则启动前返回 `unsupported-alternate-screen` 并保持终端未接管。不得把 unknown 当作支持。自动化 profile 必须在 fixture 中显式覆盖这些字段，真实探测只允许更新当前 profile generation；`unknown-conservative` 必须有“拒绝 alt screen、仍可输入/退出、无模式泄漏”的 fixture。
 
@@ -806,7 +807,7 @@ pi facade 的实施选择固定为“**保留完整 facade，同时 fork 所有�
 5. 新 frame 的 `stateRevision` 小于 writer 已提交 revision 时直接丢弃。
 6. 关闭/异常进入 stop 状态后，所有后续 render request 都被拒绝并释放 timer。
 
-调度和终端生命周期共享以下有限状态机：`created -> starting -> active -> stopping -> stopped`，另有终态 `failed-before-takeover`、`failed-after-takeover` 和仅允许一次的 `fallback-v1`。`starting` 阶段失败且尚未执行 raw/alt/mouse/paste 任一接管动作时，进入 `failed-before-takeover -> cleanup -> fallback-v1`；已经执行任一接管动作后进入 `failed-after-takeover`，只允许 cleanup、写诊断并以专用退出码结束，禁止同进程双启动。`stop`、signal、writer error、cleanup error 都是幂等转换；状态、owner 和 `generation` 写入 trace，测试必须覆盖重复 signal、late write、stop 与 resize 竞态。
+调度和终端生命周期共享以下有限状态机：`created -> starting -> active -> stopping -> stopped`，另有终态 `failed-before-takeover`、`failed-after-takeover`。初始化失败无论是否已接管终端，都只能执行 cleanup、写诊断并以专用退出码结束；禁止同进程启动第二套 renderer 或 fallback。外部 launcher 可以按 rollback manifest 重新拉起上一发布包。`stop`、signal、writer error、cleanup error 都是幂等转换；状态、owner 和 `generation` 写入 trace，测试必须覆盖重复 signal、late write、stop 与 resize 竞态。
 
 生命周期时限固定为：单个 writer operation 等待 500 ms 后转为 `WriterError`，coordinator cleanup 总 deadline 为 2 s；deadline 到期仍需 best-effort 发送退出序列、关闭 stdin/listener 并以专用非零退出码结束，不能无限等待或继续接收新输入。真实终端和 child-process fixture 都记录每个 deadline 的命中情况。
 
@@ -971,18 +972,18 @@ export interface ScreenTakeover {
 - 禁止 `console.log`、`console.warn` 或业务模块的 `process.stdout.write` 穿透当前 frame。
 - clipboard、update、external editor 等需要短暂离开 TUI 的流程必须通过 lifecycle coordinator 挂起、恢复并触发一次 full redraw。
 
-阶段 0 产出 `docs/tui-v2-stdout-ownership.md`，并以扫描结果冻结下表；每个条目都要有 owner、backpressure 规则、cleanup 责任、允许的生命周期和 v1 allowlist 到期阶段。`stderr` 也要区分正常 logger、child passthrough 和 teardown restore，不能以“不是 stdout”跳过 cleanup。
+本次实现产出 `docs/tui-v2-stdout-ownership.md`，并以扫描结果冻结下表；每个条目都要有 owner、backpressure 规则、cleanup 责任和允许的生命周期。`stderr` 也要区分正常 logger、child passthrough 和 teardown restore，不能以“不是 stdout”跳过 cleanup。
 
-| 当前路径/来源 | 当前写入形态 | v2 owner 与边界 | 迁移阶段 | 阶段 8 双跑规则 |
-| --- | --- | --- | --- | --- |
-| `src/ink/ink.tsx`、`src/ink/components/App.tsx` | v1 render/cleanup 直接进入 terminal | `TuiAltScreen`/`TuiMainScreen` 生成 `Frame`，唯一 `TerminalWriter` 串行写入 | 2--5 | v1 可按 allowlist 写；compare 模式禁止第二份 stdout |
-| `src/ink/terminal.ts`、`src/ink/terminal-querier.ts` | lifecycle/query 直接写 ANSI、读 stdin | `terminal/lifecycle` 生成 `TerminalControlOperation`，query 只消费匹配 generation 的 response | 2--3 | 只启用一个 lifecycle/query owner，v1 查询不得与 v2 竞争 stdin |
-| `src/dsh-adapter/plugin.ts`、update launcher | plugin/update、退出和重启路径可能绕过 renderer | coordinator/`ScreenTakeover` 或 child owner；恢复时 generation++、full redraw，异常走专用退出码 | 3、7--8 | side effect 只执行一次，child output 不进入第二 writer |
-| `src/screens/Chat.tsx` | 业务分支中的 console/stdout patch | `ChannelUiAdapter`/controller 产生 event；诊断走受控 stderr/file | 4 | v1/v2 只消费同一 immutable snapshot |
-| DSH tool、external editor、shell child | stdout/stderr 或暂时 tty takeover | adapter transcript 清洗，或声明 child 暂时拥有 tty；两者不得混用 | 6--7 | compare 只比较 event/frame，不复制 child 输出 |
-| plugin `console.*`、第三方 logger | 未声明的 stdout/stderr | 默认拒绝/重定向至 diagnostics；allowlist 必须绑定 plugin/instance/cleanup | 4、7 | 未登记写入即阻断灰度 |
+| 当前路径/来源 | 当前写入形态 | v2 owner 与边界 | 一次性迁移与验收要求 |
+| --- | --- | --- | --- |
+| `src/ink/ink.tsx`、`src/ink/components/App.tsx` | 旧 render/cleanup 直接进入 terminal | `TuiAltScreen`/`TuiMainScreen` 生成 `Frame`，唯一 `TerminalWriter` 串行写入 | 迁移后旧路径删除；离线 baseline 禁止真实 stdout |
+| `src/ink/terminal.ts`、`src/ink/terminal-querier.ts` | lifecycle/query 直接写 ANSI、读 stdin | `terminal/lifecycle` 生成 `TerminalControlOperation`，query 只消费匹配 generation 的 response | 最终包只保留 v2 lifecycle/query owner |
+| `src/dsh-adapter/plugin.ts`、update launcher | plugin/update、退出和重启路径可能绕过 renderer | coordinator/`ScreenTakeover` 或 child owner；恢复时 generation++、full redraw，异常走专用退出码 | side effect 只执行一次，child output 不进入第二 writer |
+| `src/screens/Chat.tsx` | 业务分支中的 console/stdout patch | `ChannelUiAdapter`/controller 产生 event；诊断走受控 stderr/file | 迁移完成后不再保留直接 stdout 路径 |
+| DSH tool、external editor、shell child | stdout/stderr 或暂时 tty takeover | adapter transcript 清洗，或声明 child 暂时拥有 tty；两者不得混用 | compare 只比较 event/frame，不复制 child 输出 |
+| plugin `console.*`、第三方 logger | 未声明的 stdout/stderr | 默认拒绝/重定向至 diagnostics；allowlist 必须绑定 plugin/instance/cleanup | 未登记写入阻断最终合并 |
 
-验收时使用 `pnpm verify:tui-v2 -- --stage ownership --output "$RUNNER_TEMP/tui-v2/ownership.json"`，报告扫描根、直接调用位置、allowlist、owner、generation 和 stream queue 证据；阶段 8 前旧路径必须迁移或明确登记，阶段 9 的全仓 guard 不能依赖旧 allowlist。所有 stage/bench/soak artifact 默认写入 `$RUNNER_TEMP/tui-v2`（脚本负责 `mkdir -p`、原子 rename 和清理）；若本地需要保留 `artifacts/tui-v2`，必须由显式 `--output` 指定并由 `.gitignore`/CI cleanup 管理，不能成为默认未跟踪产物。
+验收时使用 `pnpm verify:tui-v2 -- --check ownership --output "$RUNNER_TEMP/tui-v2/ownership.json"`，报告扫描根、直接调用位置、allowlist、owner、generation 和 stream queue 证据；最终全仓 guard 必须证明旧路径已迁移或删除，不能依赖长期 allowlist。所有 check/bench/soak artifact 默认写入 `$RUNNER_TEMP/tui-v2`（脚本负责 `mkdir -p`、原子 rename 和清理）；若本地需要保留 `artifacts/tui-v2`，必须由显式 `--output` 指定并由 `.gitignore`/CI cleanup 管理，不能成为默认未跟踪产物。
 
 ---
 
@@ -992,9 +993,9 @@ export interface ScreenTakeover {
 
 以下能力保留在现有 DSH/Cordis adapter：session event、工具执行、审批、用户问题、模型/预设/effort、workspace、settings、plugin lifecycle、session resume/rewind、effect ledger 和权限/契约验证。v2 只改变 UI 事件进入和展示方式。
 
-### 7.2 Channel 兼容桥
+### 7.2 Channel UI adapter
 
-迁移期间保留 `Channel` 公共接口，新增一个显式 bridge：
+领域层继续保留 `Channel` 公共接口；v2 在其上建立最终的显式 UI adapter：
 
 ```text
 Channel.subscribe/version/rows/status/actions
@@ -1011,7 +1012,7 @@ bridge 的责任：
 - 订阅 question/approval/dialog/status stores，并分配明确优先级。
 - 在 resume/new session/rewind/clear 等 reset epoch 变化时发送完整 `session/rows-reset`，清理旧 row cache 和 viewport anchor；快照缺口或 hash 不一致时优先 reset，不静默丢行。
 
-生产接线必须从 `src/dsh-adapter/plugin.ts` 开始：TTY 校验、`cordis.patch.yml`/service 注册完成后创建 coordinator/bootstrap，所有 React mount、child stderr guard、update restart、teardown-vs-user-exit、resume marker、`finishExit` 和终端清理都映射到 v2 lifecycle。`src/index.ts`/`scripts/run.ts` 的 profile/env/HMR/launcher 语义保持不变；不能只把 `channel.ts -> Chat.tsx` 当作完整启动链路。`scripts/run.ts` 的 heap-watch/diagnostic sampler 也必须由 lifecycle 注册并在 stop/teardown 清除或保持明确 `unref`，不能成为 v2 之外的永久 timer。
+生产接线必须从 `src/dsh-adapter/plugin.ts` 开始：TTY 校验、`cordis.patch.yml`/service 注册完成后创建 coordinator/bootstrap，所有现有 React mount 替换为 v2 lifecycle，同时覆盖 child stderr guard、update restart、teardown-vs-user-exit、resume marker、`finishExit` 和终端清理。`src/index.ts`/`scripts/run.ts` 的 profile/env/HMR/launcher 语义保持不变；不能只把 `channel.ts -> Chat.tsx` 当作完整启动链路。`scripts/run.ts` 的 heap-watch/diagnostic sampler 也必须由 lifecycle 注册并在 stop/teardown 清除或保持明确 `unref`，不能成为 v2 之外的永久 timer。
 
 ### 7.3 Chat.tsx 拆分映射
 
@@ -1026,13 +1027,13 @@ bridge 的责任：
 | 消息行视觉分支 | `components/transcript/` registry |
 | fullscreen/inline 选择 | coordinator/bootstrap；组件不判断物理 screen |
 | selection/search/copy | model selection state + compositor layer |
-| trajectory/session browser/settings 场景切换 | scene controller；先通过 adapter bridge 复用 |
+| trajectory/session browser/settings 场景切换 | scene controller；通过最终 v2 scene/UI adapter 复用 |
 
 ### 7.4 插件扩展
 
-当前 `src/dsh-adapter/scenes.ts`、`src/scenes.ts` 与 `docs/plugins.md` 将 scene 定义为持有宿主 React、`ui`、`channel`、`close` 的整屏 React component，`package.json` 还公开 `./scenes` 与 `./jsx-runtime`。删除 React 前必须先冻结 scene v2 contract、版本协商和弃用窗口；不能仅把类型名改成 `Component`。
+当前 `src/dsh-adapter/scenes.ts`、`src/scenes.ts` 与 `docs/plugins.md` 将 scene 定义为持有宿主 React、`ui`、`channel`、`close` 的整屏 React component，`package.json` 还公开 `./scenes` 与 `./jsx-runtime`。本次实现将所有仓库内 scene 一次性迁移到最终 `SceneV2` contract，并在同一 breaking release 删除 React scene exports；不设置 legacy adapter 或中间弃用窗口。
 
-插件不得直接持有 v2 renderer internals。保留现有 plugin spec 和 grant 边界，只增加稳定的 UI capability。版本协商先在注册时完成：宿主只接受声明了 `apiVersion: '2'` 的 descriptor，legacy descriptor 必须明确走 adapter，未知版本返回结构化 `unsupported-scene-api`，不能在运行期猜测：
+插件不得直接持有 v2 renderer internals。保留现有 plugin spec 和 grant 边界，只增加稳定的 UI capability。版本校验在注册时完成：宿主只接受声明了 `apiVersion: '2'` 的 descriptor；旧 React descriptor 直接返回结构化 `unsupported-scene-api` 并要求按 breaking-release 迁移，不能提供 legacy adapter，也不能在运行期猜测：
 
 ```ts
 export type SceneCommand =
@@ -1071,32 +1072,16 @@ export interface SceneCommandDescriptor {
   schemaVersion: number
   validate(payload: SerializableValue): void
 }
-export interface SceneVersionRequest { supported: readonly ['2'] | readonly string[] }
 export type SceneRegistration =
   | { status: 'accepted'; apiVersion: '2'; descriptorId: string }
   | { status: 'rejected'; code: 'unsupported-scene-api' | 'missing-grant' | 'duplicate-scene'; supported: readonly ['2'] }
-
-/** Host-only compatibility boundary for the current src/dsh-adapter/scenes.ts API. */
-export interface LegacyReactSceneAdapter {
-  apiVersion: 'legacy-react'
-  descriptor: TuiSceneDescriptor
-  pluginId: string
-  instanceId: string
-  hostRoot: unknown
-  props: TuiSceneProps
-  mount(lease: TakeoverLease): Promise<void>
-  handleInput(event: TerminalInputEvent): void
-  invalidate(): void
-  unmount(reason: 'user' | 'teardown' | 'error'): Promise<void>
-}
 export interface SceneRegistrationHandle {
   readonly result: SceneRegistration
   dispose(): void
 }
 export interface TuiSceneRuntimeV2Contract {
-  /** New API; the existing register(TuiSceneDescriptor, ...) remains unchanged during the compatibility window. */
-  registerV2(descriptor: SceneDescriptorV2, request: SceneVersionRequest, identity?: unknown): SceneRegistrationHandle
-  createLegacyAdapter(descriptor: TuiSceneDescriptor, pluginId: string, instanceId: string): LegacyReactSceneAdapter
+  /** Final API; the old React descriptor/register overload is removed in this breaking release. */
+  register(descriptor: SceneDescriptorV2, identity?: unknown): SceneRegistrationHandle
 }
 
 export interface ToolRowView {
@@ -1117,38 +1102,40 @@ export interface PluginRowView {
 
 `SceneV2` 的 `SceneCapabilityContext` 是一次注册生成的 capability token，`pluginId + instanceId + sceneId` 是诊断和 row identity 的稳定前缀；`dispatch` 只接受 `SceneCommand`，其中 `commandId` 必须在 descriptor 注册时声明并通过该 plugin 的 schema validator，不能取得 `Channel`、Cordis context、writer 或 stdout。`takeover` 只是在宿主签发后注入的 opaque lease token，scene 不能据此自行 restore。宿主为每个 scene 建立 error boundary：factory、render、handleInput、dispatch、`onClose`/`unmount` 的异常都转成带 plugin/scene identity 的 `app/error`，先撤销该 scene 的 capability，再通过 `ScreenTakeover.restore()` 恢复前一个 layer，不能让异常穿透 coordinator。关闭和 teardown 的回调最多执行一次，并在重复调用时返回同一个已完成结果。`SceneV2.render()` 返回可变 `string[]`；唯一的 `SceneComponentAdapter` 将绑定的 view/context 转成 pi `Component.render(width): string[]`，外部只读消费者必须复制数组，禁止把 `readonly string[]` facade 直接传给 pi。
 
-`LegacyReactSceneAdapter` 是兼容窗口内唯一允许持有旧 React `ui/channel/close` props 的宿主隔离层；其 `descriptor`/`props` 必须直接对应当前 `TuiSceneDescriptor`/`TuiSceneProps`（包括 host React、ui、Channel 和 close），`hostRoot` 是由宿主创建且不向插件暴露的 React root。adapter 负责 React mount/unmount、输入/resize 转发、nested focus restore、grant 检查、error boundary、`ScreenTakeover` lease 和 generation 恢复，并把 legacy scene 的关闭/error 映射为 `SceneCommand`/`app/error` 等价事件。旧 scene 不能在 `LegacyReactSceneAdapter` 外写 stdout。当前 `TuiSceneRuntime.register(descriptor: TuiSceneDescriptor, identity?)` 保持原有返回 dispose function；阶段 4 前新增 `registerV2(descriptor: SceneDescriptorV2, request: SceneVersionRequest, identity?): SceneRegistrationHandle` 和 `createLegacyAdapter(...)`，只按 `apiVersion` discriminant 分流，注册时完成 version/grant/duplicate 校验并返回 `SceneRegistration`，不能让调用方把 v2 descriptor 强转为旧 React descriptor。阶段 4/7 的 plugin fixture 必须分别覆盖 SceneV2 与 legacy adapter 的 version negotiation、identity、grant、输入/resize、takeover、error boundary、close/teardown 一次性语义；阶段 9 的 breaking release 才删除 legacy export，并以包级 import/export smoke 和旧插件终止版本作为出口。
+`TuiSceneRuntime.register(descriptor: SceneDescriptorV2, identity?)` 是最终公开注册 API；注册时完成 `apiVersion`、grant、command schema 和 duplicate 校验，返回 `SceneRegistrationHandle`。所有 scene 都由 coordinator 创建并取得 `ScreenTakeover` lease，不能访问 React、Channel、writer 或 stdout。scene factory/render/handleInput/dispatch/close 的异常统一转成 `app/error`，撤销 capability 后恢复前一个 layer；关闭和 teardown 回调最多执行一次。仓库内所有现有 React scene 必须在本次实现中完成等价迁移，并提供包级 import/export smoke；外部插件按 breaking-release 迁移文档升级，不能依赖最终包中的 legacy adapter。
 
 - 注册 command、status contribution、dialog、scene 或 row renderer。
 - v2 row renderer 输入序列化的 `ToolRowView`/`PluginRowView`，输出 `Component` 或可变 `string[]`；scene v2 输入不可变 `SceneViewModel`，输出 line component，并通过 capability token 获取 dispatch/close，不暴露 React/Channel。
 - 插件 component 不能拿到 `TerminalWriter`、stdout、DSH session 或 Cordis context。
 - 插件异常转换为 `app/error` 或受控 notice，不得破坏主 frame。
-- 迁移期旧 React scene 只能由 `LegacyReactSceneAdapter` 执行，或明确禁用并给出错误；阶段 0--8 保持旧 export 可导入，阶段 9 的 breaking release 才删除 `./jsx-runtime`，并提供 import/export smoke test、旧插件终止版本和迁移文档。
-- v2 对外只通过版本化 `./tui-v2`/plugin capability export 暴露 `Component`、`SceneViewModel`、序列化 row 和 dispatch 类型；不导出 vendor、Frame buffer、TerminalWriter 或 ANSI builder。新 export 的 semver、grant、identity、error-boundary 和 lifecycle 语义必须有包级 smoke/fixture，旧 `./scenes` 在兼容窗口内继续走隔离 adapter。
+- 本次 breaking release 直接删除 `./scenes` 的 React descriptor 和 `./jsx-runtime`；仓库内插件 fixture、文档和 package exports 必须同时更新，不能以“兼容窗口”推迟删除。
+- v2 对外只通过版本化 `./tui-v2`/plugin capability export 暴露 `Component`、`SceneViewModel`、序列化 row、`SceneDescriptorV2` 和 typed command；不导出 vendor、Frame buffer、TerminalWriter 或 ANSI builder。新 export 的 semver、grant、identity、error-boundary 和 lifecycle 语义必须有包级 smoke/fixture。
 
 ---
 
-## 8. 分阶段实施计划
+## 8. 一次性实施工作包
 
-阶段不可跳过；每个阶段完成后必须通过出口条件，才能扩大功能面。阶段顺序优先保证可观测性和回滚能力，而不是优先迁移视觉细节。
+本节不是发布路线，也不要求中间版本、灰度开关或“先做一个能跑的半成品”。WP-01--WP-09 是同一实现分支中的依赖有向图：可以在分支内并行开发，但只有所有工作包和最终验收全部通过后，才合并/发布一次完整替换。每个工作包的命令只是本地依赖检查，不单独提交、合并或发布；不允许为了通过检查保留临时 v1/v2 分支、兼容 adapter 或空壳 API。
 
-### 阶段 0：v1 冻结与安全底线
+依赖关系：`WP-01` -> (`WP-02`、`WP-03`) -> `WP-04` -> `WP-05` -> `WP-06` -> (`WP-07`、`WP-08`) -> `WP-09` -> 最终验收。所有工作包都必须在同一提交集合中完成；若任一包未完成，不能进入 merge/release。
 
-**目标：** 旧 renderer 只接受数据丢失、无法退出、终端无法恢复、严重 OOM 和安全问题修复。
+### WP-01：基线、契约和 testkit
+
+**目标：** 冻结旧 renderer 的可重放基线，并建立最终 renderer 的契约与 testkit；旧 renderer 不作为生产实现继续维护。
 
 **工作项：**
 
-- 标记旧 renderer 为 `v1`，禁止新增大型布局/缓存/协议能力。
-- 先建立 `test:tui-v2`/`verify:tui-v2` 的最小 runner 和 lifecycle smoke；后续阶段只能扩展 fixture，不能以尚未注册的命令作为出口。
+- 将旧 renderer 标记为离线 baseline，禁止在其上新增大型布局/缓存/协议能力；它不属于最终 runtime，除 P0 数据/安全证据外不再修改。
+- 在同一实现分支建立完整的 `test:tui-v2`/`verify:tui-v2` runner 和 lifecycle smoke；工作包只能扩展同一套 fixture，不能以尚未注册的命令作为出口。
 - 固定基线运行命令、Node 版本、终端 profile 和当前回归脚本；新增跨平台 `scripts/bench-tui-v2.ts --fixture <id> --output <path>`，不得复用带硬编码工作目录的旧 `scripts/perf-probe.cjs`。
 - 为现有退出、resize、streaming、shrink、CJK、resticky 行为补齐可执行入口。
 - 记录当前内存/frame/input 延迟基线；无法测量的指标先标为 unknown，不用主观结论替代。
 
-**出口条件（命令 -> 产物 -> 阻断条件）：** `pnpm compile`、`pnpm verify:build`、迁移台账中 `keep-v1` 的 CI 原命令、`pnpm test:tui-v2 -- --test-name-pattern lifecycle`；产物为基线 JSON（Node/OS/profile/fixture/commit）和 clean-stop 子进程报告。任一 v1 回归、退出码/终端模式不恢复或基线字段缺失即阻断。此阶段只承诺接管前 v2 初始化失败可回退，不能宣称崩溃后同进程回退。
+**依赖检查（不单独提交或发布）：** `pnpm compile`、`pnpm verify:build`、迁移台账中的现有 CI 命令、`pnpm test:tui-v2 -- --test-name-pattern lifecycle`；产物为基线 JSON（Node/OS/profile/fixture/commit）和 clean-stop 子进程报告。任一现有回归、退出码/终端模式不恢复或基线字段缺失即阻断最终合并。WP-01 不修改旧 renderer 行为，也不承诺同进程 fallback；回滚只由最终发布的上一版本/launcher 提供。
 
-### 阶段 1：建立故障回放语料和 testkit
+### WP-02：故障回放语料与 testkit
 
-**目标：** 在写新 renderer 前，让关键 bug 可重放、可比较。
+**目标：** 在实现 renderer 前，让关键 bug 可重放、可比较。
 
 **事件 trace 最小集合：**
 
@@ -1180,16 +1167,16 @@ exit/error
 - trace capture 边界包含 editor buffer/cursor、viewport scroll/sticky/unseen、selection、question/approval/dialog stores、status/shortcut/scene runtime、terminal capability/resize/signal 和 reset epoch；session log 只覆盖业务事件，不能单独作为 UI replay oracle。
 - 从 `docs/project-documentation/rendering.md`、现有 verify 脚本和 issue/debug 日志提取脱敏 fixture。
 - 实现 stateful `VirtualTerminal`：解析 ANSI/OSC/DEC、维护 cursor/modes/scrollback/cell grid，支持 resize、partial write、late patch、generation 和 cleanup；初始状态固定为空屏、cursor `(0,0)`、默认 mode，并提供 `snapshot()`/`reset()`。
-- 以锁定版本的 `@xterm/headless`（阶段 1 记录确切版本，不能使用 `^`）作为一个 oracle，同时保留最小独立 parser；两者通过 ANSI/OSC/DEC conformance fixture 对照，明确不支持序列的 conservative 行为。
+- 以锁定版本的 `@xterm/headless`（在同一变更中记录确切版本，不能使用 `^`）作为一个 oracle，同时保留最小独立 parser；两者通过 ANSI/OSC/DEC conformance fixture 对照，明确不支持序列的 conservative 行为。
 - xterm/headless 只作为已声明序列的终端语义参考，不是产品 `renderFull` 的实现依赖；本地 parser 必须独立维护 cursor/mode/scrollback 不变量。两者对同一 conformance fixture 不一致时报告失败并保留双方快照，不能任选一个结果把冲突吞掉；产品语义仍由人工审阅的 golden cell-grid 决定。
 - 实现 `renderFull(state)` 与 `replayPatch(oldGrid, patch)` 对照器；差分等价与产品语义 golden 分开，至少提交首帧、resize、scrollback、overlay、cleanup 五类独立 golden cell-grid。
 - 失败时保存 trace id、generator version、seed、frame id、profile、state/generation、diff cell 坐标和最近 N 个事件；N 有上限，随机失败必须直接写出可重放 JSONL fixture。
 
-**出口条件（命令 -> 产物 -> 阻断条件）：** `pnpm test:tui-v2 -- --test-name-pattern 'trace|virtual terminal|redaction'` 和 `pnpm verify:tui-v2 -- --stage trace`；产物为版本化 fixture、golden grid、parser conformance 报告和迁移台账。核心 trace 全部可从 clean `VirtualTerminal.reset()` 重放；differential parser、xterm/headless 和产品 golden 的生成路径必须至少有一个与被测 renderer 独立，产品 golden 不得由 `renderFull` 自动生成；任一控制序列注入、宽度越界、seq 乱序未定义或 fixture 无 seed 即阻断。
+**依赖检查（不单独提交或发布）：** `pnpm test:tui-v2 -- --test-name-pattern 'trace|virtual terminal|redaction'` 和 `pnpm verify:tui-v2 -- --check trace`；产物为版本化 fixture、golden grid、parser conformance 报告和迁移台账。核心 trace 全部可从 clean `VirtualTerminal.reset()` 重放；differential parser、xterm/headless 和产品 golden 的生成路径必须至少有一个与被测 renderer 独立，产品 golden 不得由 `renderFull` 自动生成；任一控制序列注入、宽度越界、seq 乱序未定义或 fixture 无 seed 即阻断。
 
-### 阶段 2：锁定 pi-tui fork 与最小终端内核
+### WP-03：pi fork 与终端内核
 
-**目标：** 引入最小可运行的 line component、diff、输入、main/alt screen 双 backend。
+**目标：** 引入最终版本的 line component、diff、输入、main/alt screen 双 backend 基础。
 
 **工作项：**
 
@@ -1201,9 +1188,9 @@ exit/error
 - 保留上游测试并移植到本项目 test runner；每个本地修复与测试一一对应。
 - 明确 fork patch ledger：文件、上游行为、DSH 改动、原因、测试、重新 vendoring 步骤。
 
-**出口条件（命令 -> 产物 -> 阻断条件）：** `pnpm test:tui-v2 -- --test-name-pattern 'pi fork|terminal|overlay'`、`pnpm verify:tui-v2 -- --stage fork`、`pnpm verify:package`；产物为 fork manifest、文件 hash、MIT `LICENSE`/`NOTICE`、patch ledger、上游测试报告和 tarball 检查。可在 virtual terminal 中渲染静态 text、输入 editor、resize、overlay 和 clean stop；v2 目录无 React/Yoga import，tarball 缺 `LICENSE`/`NOTICE` 或仓库/source artifact 缺 ledger/hash 时阻断。
+**依赖检查（不单独提交或发布）：** `pnpm test:tui-v2 -- --test-name-pattern 'pi fork|terminal|overlay'`、`pnpm verify:tui-v2 -- --check fork`、`pnpm verify:package`；产物为 fork manifest、文件 hash、MIT `LICENSE`/`NOTICE`、patch ledger、上游测试报告和 tarball 检查。可在 virtual terminal 中渲染静态 text、输入 editor、resize、overlay 和 clean stop；v2 目录无 React/Yoga import，tarball 缺 `LICENSE`/`NOTICE` 或仓库/source artifact 缺 ledger/hash 时阻断。
 
-### 阶段 3：最小纵向切片（Walking Skeleton）
+### WP-04：状态模型、adapter 和最小纵向切片
 
 **功能范围：**
 
@@ -1217,14 +1204,14 @@ exit/error
 - 创建 `UiState/reducer/selectors` 和 `ChannelUiAdapter`。
 - 实现 transcript 的 user/assistant/tool 三种 component。
 - 实现 editor、status、spinner、cancel 和 terminal lifecycle。
-- 用同一组 trace 同时跑 v1 和 v2，输出最终 cell grid、frame 数、写入字节、峰值内存。
-- 保持 v1 默认，v2 通过 `DSH_TUI_RENDERER=v2` 手动启动。
+- 用同一组离线 trace 分别运行隔离的旧 baseline capture 和最终 renderer，输出最终 cell grid、frame 数、写入字节、峰值内存；比较过程不得启动第二个真实 TUI。
+- 最终 bootstrap 直接使用 v2，删除 `DSH_TUI_RENDERER` 选择逻辑；旧 baseline 只由 compare harness 离线调用。
 
-**出口条件（命令 -> 产物 -> 阻断条件）：** `pnpm test:tui-v2 -- --test-name-pattern 'walking skeleton|input|stream'`、`pnpm verify:tui-v2 -- --stage skeleton`；产物为 v1/v2 同 trace 报告和 child-process cleanup 报告。核心 trace/profile 清单逐项通过，Ctrl+C、SIGTERM、异常后 raw/alt/mouse/paste/cursor 恢复；未实现功能有稳定 `unsupported` notice 或 v1 fallback。任一未登记 TypeError、frame mismatch 或子进程超时即阻断。
+**依赖检查（不单独提交或发布）：** `pnpm test:tui-v2 -- --test-name-pattern 'walking skeleton|input|stream'`、`pnpm verify:tui-v2 -- --check skeleton`；产物为最终 renderer 的 trace 报告和 child-process cleanup 报告。核心 trace/profile 清单逐项通过，Ctrl+C、SIGTERM、异常后 raw/alt/mouse/paste/cursor 恢复；未实现功能必须在同一提交集合中完成，不允许用旧 baseline 或任何 fallback 临时遮蔽。任一未登记 TypeError、frame mismatch 或子进程超时即阻断。
 
-### 阶段 4：完成 UI model 和 controllers
+### WP-05：controllers、replay 和业务 adapter
 
-**迁移顺序：** session event normalization -> replay/resume/rewind -> streaming -> input/editor -> commands -> approval/question -> scrolling。
+**实现依赖顺序（同一提交集合内，可按资源并行）：** session event normalization -> replay/resume/rewind -> streaming -> input/editor -> commands -> approval/question -> scrolling。
 
 **工作项：**
 
@@ -1234,9 +1221,9 @@ exit/error
 - 为 approval、question、plugin dialog 建立 overlay focus/capture 优先级。
 - 用 event trace 验证实时事件和 replay 事件得到相同 `UiState`。
 
-**出口条件（命令 -> 产物 -> 阻断条件）：** `pnpm test:tui-v2 -- --test-name-pattern 'controller|replay|adapter'`、`pnpm verify:tui-v2 -- --stage controllers`；以 canonical state serializer 比较 live/replay，覆盖 duplicate/out-of-order/gap/reset/resume/rewind/cancel；controller 无 stdout 写入，component 无 DSH/Cordis import。缺少 seq 语义、异步 timer 未取消或 live/replay canonical state 不等价即阻断。
+**依赖检查（不单独提交或发布）：** `pnpm test:tui-v2 -- --test-name-pattern 'controller|replay|adapter'`、`pnpm verify:tui-v2 -- --check controllers`；以 canonical state serializer 比较 live/replay，覆盖 duplicate/out-of-order/gap/reset/resume/rewind/cancel；controller 无 stdout 写入，component 无 DSH/Cordis import。缺少 seq 语义、异步 timer 未取消或 live/replay canonical state 不等价即阻断。
 
-### 阶段 5：fullscreen 正确性实现
+### WP-06：fullscreen backend 与 compositor
 
 **工作项：**
 
@@ -1246,9 +1233,9 @@ exit/error
 - 实现 resize transaction、SIGCONT recovery、Ctrl+L full redraw、异常 cleanup。
 - 在 @xterm/headless/virtual terminal 中以 full render 对照差分 patch。
 
-**出口条件（对应第 9.2、9.3、9.4 和第 10.1 节）：** `pnpm test:tui-v2 -- --test-name-pattern 'fullscreen|compositor|scroll|width'`、`pnpm verify:tui-v2 -- --stage fullscreen`；核心 golden/fixture 的 cell、cursor、mode、物理行宽断言全部通过，任意 overlay 移动/缩放/关闭无残影，P0/P1 fixture 清单无未登记差异，且 v2 不依赖旧 `src/ink`。第 11 节 guard 只作为额外边界，不替代本出口。
+**依赖检查（不单独提交或发布；对应第 9.2、9.3、9.4 和第 10.1 节）：** `pnpm test:tui-v2 -- --test-name-pattern 'fullscreen|compositor|scroll|width'`、`pnpm verify:tui-v2 -- --check fullscreen`；核心 golden/fixture 的 cell、cursor、mode、物理行宽断言全部通过，任意 overlay 移动/缩放/关闭无残影，P0/P1 fixture 清单无未登记差异。旧 `src/ink` 的删除由 WP-09 在同一提交集合的最终清理项中完成。
 
-### 阶段 6：独立 inline backend
+### WP-07：inline backend
 
 **工作项：**
 
@@ -1257,11 +1244,11 @@ exit/error
 - 禁止把 fullscreen 的逻辑复制成 `if (mode === 'inline')` 分支；共用的是 backend contract 和 ViewModel。
 - 通过 trace 明确 inline 的功能差异，并在 UI 中使用一致的降级反馈。
 
-**出口条件（命令 -> 产物 -> 阻断条件）：** `pnpm test:tui-v2 -- --test-name-pattern 'inline|scrollback|third-party output'`、`pnpm verify:tui-v2 -- --stage inline`；产物为 main-screen scrollback 快照、第三方输出重锚和 terminal-mode cleanup 报告。核心 trace 可重放，无重复 scrollback、残影和模式泄漏；fullscreen 专属能力必须出现在支持矩阵中，不能静默伪装 parity。
+**依赖检查（不单独提交或发布）：** `pnpm test:tui-v2 -- --test-name-pattern 'inline|scrollback|third-party output'`、`pnpm verify:tui-v2 -- --check inline`；产物为 main-screen scrollback 快照、第三方输出重锚和 terminal-mode cleanup 报告。核心 trace 可重放，无重复 scrollback、残影和模式泄漏；fullscreen 专属能力必须出现在支持矩阵中，不能静默伪装 parity。
 
-### 阶段 7：高级功能迁移
+### WP-08：全量组件、场景和插件迁移
 
-按风险和依赖顺序：
+按风险和依赖列出的实现清单（不代表发布阶段）：
 
 1. Markdown 完整语法、代码高亮、表格和截断。
 2. tool cards、tool output、错误和折叠。
@@ -1273,11 +1260,11 @@ exit/error
 
 每一项都必须新增 component contract 测试、宽度边界测试和至少一个 trace 场景，并登记对应的旧回归脚本迁移状态；高级能力不得阻塞核心退出/恢复。图片、OSC52、鼠标、Kitty negotiation、external editor/update 和 plugin crash 各至少有一个 subprocess/profile fixture，不能只依赖静态 component 测试。
 
-### 阶段 8：双跑、灰度与默认切换
+### WP-09：最终集成、删除和一次性发布
 
 **工作项：**
 
-compare harness 的 testkit contract 固定如下：
+离线 compare harness 的 contract 固定如下；它属于 `tools/tui-v2-baseline/`，不得被 `src/tui-v2` 或最终 bootstrap import：
 
 ```ts
 export interface V1CaptureRenderer {
@@ -1302,34 +1289,35 @@ export interface V1CaptureResult {
 }
 ```
 
-`V1CaptureRenderer` 必须在创建旧 Ink/React root 前注入 fake writer、fake clock、fake stdin 和 no-op DSH/Channel adapter；禁止注册真实 lifecycle listener、订阅 live Channel、执行 command、访问 `process.stdout/stderr`、写 session 或启动 timer。每个 capture 结束后销毁 root 并断言 writes 只进入 fake writer；compile smoke 要确保生产 v1 bootstrap 不能误用该 capture backend。R-015 的完成定义包含该接口、`v1-capture.ts`/`compare-harness.ts`、side-effect spy 和同一 trace 的 v1/v2 grid/frame/bytes report，capture 缺失或写真实 stdout 即阻断 compare gate。
+`V1CaptureRenderer` 仅用于离线迁移对照，不是最终运行时能力：它由独立的 baseline tool 或预先冻结的旧版本 artifact 提供，在创建旧 Ink/React root 前注入 fake writer、fake clock、fake stdin 和 no-op DSH/Channel adapter；禁止注册真实 lifecycle listener、订阅 live Channel、执行 command、访问 `process.stdout/stderr`、写 session 或启动 timer。每个 capture 结束后销毁 root 并断言 writes 只进入 fake writer；compile/package smoke 要确保最终 bootstrap 和 runtime tarball 不能误用该 capture backend。WP-09 的完成定义包含 `tools/tui-v2-baseline/capture.ts`、`compare-harness.ts`、side-effect spy 和同一 trace 的离线 grid/frame/bytes report；baseline 缺失或写真实 stdout 即阻断最终验收。
 
-- `DSH_TUI_RENDERER=v1|v2` 选择 renderer；默认值在配置/帮助中可见。
-- `DSH_TUI_RENDERER_COMPARE=1` 时在不写第二份 stdout 的情况下比较 ViewModel、frame metadata 和 virtual grid；v1/v2 都只消费同一份 immutable snapshot，只有一个 input controller、lifecycle 和 stdout writer，不能双订阅 Channel 或重复执行 DSH side effect。v1 必须通过 `V1CaptureRenderer` 离屏运行：它接收 snapshot/trace、使用 fake `TerminalWriter` 和 `VirtualTerminal`，屏蔽 raw/alt/mouse/paste/query、timer、Channel subscription、DSH command 和所有 stdout/stderr side effect，只输出 frame/grid/diagnostic。compare harness 只允许离线 trace 或这个 capture backend，禁止把生产 v1 `Ink` 实例挂到第二个真实终端；若无法建立离屏捕获，compare job 必须失败而不是降级为“只看日志”。
-- 对同一 session trace 记录 v1/v2：最终 cell grid、ANSI bytes、frame duration、input latency、峰值/稳态内存。
-- 允许按 terminal profile、inline/fullscreen 和 feature flag 灰度。
-- 发生 crash、错误增长、终端恢复失败或 parity blocker 时停止 v2 灰度并回滚发布/启动配置；不能声称已接管终端的同一进程可以在 crash 后自动切换。接管前初始化失败仍按生命周期状态机尝试 v1；接管后只 cleanup + 专用退出码，由 launcher/上一个已发布包重新拉起 v1。所有路径用 child-process/PTY harness 验证。
+baseline tool 使用冻结的旧版本 source/artifact 和独立的 dev-only 依赖边界；它可以包含 React/Ink 仅用于离线 capture，但不得被 `src/tui-v2`、生产 bootstrap、生产 package exports 或 runtime tarball 引用。删除 `src/ink` 和生产依赖不会破坏 compare：compare 必须能够从带有 source commit/hash 的冻结 artifact 重放，artifact 与最终包分开验证和发布。
 
-**默认切换条件：** v2 在核心支持矩阵连续 soak 通过（见 10.1 的 PR/nightly/release 时长），`pnpm verify:tui-v2 -- --stage regression-matrix` 机器校验没有 `blockDefault: true` 的 open/in-progress P0/P1，所有关闭项有对应 artifact，未迁移功能有明确降级，`DSH_TUI_RENDERER=v1` 与上一发布包的恢复手册可用，且已经过初始化失败/接管后失败/cleanup error/重启验证。
+- `DSH_TUI_RENDERER` 不再提供 v1/v2 选择；最终 bootstrap 只有一条 v2 路径。compare harness 只在离线 trace 中运行 `V1CaptureRenderer` 与最终 renderer，不能双订阅 Channel、重复执行 DSH side effect 或启动第二份真实 stdout。
+- 对同一 session trace 记录离线旧 baseline 与最终 renderer 的 cell grid、ANSI bytes、frame duration、input latency、峰值/稳态内存；该报告用于替换审阅，不形成生产双跑依赖。
+- fullscreen/inline、terminal profile 和 capability fallback 在最终配置中一次性确定；不提供 feature flag、灰度或临时 renderer switch。
+- 发生 crash、错误增长或终端恢复失败时，当前进程只执行 cleanup 并以专用退出码结束；由上一发布包/独立 launcher 按 rollback manifest 重新拉起，不允许同进程自动切换 v1。所有路径用 child-process/PTY harness 验证。
 
-### 阶段 9：删除 v1 热路径
+**最终集成检查（不单独发布）：** 离线 compare、完整支持矩阵 soak（见 10.1）、`pnpm verify:tui-v2 -- --check regression-matrix` 和 child-process cleanup/rollback drill 全部通过；没有 `blockDefault: true` 的 open/in-progress P0/P1，所有关闭项有对应 artifact，所有仓库内 scene/plugin 已迁移，最终 bootstrap 无 renderer switch。任一未迁移功能、旧热路径、临时 fallback 或终端恢复失败都阻断最终合并。
+
+### WP-09 内的最终清理项：同一变更中的旧链路删除与最终包清理
 
 **工作项：**
 
-- 在至少一个完整稳定版本的 v2 默认窗口结束前保留 v1 入口和上一版本回滚包；删除前必须发布 breaking-change/插件弃用说明。删除 v1 后，当前包不再宣称支持 `DSH_TUI_RENDERER=v1`，emergency rollback 只能使用上一发布包或独立 launcher。
-- 删除 v1 renderer 的启动分支和旧 JSX 入口（仅在上述保留窗口结束后）。
+- 在同一变更中完成 breaking-change/插件迁移说明、所有仓库内 scene/plugin fixture 迁移和旧链路删除；上一发布包只作为外部 rollback artifact，不作为当前包的运行时依赖。
+- 删除 v1 renderer 的启动分支、旧 JSX 入口、`DSH_TUI_RENDERER` 环境选择和仅供迁移的 adapter/fallback。
 - 删除 `react`、`react-reconciler`、Yoga 及仅由旧 Ink 使用的依赖。
-- 删除 `src/ink`、`src/native-ts/yoga-layout` 和旧 screen 组件前先核对公共导出、插件 contract、构建产物和文档。
-- 保留必要的历史迁移说明和 fork license，不保留可执行的第二套 renderer。
+- 删除 `src/ink`、`src/native-ts/yoga-layout` 和旧 screen 组件；在删除前由同一最终验收核对公共导出、插件 contract、构建产物和文档，不能把删除推迟到后续版本。
+- 保留必要的历史迁移说明和 fork license，不保留可执行的第二套 renderer；`V1CaptureRenderer` 放在独立离线工具边界或由冻结 baseline artifact 提供，不能被 runtime import。
 - 更新 README、架构文档、开发脚本、打包验证和安全边界。
 
-**出口条件（命令 -> 产物 -> 阻断条件）：** `pnpm compile`、`pnpm verify:build`、`pnpm verify:tui-v2 -- --stage v2-only`、`pnpm test:tui-v2`、`pnpm verify:package`、双 Node 矩阵 build；tarball 只含 v2 runtime、指定 license/NOTICE 和必要迁移文档，AST/dependency guard 确认无旧 reconciler/Yoga 热路径，公开 exports/plugin fixtures 通过。任一旧回归脚本因删除路径失效、包内容缺 license 或 v1 回滚窗口未完成即阻断。
+**出口条件（命令 -> 产物 -> 阻断条件）：** `pnpm compile`、`pnpm verify:build`、`pnpm verify:tui-v2 -- --check v2-only`、`pnpm test:tui-v2`、`pnpm verify:package`、双 Node 矩阵 build；tarball 只含 v2 runtime、指定 license/NOTICE 和必要迁移文档，AST/dependency guard 确认无旧 reconciler/Yoga/React 热路径，公开 exports/plugin fixtures 通过，离线 baseline 工具不被 runtime 依赖。任一旧回归脚本因删除路径失效、包内容缺 license、旧选择开关残留或最终包包含第二套 renderer 即阻断。
 
 ---
 
-### 阶段附录：现有回归迁移台账
+### 工作包附录：现有回归迁移台账
 
-阶段 1 必须提交 `docs/tui-v2-regression-matrix.md`。机器可读矩阵的每一行必须包含以下字段，缺一不可：
+最终实现集合必须提交 `docs/tui-v2-regression-matrix.md`。机器可读矩阵的每一行必须包含以下字段，缺一不可：
 
 ```json
 {
@@ -1342,42 +1330,42 @@ export interface V1CaptureResult {
   "assertion": "canonical grid/mode/cleanup assertion",
   "ciCommand": "pnpm test:tui-v2 -- --test-name-pattern ...",
   "blockDefault": true,
-  "deleteCondition": "具体的替代 fixture、版本或阶段出口"
+  "deleteCondition": "具体的替代 fixture、最终提交条件或删除理由"
 }
 ```
 
-`severity`、`status`、`blockDefault` 只能取 schema 值；`updatedAt` 必须是 UTC RFC 3339，`traceId` 必须能在 fixture 中解析。每个旧入口只能处于 `keep-v1`、`rewrite-v2`、`dual-run` 或 `retire-with-reason` 之一，并绑定上述记录。矩阵的输入集合不是人工挑选：必须扫描 `.github/workflows/*.yml`、`package.json` scripts 和 `scripts/` 中由 CI/发布间接调用的入口，记录 `sourceCommit`、扫描命令和清单 hash。初始台账至少包含：
+`severity`、`status`、`blockDefault` 只能取 schema 值；`updatedAt` 必须是 UTC RFC 3339，`traceId` 必须能在 fixture 中解析。每个旧入口还必须有 `disposition: rewrite-v2 | remove | offline-baseline`，不得出现 `keep-v1`、`dual-run` 或迁移专用兼容状态。矩阵的输入集合不是人工挑选：必须扫描 `.github/workflows/*.yml`、`package.json` scripts 和 `scripts/` 中由 CI/发布间接调用的入口，记录 `sourceCommit`、扫描命令和清单 hash。初始台账至少包含：
 
 ```text
 rg -o 'scripts/[A-Za-z0-9_.-]+' .github/workflows package.json | sort -u
 ```
 
-阶段 1 的 `verify:tui-v2 --stage regression-matrix` 必须对扫描结果逐项检查：缺少处理状态、severity、trace、断言、owner、更新时间、CI 命令、`blockDefault` 或删除条件即失败；`P0`/`P1` 只在 `verified` 或 `retired` 且有通过 artifact 时才算关闭，`accepted-risk` 永远不能清除默认阻断；`blockDefault: true` 的 open/in-progress 条目必须使阶段出口非零。新增 CI 脚本若未更新矩阵也失败。发布 workflow 与 PR CI 分开记录，`keep-v1` 只表示在 v2 迁移期间继续运行，不得作为阶段 9 的删除豁免。
+最终验收的 `verify:tui-v2 -- --check regression-matrix` 必须对扫描结果逐项检查：缺少处理状态、severity、trace、断言、owner、更新时间、CI 命令、`blockDefault`、`disposition` 或删除条件即失败；`P0`/`P1` 只在 `verified` 或 `retired` 且有通过 artifact 时才算关闭，`accepted-risk` 永远不能清除默认阻断；`blockDefault: true` 的 open/in-progress 条目必须使最终 gate 非零。新增 CI 脚本若未更新矩阵也失败。发布 workflow 与 PR CI 分开记录，但两者都必须指向同一最终实现；不得用保留旧入口或双跑作为豁免。
 
-| 现有入口 | v2 trace/断言 | 阶段 | 处理 |
+| 现有入口 | v2 trace/断言 | 责任工作包 | 最终处理 |
 | --- | --- | --- | --- |
-| `scripts/repro-askpanel.tsx`、`scripts/verify-askpanel-layout.tsx` | question/overlay、窄宽和 resize golden | 4--5 | `rewrite-v2`，阶段 8 双跑 |
-| `scripts/repro-toolcards.tsx`、`scripts/repro-diff-split.tsx` | tool/diff line component + width | 7 | `rewrite-v2` |
-| `scripts/repro-pill.tsx`、`scripts/verify-scroll.mjs`、`scripts/verify-shrink.mjs` | sticky/unseen/shrink scroll state | 4--6 | `dual-run` 后删除旧入口 |
-| `scripts/repro-inline-scrollback.tsx`、`scripts/repro-inline-thirdparty.tsx` | main-screen scrollback/第三方输出 | 6 | `rewrite-v2` |
-| `scripts/verify-keys.tsx`、`scripts/verify-terminal-queries.tsx`、`scripts/verify-win32-input.tsx` | tokenizer、profile query、ConPTY 输入 | 2--3 | `keep-v1` + `dual-run` |
-| `scripts/verify-teardown-exit.tsx`、`scripts/verify-shutdown-stderr.tsx` | child-process cleanup/console restore | 2--3 | `rewrite-v2` |
-| `scripts/verify-extension-events.tsx`、`scripts/verify-extension-ui.tsx` | plugin event/dialog/scene boundary | 4、7 | `dual-run` |
-| `scripts/verify-resize-reflow.tsx`、`scripts/verify-message-measure-depth.tsx` | resize/长列表高度回归 | 5 | `rewrite-v2`，不用旧 Yoga oracle |
+| `scripts/repro-askpanel.tsx`、`scripts/verify-askpanel-layout.tsx` | question/overlay、窄宽和 resize golden | WP-08 | `rewrite-v2`，旧入口删除 |
+| `scripts/repro-toolcards.tsx`、`scripts/repro-diff-split.tsx` | tool/diff line component + width | WP-08 | `rewrite-v2`，旧入口删除 |
+| `scripts/repro-pill.tsx`、`scripts/verify-scroll.mjs`、`scripts/verify-shrink.mjs` | sticky/unseen/shrink scroll state | WP-05/WP-06 | `rewrite-v2`，旧入口删除 |
+| `scripts/repro-inline-scrollback.tsx`、`scripts/repro-inline-thirdparty.tsx` | main-screen scrollback/第三方输出 | WP-07 | `rewrite-v2`，旧入口删除 |
+| `scripts/verify-keys.tsx`、`scripts/verify-terminal-queries.tsx`、`scripts/verify-win32-input.tsx` | tokenizer、profile query、ConPTY 输入 | WP-03/WP-07 | `rewrite-v2`，旧入口删除 |
+| `scripts/verify-teardown-exit.tsx`、`scripts/verify-shutdown-stderr.tsx` | child-process cleanup/console restore | WP-03/WP-09 | `rewrite-v2`，旧入口删除 |
+| `scripts/verify-extension-events.tsx`、`scripts/verify-extension-ui.tsx` | plugin event/dialog/scene boundary | WP-05/WP-08 | `rewrite-v2`，旧入口删除 |
+| `scripts/verify-resize-reflow.tsx`、`scripts/verify-message-measure-depth.tsx` | resize/长列表高度回归 | WP-05/WP-06 | `rewrite-v2`，不用旧 Yoga oracle |
 
-删除 `src/ink` 前，台账中不得有 `keep-v1`；`retire-with-reason` 必须附替代覆盖和维护者确认。
+删除 `src/ink` 前，台账中所有旧入口必须为 `verified` 或 `retired`，且 `disposition` 已明确；`offline-baseline` 必须附冻结 artifact、隔离边界和维护者确认。
 
 ## 9. 测试与验证策略
 
 ### 9.0 可执行入口与产物
 
-从阶段 1 起新增以下脚本和目录（实现时同步修改 `package.json`、CI 和发布 workflow）：
+在同一实现集合中新增以下脚本和目录（同步修改 `package.json`、CI 和发布 workflow）：
 
 ```text
 test/tui-v2/**/*.test.ts          # node:test + tsx/esm；确定性单测、replay、virtual terminal
 test/tui-v2/goldens/**/*.json     # 独立 cell-grid golden（trace 不含 secret）
 fixtures/tui-v2/**/*.jsonl       # 版本化 trace，失败随机样本直接落盘
-scripts/verify-tui-v2.ts          # --stage、--profile、--fixture、--output
+scripts/verify-tui-v2.ts          # --check、--profile、--fixture、--output
 scripts/bench-tui-v2.ts           # --fixture、--iterations、--seed、--output
 scripts/soak-tui-v2.ts            # child-process/PTY，--minutes、--profile、--output
 scripts/test-tui-v2.mjs           # 递归发现、Node test runner、JSON reporter wrapper
@@ -1389,7 +1377,7 @@ scripts/verify-tui-v2-tarball.mjs # exact tgz/hash/file-manifest/license/exports
 
 ```text
 pnpm test:tui-v2 -- --output "$RUNNER_TEMP/tui-v2/test.json"
-pnpm verify:tui-v2 -- --stage <stage> --output "$RUNNER_TEMP/tui-v2/<stage>.json"
+pnpm verify:tui-v2 -- --check <check> --output "$RUNNER_TEMP/tui-v2/<check>.json"
 pnpm bench:tui-v2 -- --fixture streaming-100k --iterations 5 --seed 1 --output "$RUNNER_TEMP/tui-v2/bench.json"
 pnpm soak:tui-v2 -- --minutes 10 --profile unknown-conservative --output "$RUNNER_TEMP/tui-v2/soak.json"
 ```
@@ -1525,7 +1513,7 @@ unknown-conservative
 
 ### 10.1 目标门槛
 
-以下指标在确定的硬件、Node 版本、终端 profile 和 fixture 上测量；阶段 1 先建立基线，阶段 5 以后逐步达标。每次 benchmark 先 warm-up 100 个事件，正式样本至少 200 个；p95 使用样本排序的 nearest-rank，起点/终点、时钟和 queue 采样写入 JSON。benchmark/soak 子进程必须由固定命令以 `process.execPath --expose-gc --import tsx/esm` 启动，并在脚本开始断言 `typeof global.gc === 'function'`，否则立即失败；GC 前后分别记录 heapUsed，RSS 单独记录。屏幕 120x40，fixture 和 seed 固定；CI 仅比较同 runner 基线 ±20%，跨硬件不直接比较绝对值。
+以下指标在确定的硬件、Node 版本、终端 profile 和 fixture 上测量；基线与最终门槛在同一实现集合中同时记录，不因工作包设置不同阈值。每次 benchmark 先 warm-up 100 个事件，正式样本至少 200 个；p95 使用样本排序的 nearest-rank，起点/终点、时钟和 queue 采样写入 JSON。benchmark/soak 子进程必须由固定命令以 `process.execPath --expose-gc --import tsx/esm` 启动，并在脚本开始断言 `typeof global.gc === 'function'`，否则立即失败；GC 前后分别记录 heapUsed，RSS 单独记录。屏幕 120x40，fixture 和 seed 固定；CI 仅比较同 runner 基线 ±20%，跨硬件不直接比较绝对值。
 
 | 指标 | 目标 |
 | --- | --- |
@@ -1574,7 +1562,7 @@ export interface DiagnosticRecord {
 }
 ```
 
-发生 frame mismatch、writer error、cleanup error 或 terminal capability timeout 时，自动保存 v2 `DiagnosticRecord`：`schemaVersion`、trace/frame/generation、profile、metadata、事件类型摘要和 cell diff 坐标；禁止 prompt、工具参数、原始 ANSI、OSC payload、credential。文件使用用户专属目录、目录 0700、文件 0600，默认保留 7 天且总预算 50 MiB，CI artifact 同样只上传 redacted record。redactor 有敏感字段单测和字节扫描；v1 的 `DSH_TUI_RENDER_LOG` 原始 frame 日志不作为 v2 诊断实现，迁移期必须显式禁用或隔离。
+发生 frame mismatch、writer error、cleanup error 或 terminal capability timeout 时，自动保存 v2 `DiagnosticRecord`：`schemaVersion`、trace/frame/generation、profile、metadata、事件类型摘要和 cell diff 坐标；禁止 prompt、工具参数、原始 ANSI、OSC payload、credential。文件使用用户专属目录、目录 0700、文件 0600，默认保留 7 天且总预算 50 MiB，CI artifact 同样只上传 redacted record。redactor 有敏感字段单测和字节扫描；旧 `DSH_TUI_RENDER_LOG` 原始 frame 日志不作为 v2 诊断实现，最终 runtime 必须禁用或隔离。
 
 ---
 
@@ -1584,9 +1572,9 @@ export interface DiagnosticRecord {
 
 CI 增加以下 guard：
 
-1. **迁移期只扫描 `src/tui-v2/**` 和新增文件：** `components/**` 禁止导入 DSH/Cordis/session/Agent 和 Node process API；旧 `src/components/**`、`src/ink/**` 使用带到期阶段的 allowlist，不得假装已满足 v2 guard。
+1. **最终 guard 扫描整个生产依赖图：** `src/tui-v2/**`/迁移后的 `components/**` 禁止导入 DSH/Cordis/session/Agent 和 Node process API；旧 `src/components/**`、`src/ink/**` 不得以 allowlist 留在最终生产路径，离线 baseline 工具必须单独列入非 runtime 扫描根。
 2. `controllers/**` 禁止直接写 stdout、构造 ANSI/OSC/DEC。
-3. `terminal/**` 之外禁止新增 lifecycle CSI/OSC/DEC 字面量；样式 SGR、hyperlink、image payload、测试 fixture 和现有 v1 allowlist 分开登记，不能一刀切禁止所有控制序列。
+3. `terminal/**` 之外禁止新增 lifecycle CSI/OSC/DEC 字面量；样式 SGR、hyperlink、image payload、测试 fixture 和历史 baseline fixture 分开登记，不能一刀切禁止所有控制序列。
 4. 所有 cache 构造函数必须显式声明容量/预算/淘汰策略。
 5. 所有 component 必须有 width=0/1/2 的 contract test；非 component 的 model/license/benchmark 任务使用对应类型 DoD（见 13.2）。
 6. 所有新增 controller 必须有最小事件回放测试。
@@ -1595,7 +1583,7 @@ CI 增加以下 guard：
 9. v2 目录不得依赖 React、`react-reconciler`、Yoga 或旧 `src/ink`。
 10. build/package 验证必须检查 vendored license、导出边界、v2-only 依赖图和没有意外依赖。
 
-实现方式可以先用 `rg`/脚本 AST guard，稳定后再迁移 ESLint `no-restricted-imports`、dependency-cruiser 或 TypeScript project references；脚本必须输出扫描根、allowlist 命中、规则版本和退出码。阶段 9 才把 allowlist 置空并扫描全仓库；在此之前不得把 guard 通过当作旧 renderer 已删除的证据。
+实现方式可以用 `rg`/脚本 AST guard，必要时再迁移 ESLint `no-restricted-imports`、dependency-cruiser 或 TypeScript project references；脚本必须输出扫描根、任何例外命中、规则版本和退出码。最终 gate 必须扫描全仓库生产路径并确认旧 renderer 已删除；通过局部 guard 不能替代这一证明。
 
 ### 11.2 评审要求
 
@@ -1620,11 +1608,11 @@ CI 增加以下 guard：
 }
 ```
 
-阶段 1/2 同时把 `@xterm/headless`、`get-east-asian-width` 和 `tsx` 的 manifest specifier 固定为当前 lockfile 的 exact `6.0.0`、`1.6.0`、`4.23.12`；lockfile 版本、integrity、loader 和 package-manager hash 写入 build artifact。任何脚本若绕过 package script 直接启动 benchmark/soak，也必须显式带 `--expose-gc` 并通过 global.gc fail-fast 检查。
+同一实现集合把 `@xterm/headless`、`get-east-asian-width` 和 `tsx` 的 manifest specifier 固定为当前 lockfile 的 exact `6.0.0`、`1.6.0`、`4.23.12`；lockfile 版本、integrity、loader 和 package-manager hash 写入 build artifact。任何脚本若绕过 package script 直接启动 benchmark/soak，也必须显式带 `--expose-gc` 并通过 global.gc fail-fast 检查。
 
-实现阶段在 `.github/workflows/ci.yml` 增加 Node 22.19/24 matrix 的 compile、`test:tui-v2`、`verify:tui-v2`、package dry-run 和 bounded soak；nightly/release workflow 增加 8/24 小时 soak 及 Windows/macOS/Ubuntu 真实宿主 job。`.github/workflows/publish.yml` 必须在 publish 前重复 `verify:tui-v2`、package tarball/license 检查；任何新命令未被 workflow 调用都不算完成。
+在同一实现集合中更新 `.github/workflows/ci.yml`，加入 Node 22.19/24 matrix 的 compile、`test:tui-v2`、`verify:tui-v2`、package dry-run 和 bounded soak；nightly/release workflow 加入 8/24 小时 soak 及 Windows/macOS/Ubuntu 真实宿主 job。`.github/workflows/publish.yml` 必须在 publish 前重复 `verify:tui-v2`、package tarball/license 检查；任何新命令未被 workflow 调用都不算完成。
 
-阶段出口还必须运行 `pnpm verify:tui-v2 -- --stage ci-integration`：脚本扫描所有 `.github/workflows/*.yml` 的 job/step，确认 Node 22.19/24、test wrapper/custom reporter、verify、bench/soak、`upload-artifact` 和 verified-tarball publish step 均存在，并把 workflow commit/hash、实际命令退出码和 artifact 路径写入 JSON；只修改计划文档或只在本地运行命令不能通过。publish job 必须消费 pack/verify 产生的 exact tgz，任何重新执行 `prepare` 或普通 `npm publish` 命中即阻断。
+最终 gate 还必须运行 `pnpm verify:tui-v2 -- --check ci-integration`：脚本扫描所有 `.github/workflows/*.yml` 的 job/step，确认 Node 22.19/24、test wrapper/custom reporter、verify、bench/soak、`upload-artifact` 和 verified-tarball publish step 均存在，并把 workflow commit/hash、实际命令退出码和 artifact 路径写入 JSON；只修改计划文档或只在本地运行命令不能通过。publish job 必须消费 pack/verify 产生的 exact tgz，任何重新执行 `prepare` 或普通 `npm publish` 命中即阻断。
 
 ---
 
@@ -1632,11 +1620,10 @@ CI 增加以下 guard：
 
 ### 12.1 运行时回滚
 
-- `DSH_TUI_RENDERER=v1`：强制旧 renderer，作为 emergency fallback。
-- `DSH_TUI_RENDERER=v2`：强制新 renderer，供开发和 CI 使用。
-- 未设置时按发布阶段决定默认值；灰度期间默认 v1，达到门槛后默认 v2。
-- renderer 初始化失败时只能在尚未接管终端前回退；已进入 raw/alt screen 后必须先 cleanup，再以专用非零退出码结束，不能双写 stdout。只有明确存在的 launcher/上一发布包才可重新拉起 v1；不能用同一进程的异常处理伪造 crash recovery。
-- 发布时保留一个完整稳定版本的 v1 rollback artifact、启动命令和兼容的 DSH session schema。阶段 9 删除当前包的 v1 后，当前包拒绝 `DSH_TUI_RENDERER=v1` 并给出可操作错误；回滚使用上一发布包/launcher，而不是不存在的代码路径。
+- 当前包只有一条 v2 bootstrap 路径，不读取 `DSH_TUI_RENDERER`，不提供 v1/v2 运行时选择，也不在同一进程内 fallback。
+- renderer 初始化失败时，无论是否已接管终端，都必须先执行 cleanup，再以专用非零退出码结束；不能双写 stdout 或启动第二套 renderer。
+- 回滚只由独立 launcher 按不可变 manifest 拉起上一发布包；当前包不携带旧 renderer，也不把离线 baseline 当作 emergency fallback。
+- 发布时保留一个已验证的上一版本 rollback artifact、启动命令和兼容的 DSH session schema；故障进程退出后由 launcher 使用该 artifact 恢复 session。
 - child-process gate 必须覆盖 `failed-before-takeover`、`failed-after-takeover`、cleanup error、launcher restart、重复 signal、stdin close 和 update restart；记录退出码、raw/alt/mouse/paste/cursor 状态和是否写过 stdout。
 
 回滚 artifact 必须随 release 生成不可变 `rollback-manifest.json`，并由 `verify:package --rollback` 校验：
@@ -1651,12 +1638,12 @@ CI 增加以下 guard：
   "sha256": "lowercase-64-hex",
   "signature": { "algorithm": "sigstore|gpg", "ref": "immutable-signature-ref" },
   "sessionSchema": { "min": 1, "max": 1 },
-  "launcher": { "command": "dsh-tui-rollback", "args": ["--package", "...", "--renderer", "v1"], "timeoutMs": 30000, "retries": 2 },
+  "launcher": { "command": "dsh-tui-rollback", "args": ["--package", "..."], "timeoutMs": 30000, "retries": 2 },
   "retention": { "keepStableVersions": 1, "expiresAt": "2027-01-01T00:00:00Z" }
 }
 ```
 
-manifest 的 registry、exact version、tarball 文件名、SHA-256、signature/ref、session schema compatibility、launcher command/args、timeout/retry 和 retention 都是必填；registry 不可用、signature/hash 不匹配、版本不满足 session schema 或下载超时重试耗尽时，launcher 必须返回明确非零错误并保留当前进程的 cleanup 证据，不能尝试未知版本。至少保留一个已验证稳定版本和 manifest；child-process rollback drill 必须从故障 renderer 启动、完成 cleanup、按 manifest 拉起 exact tarball、验证 `DSH_TUI_RENDERER=v1` 和同一 session resume，再记录 stdout ownership、退出码和 terminal mode。
+manifest 的 registry、exact version、tarball 文件名、SHA-256、signature/ref、session schema compatibility、launcher command/args、timeout/retry 和 retention 都是必填；registry 不可用、signature/hash 不匹配、版本不满足 session schema 或下载超时重试耗尽时，launcher 必须返回明确非零错误并保留当前进程的 cleanup 证据，不能尝试未知版本。至少保留一个已验证的上一发布包和 manifest；child-process rollback drill 必须从故障 renderer 启动、完成 cleanup、按 manifest 拉起 exact tarball、验证同一 session resume，再记录 stdout ownership、退出码和 terminal mode。该 drill 验证的是外部包切换，不是当前进程的 renderer 选择。
 
 ### 12.2 数据兼容
 
@@ -1665,12 +1652,12 @@ v2 不修改 session log 格式。resume、rewind、fold/loadOlder 使用现有 
 ### 12.3 发布前清单
 
 - 生产构建、类型检查、边界 guard、`pnpm test:tui-v2`、`pnpm verify:tui-v2`、bounded soak、双 Node 矩阵和 package dry-run 全部通过；命令必须实际出现在 CI/publish workflow。
-- v1/v2 同 trace 对比报告已审阅，已知差异登记。
+- 旧 baseline 与最终 renderer 的离线同 trace 对比报告已审阅，已知差异登记；生产进程没有双跑依赖。
 - 真实终端退出和异常恢复手工验证完成。
 - README/architecture/rendering/known limitations 已更新。
 - pi-tui fork 的 `LICENSE`/`NOTICE` 必须进入 runtime tarball；source commit、每个文件 hash、patch ledger 和 re-vendor 命令随仓库/source release 发布（若 vendored source 进入 tarball则一并进入）。`npm pack --dry-run --json` 与 `scripts/verify-package.mjs` 按这一声明检查文件、导出和没有意外旧依赖。
 - 发布必须验证并发布同一个 tarball，固定 shell 流程为：`pnpm compile`; `outDir="${RUNNER_TEMP:-$(node -p "require('os').tmpdir()")}/tui-v2"`; `mkdir -p "$outDir"`; `packJson="$outDir/pack.json"`; `rollbackManifest="$outDir/rollback-manifest.json"`; `npm pack --ignore-scripts --json --pack-destination "$outDir" > "$packJson"`; `tgz=$(node -e "const r=JSON.parse(require('fs').readFileSync(process.argv[1])); const x=Array.isArray(r)?r[0]:Object.values(r)[0]; process.stdout.write(require('path').resolve(x.filename))" "$packJson")`; `sha=$(sha256sum "$tgz" | cut -d' ' -f1)`; `node scripts/verify-package.mjs < "$packJson"`（保留当前 stdin-only package surface 检查）；`node scripts/verify-tui-v2-tarball.mjs --tarball "$tgz" --sha256 "$sha" --pack-json "$packJson" --rollback-manifest "$rollbackManifest"`（检查 exact tgz 内容、file manifest、license/NOTICE、exports、依赖和 rollback manifest，并生成 `verified-tarball.json`）；最后 `npm publish "$tgz" --ignore-scripts`。`.github/workflows/publish.yml` 必须消费 `verified-tarball.json` 中的同一绝对路径/hash，不得在验证后执行普通 `npm publish` 或触发第二次 `prepare`/compile；`prepare` 只允许在第一步 build 运行，发布步骤必须带 `--ignore-scripts` 并对 exact `.tgz` 做 registry publish response/hash 记录。`RUNNER_TEMP` 未设置时 wrapper 使用 `os.tmpdir()/tui-v2`，不能把占位符传给 shell。
-- 回滚开关、上一发布包/launcher、诊断开关和错误提示在生产包中可用；诊断只包含 redacted schema，权限/7 天/50 MiB 保留策略通过测试。
+- 上一发布包/launcher、诊断开关和错误提示在生产环境可用；当前包没有 renderer 回滚开关，诊断只包含 redacted schema，权限/7 天/50 MiB 保留策略通过测试。
 
 ---
 
@@ -1680,7 +1667,7 @@ v2 不修改 session log 格式。resume、rewind、fold/loadOlder 使用现有 
 
 | 编号 | 任务 | 依赖 | 完成定义 |
 | --- | --- | --- | --- |
-| R-001 | v1 冻结、测试 runner scaffold、基线脚本和指标 | 无 | `test:tui-v2`/`verify:tui-v2` smoke 可运行，能重复启动/退出，基线报告入库 |
+| R-001 | 旧实现离线 baseline、测试 runner、基线脚本和指标 | 无 | `test:tui-v2`/`verify:tui-v2` smoke 可运行，能重复启动/退出，baseline 报告入库且不进入 runtime |
 | R-002 | trace schema 和脱敏 writer | R-001 | 核心事件可 JSONL 保存/加载 |
 | R-003 | virtual terminal/cell grid | R-002 | ANSI patch 可重建 cursor/modes/grid |
 | R-004 | pi-tui source pin/license/patch ledger | R-001 | 上游 commit 和本地差异可追溯 |
@@ -1694,8 +1681,8 @@ v2 不修改 session log 格式。resume、rewind、fold/loadOlder 使用现有 
 | R-012 | dialogs/selection/search/copy | R-011 | overlay layer 无残影且焦点正确 |
 | R-013 | inline backend | R-010,R-005 | main-screen 核心 trace 无 scrollback 污染 |
 | R-014 | advanced components/scenes | R-011,R-012 | 功能逐项有 contract + trace |
-| R-015 | v1/v2 compare/gray rollout | R-010..R-014 | `V1CaptureRenderer`/compare harness 离屏无副作用，同 trace 的 grid/frame/bytes 报告可审阅、可回滚 |
-| R-016 | 删除 v1 依赖和旧路径 | R-015 | 无旧热路径，生产包/文档更新 |
+| R-015 | 离线 baseline compare 与最终集成 | R-010..R-014 | 独立 `V1CaptureRenderer`/compare harness 无副作用，同 trace 的 grid/frame/bytes 报告可审阅，生产 bootstrap 只有 v2 |
+| R-016 | 一次性删除旧链路与最终包验证 | R-015 | 无旧热路径、React/JSX/Yoga 依赖或 renderer switch，生产包/文档/exports 更新 |
 
 ### 13.2 每个任务的完成定义（DoD）
 
@@ -1711,7 +1698,7 @@ v2 不修改 session log 格式。resume、rewind、fold/loadOlder 使用现有 
 - component/renderer/compositor（R-006、R-010--R-014）：最小单测或 trace 回放、cell/grid 断言，以及 width=0/1/2、CJK/emoji 和相关 profile 边界。
 - model/controller/adapter（R-002、R-008、R-009）：canonical state/replay、seq duplicate/gap/reset、异步取消和错误路径测试；不强制无关的宽度用例。
 - terminal/scheduler/lifecycle（R-003、R-005、R-007）：virtual terminal、backpressure、profile timeout 和 child-process cleanup/信号测试。
-- baseline/benchmark/package/license/guard（R-001、R-004、R-015、R-016）：可重放命令、JSON/报告 schema、Node 矩阵、tarball/导出/license 检查和 guard 产物；若触及渲染代码，再叠加 component 门槛。
+- baseline/benchmark/package/license/guard（R-001、R-004、R-015、R-016）：可重放命令、JSON/报告 schema、Node 矩阵、tarball/导出/license 检查、离线工具隔离和 guard 产物；若触及渲染代码，再叠加 component 门槛。
 
 ---
 
@@ -1720,15 +1707,15 @@ v2 不修改 session log 格式。resume、rewind、fold/loadOlder 使用现有 
 | 风险 | 影响 | 应对 |
 | --- | --- | --- |
 | pi-tui fork 与上游漂移 | 修复难以回合 | pin commit、patch ledger、上游测试、禁止整目录覆盖 |
-| 功能迁移量大 | v2 长期半成品 | 先 walking skeleton，按能力矩阵迁移，未实现功能显式降级 |
+| 功能迁移量大 | 一次性替换遗漏能力 | 用同一依赖图并行完成 walking skeleton、能力矩阵和最终集成；未实现功能在最终 gate 前必须补齐或显式登记为不支持 |
 | Channel 现有原位可变 row | revision/cache 不稳定 | bridge 中拍平 snapshot，streaming row 单独处理，settled row immutable |
-| plugin 扩展依赖旧 JSX | 生态回归 | 保留 adapter capability，提供 line component/serialized view contract，迁移期双 API |
+| plugin 扩展依赖旧 JSX | 生态回归 | 在同一 breaking release 提供迁移文档和 line component/serialized view contract；最终包不保留旧 API |
 | Windows/ConPTY capability 不一致 | raw ANSI、宽度、恢复故障 | profile conservative path、真实矩阵、virtual terminal 回归、full redraw fallback |
-| 双 renderer 维护成本 | 修复重复 | v2 只共享 model/components，不共享 screen algorithm；设删除 v1 的明确出口 |
+| 双 renderer 维护成本 | 修复重复 | 生产只保留 v2；旧实现仅作为隔离 offline baseline，不共享 screen algorithm 或运行时依赖 |
 | frame 对照器自身错误 | 错误结论 | 使用 @xterm/headless + 独立最小 virtual terminal，抽样真实终端验证 |
 | 流式高峰 backpressure | 输入延迟/内存增长 | 优先级 scheduler、丢弃过期低优先级 frame、writer queue 上限和指标 |
 | 外部工具/插件越权 stdout | 帧损坏 | 单 writer、console patch、stderr policy、CI allowlist |
-| 过早删除旧依赖 | 隐性公共 API 破坏 | 先扫描 exports、插件和构建产物，默认切换后再删除 |
+| 旧依赖删除遗漏 | 隐性公共 API 或构建产物破坏 | 在同一最终 gate 扫描 exports、插件 fixture、依赖图和 tarball，未通过就不合并 |
 
 ---
 
@@ -1743,17 +1730,17 @@ v2 不修改 session log 格式。resume、rewind、fold/loadOlder 使用现有 
 - 所有 overlay 通过独立 compositor；无法证明局部 patch 安全时 full redraw。
 - 所有物理行必须经过最终宽度硬保护。
 - pi facade 采用完整 `PiTerminalAdapter` + fork 调用点改造；未知 control sequence 拒绝，唯一 writer 负责背压、query correlation 和 lifecycle。
-- `ScreenTakeover` 只接受 coordinator 签发的 opaque token，必须先取得 writer barrier 再转移 stdin/tty；scene v2 使用 versioned descriptor/typed command，legacy React 只经隔离 adapter。
+- `ScreenTakeover` 只接受 coordinator 签发的 opaque token，必须先取得 writer barrier 再转移 stdin/tty；scene v2 使用 versioned descriptor/typed command，旧 React scene 只存在于独立离线 baseline，不进入最终 adapter/runtime。
 - golden 统一 `CanonicalGridV1`/`readable|sha256-v1`，性能窗口、`--expose-gc` 和 rollback manifest 均为机器校验的发布门槛。
 
-### 15.2 在阶段 1/2 必须落档
+### 15.2 编码前和最终提交前必须落档
 
 1. pi source 的 vendored 文件清单、每个文件 hash、fork 版本号、依赖 lock 和 license/NOTICE 路径（上游 commit 已在 0.2 锁定）。
 2. `TerminalProfile` 的 capability 探测超时和各终端默认值。
 3. Frame 在 compositor/diff 前必须完全 cell 化（可在组件到 compositor 前保留 line-level fast path）；记录 stride、continuation、style/hyperlink pool 和 mode snapshot 的实现 hash。
 4. v2 默认启用 fullscreen 的发布版本和 inline 功能差异文案。
 5. `VirtualTerminal` 使用 `@xterm/headless` 的范围与本地 parser 的边界。
-6. plugin row/scene 的 v2 API 以及旧插件兼容期限。
+6. plugin row/scene 的 v2 API、breaking-release 迁移说明和旧插件终止版本。
 7. 生产诊断 trace 的保存位置、权限、脱敏字段和保留周期。
 
 ### 15.3 变更规则
@@ -1797,4 +1784,4 @@ v2 不修改 session log 格式。resume、rewind、fold/loadOlder 使用现有 
 
 - `/home/sisct/下载/新建 文本文档.txt`
 
-初始方案中的结论、阶段和验收门槛已纳入本文；本文额外补充了当前仓库路径映射、接口契约、任务编号、CI guard、回滚和插件/Channel 迁移边界。
+初始方案中的结论、工作包依赖和验收门槛已纳入本文；本文额外补充了当前仓库路径映射、接口契约、任务编号、CI guard、外部回滚和插件/Channel 迁移边界。
