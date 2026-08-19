@@ -1732,6 +1732,7 @@ v2 不修改 session log 格式。resume、rewind、fold/loadOlder 使用现有 
 - pi facade 采用完整 `PiTerminalAdapter` + fork 调用点改造；未知 control sequence 拒绝，唯一 writer 负责背压、query correlation 和 lifecycle。
 - `ScreenTakeover` 只接受 coordinator 签发的 opaque token，必须先取得 writer barrier 再转移 stdin/tty；scene v2 使用 versioned descriptor/typed command，旧 React scene 只存在于独立离线 baseline，不进入最终 adapter/runtime。
 - golden 统一 `CanonicalGridV1`/`readable|sha256-v1`，性能窗口、`--expose-gc` 和 rollback manifest 均为机器校验的发布门槛。
+- WP-01 落地时扩展 regression matrix 的 `disposition` 枚举，新增 `unaffected` 取值（原为 `rewrite-v2 | remove | offline-baseline`）。原因：原枚举无法表达「该回归入口不触及被迁移的渲染/插件面，原样保留并由 CI 持续证明」（如 `verify-model-route`、`verify-session-index`、cordis patch/plugin 契约校验等纯逻辑入口），强制归入 `rewrite-v2` 会虚报迁移工作量。影响：`verify:tui-v2 -- --check regression-matrix` 接受该值；`unaffected` 行 `blockDefault: false`，在最终 gate 视为关闭的条件是其 `ciCommand` 在最终树中仍存在且通过；入口一旦被移除，对应行必须同时删除（清单重扫 hash 会强制同步）。回滚方式：删除该取值、把 `unaffected` 行重新分类为 `rewrite-v2`/`remove` 并同步更新校验脚本枚举。
 
 ### 15.2 编码前和最终提交前必须落档
 

@@ -1,5 +1,10 @@
 # 渲染链路与性能
 
+> **状态：已冻结（v2 重写离线 baseline）。** 自 `refactor/tui-render-v3` 分支起，
+> 本文描述的渲染链路（React/Ink/Yoga 热路径）冻结为 v2 渲染重写的离线 baseline：
+> 除 P0 数据/安全修复外，不再在其上新增布局、缓存或协议能力。实施计划、基线
+> artifact 与回归迁移台账见 `docs/tui-render-v2-development-plan.md`。
+
 本文覆盖两块：渲染链路（双层节流、虚拟化、残影修复、TPS 计算）与 CJK
 文本测量体系（stringWidth、换行/截断、显示宽度缓存）。行号均以审计基线
 b2f4087 为准。

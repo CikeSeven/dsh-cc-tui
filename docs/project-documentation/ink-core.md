@@ -1,5 +1,10 @@
 # 移植 Ink 内核架构地图
 
+> **状态：已冻结（v2 重写离线 baseline）。** 自 `refactor/tui-render-v3` 分支起，
+> 本文描述的 `src/ink/` / Yoga 渲染内核冻结为 v2 渲染重写的离线 baseline：除 P0
+> 数据/安全修复外，不再在其上新增布局、缓存或协议能力。实施计划、基线 artifact
+> 与回归迁移台账见 `docs/tui-render-v2-development-plan.md`。
+
 本文描述 `src/ink/`（103 个文件）与 `src/native-ts/yoga-layout/` 的渲染内核：
 移植来源、渲染管线、布局与测量、输入链、终端协议，以及与发布版 Ink 5.2.0
 的结构性差异。行号均以审计基线 b2f4087 为准。

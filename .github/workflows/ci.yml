@@ -357,3 +357,48 @@ jobs:
       # 插件场景渲染崩溃边界：Thrower 场景必须被 PluginSceneBoundary 接住——
       # onError 精确一次、崩溃场景停止绘制、进程存活；健康场景不受影响。
       - run: node --import tsx/esm scripts/verify-plugin-scene-boundary.tsx
+
+  # WP-01 (tui-render v2): baseline/contract testkit gate. Independent of the
+  # build job; runs the node:test suite via the wrapper with the versioned
+  # JSONL reporter, then the baseline and regression-matrix checks.
+  tui-v2:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: ['22.19', '24']
+    env:
+      DSH_TUI_LANG: zh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm compile
+
+      - name: Run tui-v2 tests
+        run: pnpm test:tui-v2 -- --output "$RUNNER_TEMP/tui-v2/test.json"
+
+      - name: Check tui-v2 baseline artifacts
+        run: pnpm verify:tui-v2 -- --check baseline --output "$RUNNER_TEMP/tui-v2/baseline.json"
+
+      - name: Check tui-v2 regression matrix
+        run: pnpm verify:tui-v2 -- --check regression-matrix --output "$RUNNER_TEMP/tui-v2/regression-matrix.json"
+
+      - name: Upload tui-v2 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-v2-node-${{ matrix.node }}
+          path: ${{ runner.temp }}/tui-v2
+          if-no-files-found: warn

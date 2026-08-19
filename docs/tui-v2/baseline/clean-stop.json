@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "kind": "bench",
+  "results": [
+    {
+      "fixture": "v1-clean-stop",
+      "samples": [
+        1377.022,
+        1376.238,
+        1369.501
+      ],
+      "warmup": 0,
+      "formal": true,
+      "p50": 1376.238,
+      "p95": 1377.022,
+      "p99": 1377.022,
+      "heapUsedBeforeGc": 8606032,
+      "heapUsedAfterGc": 6956880,
+      "rss": 97234944,
+      "durationMs": 4129.769,
+      "notes": "sample = full lifecycle-child spawn -> exit duration, ms; 3 runs, all must exit 0",
+      "details": {
+        "exitCodes": [
+          0,
+          0,
+          0
+        ],
+        "reports": [
+          {
+            "frames": 28,
+            "plainChecks": {
+              "userMessageVisible": true,
+              "typedTextVisible": true,
+              "unmountedClean": true
+            },
+            "unmounted": true,
+            "stderrFrames": 0
+          },
+          {
+            "frames": 28,
+            "plainChecks": {
+              "userMessageVisible": true,
+              "typedTextVisible": true,
+              "unmountedClean": true
+            },
+            "unmounted": true,
+            "stderrFrames": 0
+          },
+          {
+            "frames": 28,
+            "plainChecks": {
+              "userMessageVisible": true,
+              "typedTextVisible": true,
+              "unmountedClean": true
+            },
+            "unmounted": true,
+            "stderrFrames": 0
+          }
+        ]
+      }
+    }
+  ],
+  "startedAt": "2026-08-19T08:05:28.105Z",
+  "durationMs": 4403.313,
+  "runnerId": "QiYue-Archlinux",
+  "cpuModel": "Intel(R) Core(TM) Ultra 7 270K Plus",
+  "cpuCores": 24,
+  "ramBytes": 32978124800,
+  "containerImage": null,
+  "os": "linux x64",
+  "kernel": "7.1.8-zen1-3-zen",
+  "node": "v26.7.0",
+  "npmVersion": "12.0.2",
+  "pnpmVersion": "11.21.0",
+  "gitDirty": true,
+  "gitHead": "9589deed9dc37ad4c37479132e30a70de23def43",
+  "lockfileSha256": "87f4f2bcfe7d8497b57dbd544458869852c2585f824bc98a1bdd06d538c34fca",
+  "commandLine": [
+    "/usr/bin/node",
+    "/home/sisct/Code/projects/dsh-TUI/.claude/worktrees/tui-render-v3-plan/scripts/bench-tui-v2.ts",
+    "--fixture",
+    "v1-clean-stop",
+    "--seed",
+    "1",
+    "--output",
+    "docs/tui-v2/baseline/clean-stop.json"
+  ],
+  "profile": "headless-fake-tty-120x40",
+  "fixture": "v1-clean-stop",
+  "seed": 1
+}

@@ -111,7 +111,10 @@
     "verify:plugin-ledger": "node --import tsx/esm scripts/verify-plugin-ledger.ts",
     "verify:plugin-commands": "node --import tsx/esm scripts/verify-plugin-commands.ts",
     "verify:plugin-negotiation": "node --import tsx/esm scripts/verify-plugin-negotiation.ts",
-    "verify:plugin-lifecycle": "node --import tsx/esm scripts/verify-plugin-lifecycle.ts"
+    "verify:plugin-lifecycle": "node --import tsx/esm scripts/verify-plugin-lifecycle.ts",
+    "test:tui-v2": "node scripts/test-tui-v2.mjs",
+    "verify:tui-v2": "node --import tsx/esm scripts/verify-tui-v2.ts",
+    "bench:tui-v2": "node --expose-gc --import tsx/esm scripts/bench-tui-v2.ts"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
@@ -159,7 +162,7 @@
     "dsh-working-activity": "^0.2.6",
     "emoji-regex": "^10.0.0",
     "figures": "^6.1.0",
-    "get-east-asian-width": "^1.0.0",
+    "get-east-asian-width": "1.6.0",
     "highlight.js": "^11.11.1",
     "indent-string": "^5.0.0",
     "lodash-es": "^4.17.0",
@@ -234,8 +237,8 @@
     "@types/react": "^19.0.0",
     "@types/react-reconciler": "^0.33.0",
     "@types/semver": "^7.0.0",
-    "@xterm/headless": "^6.0.0",
-    "tsx": "^4.0.0",
+    "@xterm/headless": "6.0.0",
+    "tsx": "4.23.12",
     "typescript": "^6.0.3",
     "yaml": "^2.9.0"
   },
