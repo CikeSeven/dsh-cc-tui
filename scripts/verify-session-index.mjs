@@ -254,13 +254,20 @@ check('a delegated run carries the label it was started under', digestSession(ru
 const previewFile = seed('preview', [
   [userPrompt('first question', 1)],
   [{ type: 'assistant/message', seq: 2, time: 5, data: { message: { role: 'assistant', content: [{ type: 'reasoning', text: 'thinking' }, { type: 'text', text: 'first answer' }] } } }],
-  [userPrompt('second question', 3)],
-  [{ type: 'assistant/message', seq: 4, time: 7, data: { message: { role: 'assistant', content: [{ type: 'text', text: 'second answer' }] } } }],
+  [{ type: 'tool/call', seq: 3, time: 6, data: { name: 'Read', arguments: '{ "path": "/proj/a.ts" }' } }],
+  [userPrompt('second question', 4)],
+  [{ type: 'assistant/message', seq: 5, time: 8, data: { message: { role: 'assistant', content: [{ type: 'text', text: 'second answer' }] } } }],
 ])
 check(
-  'the preview reads the exchanges, skipping reasoning blocks',
+  'the preview reads messages and bounded tool calls, skipping reasoning blocks',
   previewSession(previewFile, 8).map(e => [e.role, e.text]),
-  [['user', 'first question'], ['assistant', 'first answer'], ['user', 'second question'], ['assistant', 'second answer']],
+  [
+    ['user', 'first question'],
+    ['assistant', 'first answer'],
+    ['tool', 'Read · { "path": "/proj/a.ts" }'],
+    ['user', 'second question'],
+    ['assistant', 'second answer'],
+  ],
 )
 check('the preview keeps the NEWEST entries when it must choose', previewSession(previewFile, 2).map(e => e.text), [
   'second question',

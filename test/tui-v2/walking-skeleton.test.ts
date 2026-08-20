@@ -283,7 +283,7 @@ test('walking skeleton input: ctrl+c cancels a working turn (no exit, no clear)'
   assertTeardown(rig);
 });
 
-test('walking skeleton WP-08c: help/history/search/resume route through utility overlays', async () => {
+test('walking skeleton WP-08c/d1: help/history/search and real session catalog overlays', async () => {
   const rig = buildRig('kitty-sync');
   await rig.coordinator.start();
 
@@ -314,14 +314,14 @@ test('walking skeleton WP-08c: help/history/search/resume route through utility 
 
   rig.channel.setWorking(false);
   rig.coordinator.controllers.commands.handleSubmittedText('/resume');
-  await waitForReal(() => rig.coordinator.controllers.interactiveOverlays.activeOverlayId() === 'utility/picker/resume');
-  const resumePayload = rig.coordinator.state.overlays.stack.at(-1)?.payload as { kind?: string; subtitle?: string };
-  assert.equal(resumePayload.kind, 'picker-dialog');
-  assert.equal(resumePayload.subtitle, 'Session catalog arrives in WP-08d');
-  assert.ok(!rig.coordinator.state.overlays.stack.some((overlay) =>
-    (overlay.payload as { kind?: string }).kind === 'session-browser'));
+  await waitForReal(() => rig.coordinator.controllers.sessionCatalog.activeOverlayId() === 'utility/session-browser');
+  const resumePayload = rig.coordinator.state.overlays.stack.at(-1)?.payload as { kind?: string; phase?: string };
+  assert.equal(resumePayload.kind, 'session-browser-dialog');
+  await waitForReal(() =>
+    (rig.coordinator.state.overlays.stack.at(-1)?.payload as { phase?: string } | undefined)?.phase === 'ready');
+  await waitForReal(() => screenText(rig.vt).includes('No resumable sessions'));
   rig.stdin.write('\x1b');
-  await waitForReal(() => rig.coordinator.controllers.interactiveOverlays.activeOverlayId() === null);
+  await waitForReal(() => rig.coordinator.controllers.sessionCatalog.activeOverlayId() === null);
 
   await rig.coordinator.stop('user-exit');
   await rig.coordinator.awaitStop();

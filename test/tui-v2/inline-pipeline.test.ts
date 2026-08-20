@@ -281,3 +281,41 @@ test('inline pipeline overlay degradation: hidden dialog warns once, keys still 
   await rig.coordinator.awaitStop();
   assert.equal(rig.coordinator.phase, 'stopped');
 });
+
+test('inline pipeline session catalog degradation: hidden owner keeps focus and Esc closes it', async () => {
+  const rig = buildInlineRig();
+  await rig.coordinator.start();
+  assert.equal(rig.coordinator.state.terminal.mode, 'inline');
+  await waitForReal(() => screenText(rig.vt).includes('welcome-inline-overlay'));
+
+  rig.coordinator.controllers.commands.handleSubmittedText('/resume');
+  await waitForReal(() =>
+    rig.coordinator.controllers.sessionCatalog.activeOverlayId() === 'utility/session-browser');
+  await waitForReal(() =>
+    (rig.coordinator.state.overlays.stack.at(-1)?.payload as { phase?: string } | undefined)?.phase === 'ready');
+  await waitForReal(() => rig.diagnostics.includes('overlay/unsupported'));
+
+  assert.deepEqual(rig.coordinator.state.focus, {
+    target: 'overlay',
+    overlayId: 'utility/session-browser',
+  });
+  assert.ok(
+    rig.channel.notifyLog.some((entry) =>
+      entry.color === 'warning' && entry.text.includes('Inline mode cannot render overlay')),
+    'specialized owner emits the standard inline degradation warning',
+  );
+  const screen = screenText(rig.vt);
+  assert.ok(!screen.includes('Resume session'), 'session catalog title stays off the inline screen');
+  assert.ok(!screen.includes('No resumable sessions'), 'session catalog body stays off the inline screen');
+
+  rig.stdin.write('\x1b');
+  await waitForReal(() => rig.coordinator.controllers.sessionCatalog.activeOverlayId() === null);
+  assert.ok(
+    !rig.coordinator.state.overlays.stack.some((overlay) => overlay.overlayId === 'utility/session-browser'),
+    'Esc reaches the hidden specialized controller and closes its overlay',
+  );
+
+  await rig.coordinator.stop('user-exit');
+  await rig.coordinator.awaitStop();
+  assert.equal(rig.coordinator.phase, 'stopped');
+});

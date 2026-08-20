@@ -53,10 +53,10 @@
  *  - WP-05 controllers: replay (session navigation/rewind/update-restart),
  *    commands (slash routing), scrolling (wheel/keys/loadOlder anchor),
  *    dialogs (WP-05b: approval/question/plugin-dialog overlay priority +
- *    capture). Input routing order: resize → lifecycle; mouse wheel →
- *    scrolling; WHILE `focus.target === 'overlay'` every key/paste goes to
- *    the dialogs controller (the overlay owns the keyboard; legacy: Chat's
- *    global handler early-returns while a dialog snapshot is pending);
+ *    capture), plus WP-08 utility/session/workspace owners. Input routing:
+ *    resize → lifecycle; mouse wheel → scrolling; WHILE
+ *    `focus.target === 'overlay'` every key/paste goes only to the controller
+ *    whose managed overlayId is focused (the overlay owns the keyboard);
  *    otherwise scroll keys (pageUp/pageDown/ctrl+home/ctrl+end) → scrolling
  *    BEFORE the editor (the vendored editor's own pageScroll yields to
  *    transcript scrolling); everything else → input controller.
@@ -120,7 +120,8 @@ import { createScreenTakeover } from '../terminal/takeover.js';
 import { createTerminalWriter } from '../terminal/writer.js';
 import { createPluginRowComponent } from '../scenes/row-component.js';
 import type { PluginUIRuntime, PluginUIRuntimeDiagnostics } from '../scenes/runtime.js';
-import type { Channel } from '../../dsh-adapter/channel.js';
+import { sessionCwdMatches, type Channel } from '../../dsh-adapter/channel.js';
+import { createLocalWorkspaceRuntime } from '../../dsh-adapter/workspaces.js';
 import {
   createChannelUiAdapter,
   createEventMetaFactory,
@@ -150,6 +151,15 @@ import {
   createInteractiveOverlaysController,
   type InteractiveOverlaysController,
 } from '../controllers/interactive-overlays.js';
+import {
+  createSessionCatalogController,
+  type SessionCatalogController,
+} from '../controllers/session-catalog.js';
+import {
+  createWorkspaceFlowController,
+  type WorkspaceFlowController,
+  type WorkspaceHostCapability,
+} from '../controllers/workspace-flow.js';
 import { buildFrame } from '../renderer/frame-builder.js';
 import { buildSearchHighlightRegions } from '../renderer/search-highlights.js';
 import { computeInlineLiveRegion } from './inline-live-region.js';
@@ -169,7 +179,24 @@ export interface CoordinatorDiagnostic {
  */
 export type CoordinatorChannel = ChannelUiChannel &
   CommandChannel &
-  Pick<Channel, 'promptRewind' | 'interruptAndDeliver' | 'notify'>;
+  Pick<
+    Channel,
+    | 'promptRewind'
+    | 'interruptAndDeliver'
+    | 'notify'
+    | 'pushLocal'
+    | 'agentId'
+    | 'listSessions'
+    | 'previewSession'
+    | 'deleteSession'
+    | 'renameSessionTo'
+    | 'listWorkspaces'
+    | 'resolveWorkspace'
+    | 'switchWorkspace'
+    | 'renameWorkspace'
+    | 'workspaceCommands'
+    | 'runWorkspaceCommand'
+  >;
 
 export interface TuiV2CoordinatorOptions {
   readonly channel: CoordinatorChannel;
@@ -232,6 +259,8 @@ export interface CoordinatorDiagnostics {
   readonly commands: ReturnType<CommandsController['diagnostics']>;
   readonly dialogs: ReturnType<DialogsController['diagnostics']>;
   readonly interactiveOverlays: ReturnType<InteractiveOverlaysController['diagnostics']>;
+  readonly sessionCatalog: ReturnType<SessionCatalogController['diagnostics']>;
+  readonly workspaceFlow: ReturnType<WorkspaceFlowController['diagnostics']>;
   /** WP-08a plugin scene runtime counters (absent when no runtime is wired). */
   readonly scenes?: PluginUIRuntimeDiagnostics;
 }
@@ -246,6 +275,8 @@ export interface CoordinatorControllers {
   readonly commands: CommandsController;
   readonly dialogs: DialogsController;
   readonly interactiveOverlays: InteractiveOverlaysController;
+  readonly sessionCatalog: SessionCatalogController;
+  readonly workspaceFlow: WorkspaceFlowController;
 }
 
 export interface TuiV2Coordinator {
@@ -575,6 +606,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   });
 
   let interactiveOverlaysController: InteractiveOverlaysController;
+  let sessionCatalogController: SessionCatalogController;
+  let workspaceFlowController: WorkspaceFlowController;
 
   const commandsController = createCommandsController({
     dispatch: (event) => streamingController.ingest(event),
@@ -582,15 +615,16 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     channel,
     replay: replayController,
     overlays: {
-      openResumePicker: (onSelect) => interactiveOverlaysController.openPicker({
-        key: 'resume',
-        title: 'Resume session',
-        subtitle: 'Session catalog arrives in WP-08d',
-        items: [],
-        emptyMessage: 'No session catalog is available in WP-08c.',
-        noResultsMessage: 'No sessions match this filter.',
-        onSelect,
-      }),
+      openSessionBrowser: () => {
+        interactiveOverlaysController.close();
+        workspaceFlowController.close();
+        return sessionCatalogController.open();
+      },
+      openWorkspace: (rawInput) => {
+        interactiveOverlaysController.close();
+        sessionCatalogController.close();
+        return workspaceFlowController.handleCommand(rawInput);
+      },
       openHelp: (query) => interactiveOverlaysController.openHelp({
         key: 'help',
         title: 'Help',
@@ -684,6 +718,57 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     onDiagnostic: (code, message) => diagnostic(`interactive-overlays/${code}`, message),
   });
 
+  sessionCatalogController = createSessionCatalogController({
+    dispatch: (event) => streamingController.ingest(event),
+    nextMeta: (sourceSeq) => meta.next('overlay', sourceSeq),
+    getState: () => state,
+    catalog: {
+      list: (signal) => channel.listSessions(signal),
+      preview: (sessionId, signal) => channel.previewSession(sessionId, signal),
+      delete: (sessionId) => channel.deleteSession(sessionId),
+      rename: (sessionId, title) => channel.renameSessionTo(sessionId, title),
+    },
+    replay: replayController,
+    context: () => ({
+      cwd: channel.cwd,
+      branch: channel.gitBranch,
+      currentSessionId: channel.agentId,
+    }),
+    sameProject: sessionCwdMatches,
+    now: () => clock.now(),
+    isBusinessDialogActive: () => dialogsController.activeOverlayId() !== null,
+    onDiagnostic: (code, message) => diagnostic(`session-catalog/${code}`, message),
+  });
+
+  const localWorkspaceFallback: WorkspaceHostCapability = createLocalWorkspaceRuntime();
+  const workspaceHost: WorkspaceHostCapability | undefined =
+    typeof channel.listWorkspaces === 'function'
+    && typeof channel.resolveWorkspace === 'function'
+    && typeof channel.workspaceCommands === 'function'
+    && typeof channel.runWorkspaceCommand === 'function'
+      ? {
+          list: (_currentCwd, signal) => channel.listWorkspaces(signal),
+          resolve: (reference, _currentCwd, signal) => channel.resolveWorkspace(reference, signal),
+          commands: () => channel.workspaceCommands(),
+          runCommand: (name, input, _cwd, signal) => channel.runWorkspaceCommand(name, input, signal),
+        }
+      : undefined;
+  workspaceFlowController = createWorkspaceFlowController({
+    dispatch: (event) => streamingController.ingest(event),
+    nextMeta: (sourceSeq) => meta.next('overlay', sourceSeq),
+    getState: () => state,
+    ...(workspaceHost !== undefined ? { host: workspaceHost } : {}),
+    fallback: localWorkspaceFallback,
+    actions: {
+      currentCwd: () => channel.cwd,
+      switchTarget: (target) => channel.switchWorkspace(target),
+      renameCurrent: (title) => channel.renameWorkspace(title),
+    },
+    isBusinessDialogActive: () => dialogsController.activeOverlayId() !== null,
+    notify,
+    onDiagnostic: (code, message) => diagnostic(`workspace-flow/${code}`, message),
+  });
+
   const inputController = createInputController({
     clock,
     dispatch: (event) => streamingController.ingest(event),
@@ -764,6 +849,10 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
             const overlayId = state.focus.overlayId ?? '';
             if (overlayId === dialogsController.activeOverlayId()) {
               dialogsController.handleInput(event);
+            } else if (sessionCatalogController.isManagedOverlay(overlayId)) {
+              sessionCatalogController.handleInput(event);
+            } else if (workspaceFlowController.isManagedOverlay(overlayId)) {
+              workspaceFlowController.handleInput(event);
             } else if (interactiveOverlaysController.isManagedOverlay(overlayId)) {
               interactiveOverlaysController.handleInput(event);
             } else {
@@ -787,6 +876,10 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           const overlayId = state.focus.overlayId ?? '';
           if (overlayId === dialogsController.activeOverlayId()) {
             dialogsController.handleInput(event);
+          } else if (sessionCatalogController.isManagedOverlay(overlayId)) {
+            sessionCatalogController.handleInput(event);
+          } else if (workspaceFlowController.isManagedOverlay(overlayId)) {
+            workspaceFlowController.handleInput(event);
           } else if (interactiveOverlaysController.isManagedOverlay(overlayId)) {
             interactiveOverlaysController.handleInput(event);
           } else {
@@ -1136,6 +1229,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     stopPromise = (async () => {
       // Close utility overlays while the event pipeline is still alive, then
       // unsubscribe business stores before teardown can emit again.
+      sessionCatalogController.dispose();
+      workspaceFlowController.dispose();
       interactiveOverlaysController.dispose();
       dialogsController.dispose();
       // WP-08a: tear down the open plugin scene (reason 'teardown') before
@@ -1207,6 +1302,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       commands: commandsController,
       dialogs: dialogsController,
       interactiveOverlays: interactiveOverlaysController,
+      sessionCatalog: sessionCatalogController,
+      workspaceFlow: workspaceFlowController,
     },
     diagnostics: () => ({
       phase,
@@ -1228,6 +1325,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       commands: commandsController.diagnostics(),
       dialogs: dialogsController.diagnostics(),
       interactiveOverlays: interactiveOverlaysController.diagnostics(),
+      sessionCatalog: sessionCatalogController.diagnostics(),
+      workspaceFlow: workspaceFlowController.diagnostics(),
       ...(pluginRuntime !== null ? { scenes: pluginRuntime.diagnostics() } : {}),
     }),
   };

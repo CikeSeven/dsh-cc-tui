@@ -18,6 +18,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AppEvent } from '../src/tui-v2/model/events.js'
 import type {
+  SessionBrowserPayload,
+  WorkspaceDialogPayload,
+} from '../src/tui-v2/model/catalog-overlay-payloads.js'
+import type {
   EventSource,
   EventMeta,
   InputCommand,
@@ -171,6 +175,46 @@ const INTERACTIVE_TRACE_LITERALS = new Set([
 const INTERACTIVE_TRACE_REDACTION: RedactionPolicy = {
   redactPayload: (text) =>
     text === '' || text.startsWith('[placeholder]') || INTERACTIVE_TRACE_LITERALS.has(text)
+      ? undefined
+      : DEFAULT_REDACTION_POLICY.redactPayload?.(text),
+  redactCredential: DEFAULT_REDACTION_POLICY.redactCredential,
+  redactOsc: DEFAULT_REDACTION_POLICY.redactOsc,
+}
+
+const CATALOG_TRACE_LITERALS = new Set([
+  'session-browser-dialog',
+  'workspace-dialog',
+  'loading',
+  'ready',
+  'pending',
+  'error',
+  'idle',
+  'project',
+  'session',
+  'root',
+  'fork',
+  'subagent',
+  'renamed',
+  'auto',
+  'prompt',
+  'fallback',
+  'list',
+  'confirm-delete',
+  'rename',
+  'user',
+  'assistant',
+  'tool',
+  'targets',
+  'choices',
+  'target',
+  'choice',
+  'info',
+  'success',
+  'warning',
+])
+const CATALOG_TRACE_REDACTION: RedactionPolicy = {
+  redactPayload: (text) =>
+    text === '' || text.startsWith('[placeholder]') || CATALOG_TRACE_LITERALS.has(text)
       ? undefined
       : DEFAULT_REDACTION_POLICY.redactPayload?.(text),
   redactCredential: DEFAULT_REDACTION_POLICY.redactCredential,
@@ -647,6 +691,229 @@ traces['interactive-overlays'] = {
         search: { query: '[placeholder] searchable', active: false, current: 1, matches: [first.rowId, second.rowId] },
       }),
     ]
+  },
+}
+
+// --- WP-08d1 session browser + workspace provider/local flows ----------------
+traces['session-workspace'] = {
+  terminalProfile: 'unicode-ambiguous-narrow',
+  redactionPolicy: CATALOG_TRACE_REDACTION,
+  build: (fx) => {
+    const sessionId = '[placeholder] resumable-session'
+    const currentSessionId = '[placeholder] current-session'
+    const filterText = '[placeholder] session filter'
+    const sessionRows: SessionBrowserPayload['rows'] = [
+      {
+        kind: 'project',
+        key: '[placeholder] project-row',
+        cwd: '[placeholder] /workspace/project',
+        count: 1,
+      },
+      {
+        kind: 'session',
+        id: sessionId,
+        sessionKind: 'fork',
+        title: '[placeholder] renamed session',
+        titleSource: 'renamed',
+        cwd: '[placeholder] /workspace/project',
+        createdAt: BASE_AT - 20_000,
+        updatedAt: BASE_AT - 1_000,
+        depth: 1,
+        bytes: 4_096,
+        model: '[placeholder] model id',
+        branch: '[placeholder] branch name',
+        childCount: 1,
+      },
+    ]
+    const sessionView = (
+      phase: SessionBrowserPayload['phase'],
+      query: string,
+      preview: SessionBrowserPayload['preview'],
+    ): SessionBrowserPayload => ({
+      kind: 'session-browser-dialog',
+      key: '[placeholder] session-browser-key',
+      title: '[placeholder] Resume session',
+      phase,
+      now: BASE_AT,
+      filter: {
+        query,
+        cursor: [...query].length,
+        allProjects: true,
+        branchOnly: false,
+        showSubagents: true,
+      },
+      rows: phase === 'loading' ? [] : sessionRows,
+      ...(phase === 'loading' ? {} : { selectedId: sessionId }),
+      hasMoreAbove: false,
+      hasMoreBelow: false,
+      sourceCount: phase === 'loading' ? 0 : 3,
+      shownCount: phase === 'loading' ? 0 : 1,
+      hiddenSubagents: phase === 'loading' ? 0 : 1,
+      emptyCount: phase === 'loading' ? 0 : 1,
+      current: { id: currentSessionId, title: '[placeholder] Current session' },
+      mode: 'list',
+      preview,
+      hint: '[placeholder] session browser keys',
+    })
+    const idlePreview: SessionBrowserPayload['preview'] = {
+      open: false,
+      phase: 'idle',
+      entries: [],
+    }
+    const loadingPreview: SessionBrowserPayload['preview'] = {
+      open: true,
+      phase: 'loading',
+      sessionId,
+      title: '[placeholder] renamed session',
+      cwd: '[placeholder] /workspace/project',
+      entries: [],
+    }
+    const readyPreview: SessionBrowserPayload['preview'] = {
+      ...loadingPreview,
+      phase: 'ready',
+      entries: [
+        { role: 'user', text: '[placeholder] user preview' },
+        { role: 'assistant', text: '[placeholder] assistant preview' },
+        { role: 'tool', text: '[placeholder] tool/call preview' },
+      ],
+    }
+    const sessionOverlay = (revision: number, payload: SessionBrowserPayload): OverlayState => makeOverlay({
+      overlayId: 'utility/session-browser',
+      revision,
+      width: '96%',
+      maxHeight: '90%',
+      margin: 1,
+      payload: payload as unknown as SerializableValue,
+    })
+
+    const choiceOne = '[placeholder] provider-choice-one'
+    const choiceTwo = '[placeholder] provider-choice-two'
+    const targetId = '[placeholder] provider-target'
+    const workspaceOverlay = (revision: number, payload: WorkspaceDialogPayload): OverlayState => makeOverlay({
+      overlayId: 'utility/workspace',
+      revision,
+      width: '80%',
+      maxHeight: '80%',
+      margin: 1,
+      payload: payload as unknown as SerializableValue,
+    })
+    const providerChoices: WorkspaceDialogPayload = {
+      kind: 'workspace-dialog',
+      key: '[placeholder] provider-workspace-key',
+      title: '[placeholder] Provider workspace',
+      phase: 'ready',
+      view: 'choices',
+      query: '',
+      cursor: 0,
+      items: [
+        {
+          kind: 'choice',
+          id: choiceOne,
+          label: '[placeholder] Create provider workspace',
+          description: '[placeholder] provider input choice',
+          badge: '[placeholder] remote',
+          hasInput: true,
+        },
+        {
+          kind: 'choice',
+          id: choiceTwo,
+          label: '[placeholder] Resume provider workspace',
+        },
+      ],
+      selectedId: choiceOne,
+      hasMoreAbove: false,
+      hasMoreBelow: false,
+      sourceCount: 2,
+      filteredCount: 2,
+      degraded: false,
+      hint: '[placeholder] workspace choice keys',
+    }
+    const providerPending: WorkspaceDialogPayload = {
+      ...providerChoices,
+      phase: 'pending',
+      notice: { text: '[placeholder] provider operation pending', tone: 'info' },
+      hint: '[placeholder] cancel pending provider work',
+    }
+    const providerTarget: WorkspaceDialogPayload = {
+      kind: 'workspace-dialog',
+      key: '[placeholder] provider-workspace-key',
+      title: '[placeholder] Provider target',
+      phase: 'pending',
+      view: 'targets',
+      query: '',
+      cursor: 0,
+      items: [{
+        kind: 'target',
+        id: targetId,
+        label: '[placeholder] Provider target workspace',
+        description: '[placeholder] resolved provider target',
+        badge: '[placeholder] remote',
+      }],
+      selectedId: targetId,
+      hasMoreAbove: false,
+      hasMoreBelow: false,
+      sourceCount: 1,
+      filteredCount: 1,
+      degraded: false,
+      notice: { text: '[placeholder] switching provider target', tone: 'info' },
+      hint: '[placeholder] cancel target switch',
+    }
+    const localTargetId = '[placeholder] local-target'
+    const degradedLocal: WorkspaceDialogPayload = {
+      kind: 'workspace-dialog',
+      key: '[placeholder] local-workspace-key',
+      title: '[placeholder] Switch workspace',
+      phase: 'ready',
+      view: 'targets',
+      query: '',
+      cursor: 0,
+      items: [{
+        kind: 'target',
+        id: localTargetId,
+        label: '[placeholder] Local workspace',
+        description: '[placeholder] local-only fallback target',
+        badge: '[placeholder] local',
+        current: true,
+      }],
+      selectedId: localTargetId,
+      hasMoreAbove: false,
+      hasMoreBelow: false,
+      sourceCount: 1,
+      filteredCount: 1,
+      degraded: true,
+      notice: { text: '[placeholder] local-only fallback', tone: 'warning' },
+      hint: '[placeholder] workspace target keys',
+    }
+
+    const lines: TraceBodyLine[] = [
+      resetEvent(fx, 'new-session', [], 'reset-session-workspace-1'),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: sessionOverlay(1, sessionView('loading', '', idlePreview)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: sessionOverlay(2, sessionView('ready', '', idlePreview)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: sessionOverlay(3, sessionView('ready', filterText, idlePreview)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: sessionOverlay(4, sessionView('ready', filterText, loadingPreview)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: sessionOverlay(5, sessionView('ready', filterText, readyPreview)) }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/session-browser' }),
+    ]
+
+    // A real resume adopts the replay controller's new adapter/generation
+    // identity before the reset and all subsequent workspace interactions.
+    fx.useIdentity('fixture-adapter-2', 'fixture-gen-2', 0)
+    const resumedRow = makeRow(fx, {
+      source: 'session',
+      sourceId: 'resumed-assistant-1',
+      kind: 'assistant',
+      blocks: ['[placeholder] resumed transcript'],
+    })
+    lines.push(
+      resetEvent(fx, 'resume', [resumedRow], 'reset-session-workspace-resume-1'),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: workspaceOverlay(1, providerChoices) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: workspaceOverlay(2, providerPending) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: workspaceOverlay(3, providerTarget) }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/workspace' }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: workspaceOverlay(1, degradedLocal) }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/workspace' }),
+    )
+    return lines
   },
 }
 

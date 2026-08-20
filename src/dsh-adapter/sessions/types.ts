@@ -134,9 +134,9 @@ export interface SessionDigest {
   readonly label: string | undefined
 }
 
-/** One exchange in the preview pane, newest last. */
+/** One bounded message/tool summary in the preview pane, newest last. */
 export interface PreviewEntry {
-  readonly role: 'user' | 'assistant'
+  readonly role: 'user' | 'assistant' | 'tool'
   readonly text: string
   readonly at: number | undefined
 }

@@ -1,17 +1,12 @@
 /**
- * Slash-command controller (WP-08c).
+ * Slash-command controller (WP-08c/WP-08d1).
  *
  * Session mutations stay in ReplayController. Interactive commands delegate to
  * narrow utility-overlay actions, so this controller never publishes ad-hoc
- * overlay payloads or owns callbacks. Bare `/resume` opens the generic picker;
- * direct `/resume <id>` keeps the replay boundary.
+ * payloads or owns catalog/provider callbacks. Bare `/resume` opens the real
+ * catalog; direct `/resume <id>` keeps the replay boundary.
  */
 import type { LocalCommand } from '../../commands.js'
-import type {
-  TuiWorkspaceCommand,
-  TuiWorkspaceCommandResult,
-  TuiWorkspaceTarget,
-} from '../../dsh-adapter/workspaces.js'
 import type { AppEvent } from '../model/events.js'
 import type { EventMeta, SerializableError } from '../model/schema.js'
 import type { ReplayController } from './replay.js'
@@ -20,14 +15,11 @@ export interface CommandChannel {
   readonly working: boolean
   readonly commandList: readonly LocalCommand[]
   runExternalCommand(name: string, rawInput: string): Promise<string | undefined>
-  workspaceCommands(): readonly Pick<TuiWorkspaceCommand, 'name' | 'aliases' | 'description'>[]
-  runWorkspaceCommand(name: string, input: string): Promise<TuiWorkspaceCommandResult | undefined>
-  switchWorkspace(target: TuiWorkspaceTarget): Promise<boolean>
-  pushLocal(title: string, lines: readonly string[]): void
 }
 
 export interface CommandOverlayActions {
-  readonly openResumePicker: (onSelect: (id: string) => void) => boolean
+  readonly openSessionBrowser: () => boolean
+  readonly openWorkspace: (rawInput: string) => boolean
   readonly openHelp: (query: string) => boolean
   readonly openHistorySearch: (query: string) => boolean
   readonly openTranscriptSearch: (query: string) => boolean
@@ -130,55 +122,6 @@ export function createCommandsController(options: CommandsControllerOptions): Co
     }
   }
 
-  const runWorkspace = async (name: string, input: string): Promise<void> => {
-    counts.workspaceCommands += 1
-    const token = ++opToken
-    try {
-      const result = await options.channel.runWorkspaceCommand(name, input)
-      if (superseded(token)) return
-      if (result === undefined) {
-        options.notify(`Unknown workspace command: ${name}`, { color: 'error' })
-        return
-      }
-      if (result.kind === 'choices') {
-        // Workspace switching is outside WP-08c's picker migration; retain the
-        // explicit local list rather than inventing a partial workspace flow.
-        options.channel.pushLocal(result.title, result.choices.map((choice) => choice.label))
-        return
-      }
-      const ok = await options.channel.switchWorkspace(result.target)
-      if (superseded(token)) return
-      if (!ok) options.notify('Failed to switch workspace', { color: 'error' })
-    } catch (error) {
-      if (superseded(token)) return
-      journalError('workspace-command-failed', `workspace ${name}: ${String(error)}`)
-      options.notify(`Workspace command failed: ${name}`, { color: 'error' })
-    }
-  }
-
-  const handleWorkspace = (rawInput: string): void => {
-    const space = rawInput.search(/\s/)
-    const sub = (space === -1 ? rawInput : rawInput.slice(0, space)).trim()
-    const rest = space === -1 ? '' : rawInput.slice(space + 1).trim()
-    if (sub === '') {
-      const commands = options.channel.workspaceCommands()
-      options.channel.pushLocal('/workspace', [
-        'Usage: /workspace <command> [input]',
-        ...commands.map((command) => `  ${command.name} — ${command.description}`),
-      ])
-      return
-    }
-    const provider = options.channel
-      .workspaceCommands()
-      .find((command) => command.name === sub || (command.aliases ?? []).includes(sub))
-    if (provider === undefined) {
-      counts.unknownCommands += 1
-      options.notify(`Unknown workspace command: ${sub}`, { color: 'error' })
-      return
-    }
-    void runWorkspace(provider.name, rest)
-  }
-
   const handleSlash = (text: string, parsed: { name: string; rawInput: string }): SubmittedTextOutcome => {
     const { name, rawInput } = parsed
     if (name === 'new') {
@@ -193,13 +136,8 @@ export function createCommandsController(options: CommandsControllerOptions): Co
     }
     if (name === 'resume') {
       counts.commands += 1
-      if (rawInput === '') {
-        noteOverlay(options.overlays.openResumePicker((id) => {
-          void options.replay.resume(id)
-        }))
-      } else {
-        void options.replay.resume(rawInput)
-      }
+      if (rawInput === '') noteOverlay(options.overlays.openSessionBrowser())
+      else void options.replay.resume(rawInput)
       return 'command'
     }
     if (name === 'help') {
@@ -219,7 +157,8 @@ export function createCommandsController(options: CommandsControllerOptions): Co
     }
     if (name === 'workspace') {
       counts.commands += 1
-      handleWorkspace(rawInput)
+      counts.workspaceCommands += 1
+      noteOverlay(options.overlays.openWorkspace(rawInput))
       return 'command'
     }
     const entry = findCommand(options.channel.commandList, name)

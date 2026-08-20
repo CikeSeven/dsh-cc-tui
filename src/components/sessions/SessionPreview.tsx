@@ -8,6 +8,7 @@ import type { PreviewEntry, SessionSummary } from '../../dsh-adapter/sessions/in
 const ROLE = {
   user: { glyph: '❯', color: 'suggestion' as const },
   assistant: { glyph: '✦', color: 'claude' as const },
+  tool: { glyph: '⚙', color: 'permission' as const },
 }
 
 /**

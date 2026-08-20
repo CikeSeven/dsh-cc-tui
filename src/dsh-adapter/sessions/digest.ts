@@ -179,8 +179,23 @@ export function digestSession(path: string, cwd: string): SessionDigest {
   }
 }
 
+/** Compact, bounded summary for a durable tool/call event. */
+function toolSummary(line: LogLine): string | undefined {
+  if (line['type'] !== 'tool/call') return undefined
+  const data = line['data']
+  if (data === null || typeof data !== 'object') return undefined
+  const record = data as Record<string, unknown>
+  const name = record['name']
+  if (typeof name !== 'string' || name.trim() === '') return undefined
+  const rawArguments = record['arguments']
+  const detail = typeof rawArguments === 'string'
+    ? rawArguments.trim().replace(/\s+/gu, ' ')
+    : ''
+  return (detail === '' ? name.trim() : `${name.trim()} · ${detail}`).slice(0, PREVIEW_CHARS)
+}
+
 /**
- * The last exchanges of a session, for the browser's preview pane.
+ * The last messages and tool calls of a session, for the browser's preview.
  *
  * Bounded like everything else here: the preview shows the end of the
  * conversation because that is what the tail window holds, and because the end
@@ -196,6 +211,11 @@ export function previewSession(path: string, limit: number): PreviewEntry[] {
   const lines = decodeTail(window)
   const entries: PreviewEntry[] = []
   for (const line of lines) {
+    const tool = toolSummary(line)
+    if (tool !== undefined) {
+      entries.push({ role: 'tool', text: tool, at: timeOf(line) })
+      continue
+    }
     const data = line['data']
     if (data === null || typeof data !== 'object') continue
     const record = data as Record<string, unknown>
@@ -214,5 +234,5 @@ export function previewSession(path: string, limit: number): PreviewEntry[] {
       }
     }
   }
-  return entries.slice(-limit)
+  return entries.slice(-Math.max(0, limit))
 }

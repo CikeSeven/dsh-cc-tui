@@ -634,9 +634,9 @@ function traceEvents(trace: Trace): AppEvent[] {
   return trace.lines.filter((l) => l.kind === 'event').map((l) => (l as { event: AppEvent }).event)
 }
 
-test('model replay: all 22 corpus traces reduce deterministically (replay)', async () => {
+test('model replay: all 23 corpus traces reduce deterministically (replay)', async () => {
   const traces = await loadTraces()
-  assert.equal(traces.length, 22)
+  assert.equal(traces.length, 23)
   for (const { file, trace } of traces) {
     const events = traceEvents(trace)
     const finalA = reduceAll(events, initialStateForTrace(trace))

@@ -130,13 +130,16 @@ export async function listSummaries(
   try {
     listed = await enumerate(source, signal)
   } catch {
+    signal?.throwIfAborted()
     return []
   }
+  signal?.throwIfAborted()
 
   // Children are counted from the same listing rather than by walking logs:
   // lineage lives in the header, so a parent's sub-agent count is free.
   const children = new Map<string, number>()
   for (const entry of listed) {
+    signal?.throwIfAborted()
     if (entry.header.origin !== 'subagent') continue
     const parent = entry.header.parentSession
     if (parent === undefined) continue
@@ -150,6 +153,7 @@ export async function listSummaries(
   const summaries: SessionSummary[] = []
 
   for (const { header, raw, revision } of listed) {
+    signal?.throwIfAborted()
     const cached = index.get(header.id)
     const path = locate(source, raw, header.id)
     const facts = path === undefined ? undefined : fileFacts(path)

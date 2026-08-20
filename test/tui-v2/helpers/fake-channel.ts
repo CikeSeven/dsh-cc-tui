@@ -28,6 +28,7 @@ import type {
   TokenUsage,
 } from '../../src/dsh-adapter/channel.js';
 import type { TuiRewindMode } from '../../src/dsh-adapter/extension-events.js';
+import type { PreviewEntry, SessionSummary } from '../../src/dsh-adapter/sessions/index.js';
 import type {
   TuiWorkspaceCommand,
   TuiWorkspaceCommandResult,
@@ -76,10 +77,13 @@ export interface FakeChannel extends CoordinatorChannel {
   /** Rows installed by resumeTo (default: keep current rows). */
   resumeRows: ChatRow[] | null;
   promptRewindResult: { modes: readonly TuiRewindMode[] } | 'cancel' | null;
+  sessionSummaries: SessionSummary[];
+  sessionPreviews: Map<string, readonly PreviewEntry[]>;
+  workspaceTargets: TuiWorkspaceTarget[];
   commandList: LocalCommand[];
   runExternalCommand: (name: string, rawInput: string) => Promise<string | undefined>;
   workspaceCommands(): readonly Pick<TuiWorkspaceCommand, 'name' | 'aliases' | 'description'>[];
-  runWorkspaceCommand(name: string, input: string): Promise<TuiWorkspaceCommandResult | undefined>;
+  runWorkspaceCommand(name: string, input: string, signal?: AbortSignal): Promise<TuiWorkspaceCommandResult | undefined>;
   switchWorkspace(target: TuiWorkspaceTarget): Promise<boolean>;
 }
 
@@ -134,6 +138,9 @@ export function createFakeChannel(): FakeChannel {
     },
     get cwd() {
       return '/fake/cwd';
+    },
+    get agentId() {
+      return 'fake-current-session';
     },
     get gitBranch() {
       return 'main';
@@ -321,9 +328,43 @@ export function createFakeChannel(): FakeChannel {
     resumeResult: { ok: true },
     resumeRows: null,
     promptRewindResult: null,
+    sessionSummaries: [],
+    sessionPreviews: new Map(),
+    workspaceTargets: [],
     commandList: [],
     async runExternalCommand() {
       return undefined;
+    },
+    async listSessions(signal) {
+      signal?.throwIfAborted();
+      return channel.sessionSummaries.map((summary) => ({ ...summary }));
+    },
+    async previewSession(sessionId, signal) {
+      signal?.throwIfAborted();
+      return [...(channel.sessionPreviews.get(sessionId) ?? [])];
+    },
+    async deleteSession(sessionId) {
+      const before = channel.sessionSummaries.length;
+      channel.sessionSummaries = channel.sessionSummaries.filter((summary) => summary.id !== sessionId);
+      return channel.sessionSummaries.length !== before;
+    },
+    async renameSessionTo(sessionId, title) {
+      const index = channel.sessionSummaries.findIndex((summary) => summary.id === sessionId);
+      const summary = channel.sessionSummaries[index];
+      if (summary === undefined) return false;
+      channel.sessionSummaries[index] = { ...summary, title: { text: title, source: 'renamed' } };
+      return true;
+    },
+    async listWorkspaces(signal) {
+      signal?.throwIfAborted();
+      return [...channel.workspaceTargets];
+    },
+    async resolveWorkspace(reference, signal) {
+      signal?.throwIfAborted();
+      return channel.workspaceTargets.find((target) => target.uri === reference || target.cwd === reference);
+    },
+    async renameWorkspace() {
+      return true;
     },
     workspaceCommands() {
       return [];

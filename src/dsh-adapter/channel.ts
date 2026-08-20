@@ -563,16 +563,16 @@ export interface Channel {
    *  transcript cleared, the resume marker forgotten. */
   newSession(): Promise<boolean>
   /** Workspace targets contributed by the TUI and optional providers. */
-  listWorkspaces(): Promise<readonly TuiWorkspaceTarget[]>
+  listWorkspaces(signal?: AbortSignal): Promise<readonly TuiWorkspaceTarget[]>
   /** Resolve an absolute path, file URL, or provider URI. */
-  resolveWorkspace(reference: string): Promise<TuiWorkspaceTarget | undefined>
+  resolveWorkspace(reference: string, signal?: AbortSignal): Promise<TuiWorkspaceTarget | undefined>
   /** Start a fresh session in the selected workspace. */
   switchWorkspace(target: TuiWorkspaceTarget): Promise<boolean>
   /** Rename the current durable workspace. */
   renameWorkspace(title: string): Promise<boolean>
   /** Provider-owned workspace subcommands. */
   workspaceCommands(): readonly Pick<TuiWorkspaceCommand, 'name' | 'aliases' | 'description'>[]
-  runWorkspaceCommand(name: string, input: string): Promise<TuiWorkspaceCommandResult | undefined>
+  runWorkspaceCommand(name: string, input: string, signal?: AbortSignal): Promise<TuiWorkspaceCommandResult | undefined>
   /** Switch the live model (`/model` picker): forks the conversation at its
    *  current end and continues it with a new agent routed to `provider`/`model`.
    *  The history replays unchanged; only the request route changes. */
@@ -648,9 +648,9 @@ export interface Channel {
   listFiles(): Promise<readonly string[]>
   /** Every session the persistence backend stores, classified and unfiltered
    *  — the browser (`/resume`) decides which of them a given view shows. */
-  listSessions(): Promise<readonly SessionSummary[]>
+  listSessions(signal?: AbortSignal): Promise<readonly SessionSummary[]>
   /** Trailing exchanges of a persisted session, for the browser's preview. */
-  previewSession(sessionId: string): Promise<readonly PreviewEntry[]>
+  previewSession(sessionId: string, signal?: AbortSignal): Promise<readonly PreviewEntry[]>
   /** Mark a session for `dsh-tui --resume` on the next launch. */
   setResumeTarget(sessionId: string): void
   /** Rename the current session (CC's /rename): appends a `session/title`
@@ -837,12 +837,12 @@ export interface ChannelState {
   resumeTo(sessionId: string): Promise<ResumeResult>
   /** Start a fresh conversation (`/new`). */
   newSession(): Promise<boolean>
-  listWorkspaces(): Promise<readonly TuiWorkspaceTarget[]>
-  resolveWorkspace(uri: string): Promise<TuiWorkspaceTarget | undefined>
+  listWorkspaces(signal?: AbortSignal): Promise<readonly TuiWorkspaceTarget[]>
+  resolveWorkspace(uri: string, signal?: AbortSignal): Promise<TuiWorkspaceTarget | undefined>
   switchWorkspace(target: TuiWorkspaceTarget): Promise<boolean>
   renameWorkspace(title: string): Promise<boolean>
   workspaceCommands(): readonly Pick<TuiWorkspaceCommand, 'name' | 'aliases' | 'description'>[]
-  runWorkspaceCommand(name: string, input: string): Promise<TuiWorkspaceCommandResult | undefined>
+  runWorkspaceCommand(name: string, input: string, signal?: AbortSignal): Promise<TuiWorkspaceCommandResult | undefined>
   /** Switch the live model (`/model` picker). */
   switchModel(provider: string, model: string): Promise<boolean>
   /** The route's effort levels for `/effort` (see the public Channel type). */
@@ -881,9 +881,9 @@ export interface ChannelState {
   /** Subscribe to settings-section register/unregister events. */
   subscribeSettingsSections(listener: () => void): () => void
   listFiles(): Promise<readonly string[]>
-  listSessions(): Promise<readonly SessionSummary[]>
+  listSessions(signal?: AbortSignal): Promise<readonly SessionSummary[]>
   /** Trailing exchanges of a persisted session (see the public Channel type). */
-  previewSession(sessionId: string): Promise<readonly PreviewEntry[]>
+  previewSession(sessionId: string, signal?: AbortSignal): Promise<readonly PreviewEntry[]>
   setResumeTarget(sessionId: string): void
   /** Rename the current session (see the public Channel type). */
   renameSession(title: string): void
@@ -2568,11 +2568,11 @@ export function createChannel(
       notifySessionSwitched('new', String(handle.agent.id), previousSessionId)
       return true
     },
-    listWorkspaces() {
-      return workspaceService.list(state.cwd)
+    listWorkspaces(signal?: AbortSignal) {
+      return workspaceService.list(state.cwd, signal)
     },
-    resolveWorkspace(uri: string) {
-      return workspaceService.resolve(uri, state.cwd)
+    resolveWorkspace(uri: string, signal?: AbortSignal) {
+      return workspaceService.resolve(uri, state.cwd, signal)
     },
     async switchWorkspace(target: TuiWorkspaceTarget): Promise<boolean> {
       if (state.working) {
@@ -2623,8 +2623,8 @@ export function createChannel(
     workspaceCommands() {
       return workspaceService.commands()
     },
-    runWorkspaceCommand(name: string, input: string) {
-      return workspaceService.runCommand(name, input, state.cwd)
+    runWorkspaceCommand(name: string, input: string, signal?: AbortSignal) {
+      return workspaceService.runCommand(name, input, state.cwd, signal)
     },
     async switchModel(provider: string, model: string): Promise<boolean> {
       // `/model` picker Enter — switch the live model by forking the
@@ -3171,19 +3171,20 @@ export function createChannel(
         | undefined
       return listFilesDeep(fs, state.cwd)
     },
-    async listSessions() {
+    async listSessions(signal?: AbortSignal) {
       // Every stored session, classified and unfiltered. Which of them a
       // surface shows — this project only, conversations only, sub-agent runs
       // folded away — is a view decision, and keeping it out of here is what
       // lets the browser toggle those views without re-reading a single log.
       const persistence = ctx.get('sessionPersistence') as SessionSource | undefined
       if (!persistence) return []
-      return listSummaries(persistence)
+      return listSummaries(persistence, signal)
     },
-    async previewSession(sessionId) {
+    async previewSession(sessionId, signal?: AbortSignal) {
       const persistence = ctx.get('sessionPersistence') as SessionSource | undefined
       if (!persistence) return []
-      const path = await locateSession(persistence, sessionId)
+      const path = await locateSession(persistence, sessionId, signal)
+      signal?.throwIfAborted()
       return path === undefined ? [] : previewSession(path, PREVIEW_ENTRIES)
     },
     setResumeTarget(sessionId) {

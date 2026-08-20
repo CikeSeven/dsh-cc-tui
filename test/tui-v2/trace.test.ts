@@ -28,6 +28,7 @@ import {
   validateAppEvent,
   type AppEvent,
 } from '../../src/tui-v2/model/events.js'
+import { parseCatalogOverlayPayload } from '../../src/tui-v2/model/catalog-overlay-payloads.js'
 import { parseInteractiveOverlayPayload } from '../../src/tui-v2/model/interactive-overlay-payloads.js'
 import type { Frame, TerminalModeSnapshot } from '../../src/tui-v2/renderer/frame.js'
 import {
@@ -599,6 +600,7 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
       'scene.jsonl',
       'scroll.jsonl',
       'selection.jsonl',
+      'session-workspace.jsonl',
       'sigcont.jsonl',
       'startup.jsonl',
       'tool-lifecycle.jsonl',
@@ -668,5 +670,64 @@ test('trace fixtures: WP-08c interactive overlay payloads and search state remai
   )
   const raw = JSON.stringify(trace)
   assert.ok(!raw.includes('super-secret'))
+  assert.ok(!raw.includes('\u001b]'))
+})
+
+test('trace fixtures: WP-08d1 session/workspace payloads preserve bounded flow order', async () => {
+  const trace = await readTrace(path.join(fixturesDir, 'session-workspace.jsonl'))
+  const events = trace.lines
+    .filter((line) => line.kind === 'event')
+    .map((line) => (line as { event: AppEvent }).event)
+  const opens = events
+    .filter((event): event is Extract<AppEvent, { type: 'overlay/open' }> => event.type === 'overlay/open')
+    .map((event) => event.overlay)
+  const parsed = opens.map((overlay) => parseCatalogOverlayPayload(overlay.payload))
+  assert.ok(parsed.every((payload) => payload !== null), 'every catalog projection passes its strict parser')
+
+  const sessionViews = parsed.flatMap((payload) =>
+    payload?.kind === 'session-browser-dialog' ? [payload] : [])
+  assert.deepEqual(sessionViews.map((payload) => payload.phase), [
+    'loading',
+    'ready',
+    'ready',
+    'ready',
+    'ready',
+  ])
+  assert.deepEqual(sessionViews.map((payload) => payload.preview.phase), [
+    'idle',
+    'idle',
+    'idle',
+    'loading',
+    'ready',
+  ])
+  assert.equal(sessionViews[2]?.filter.query, '[placeholder] session filter')
+  assert.deepEqual(sessionViews.at(-1)?.preview.entries.map((entry) => entry.role), [
+    'user',
+    'assistant',
+    'tool',
+  ])
+
+  const sessionCloseIndex = events.findIndex((event) =>
+    event.type === 'overlay/close' && event.overlayId === 'utility/session-browser')
+  assert.ok(sessionCloseIndex >= 0)
+  const resume = events[sessionCloseIndex + 1]
+  assert.equal(resume?.type, 'session/rows-reset')
+  if (resume?.type !== 'session/rows-reset') assert.fail('session close must be followed by a reset')
+  assert.equal(resume.reason, 'resume')
+
+  const workspaceViews = parsed.flatMap((payload) =>
+    payload?.kind === 'workspace-dialog' ? [payload] : [])
+  assert.deepEqual(workspaceViews.map((payload) => [payload.phase, payload.view]), [
+    ['ready', 'choices'],
+    ['pending', 'choices'],
+    ['pending', 'targets'],
+    ['ready', 'targets'],
+  ])
+  assert.deepEqual(workspaceViews.map((payload) => payload.degraded), [false, false, false, true])
+  assert.equal(workspaceViews.at(-1)?.notice?.tone, 'warning')
+
+  const raw = JSON.stringify(trace)
+  assert.ok(raw.includes('[placeholder] tool/call preview'))
+  assert.ok(raw.includes('[placeholder] local-only fallback'))
   assert.ok(!raw.includes('\u001b]'))
 })

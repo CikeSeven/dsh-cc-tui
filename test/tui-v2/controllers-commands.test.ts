@@ -2,10 +2,9 @@
  * WP-05 commands controller (slash routing skeleton).
  *
  * v1 Chat.tsx parity under test: working-steer (with the /btw exception),
- * /new, /clear, /resume (overlay + direct id), /workspace (usage / provider
- * subcommands / choices degradation / target switch), external commands
- * (registry truth), skill + unknown-slash fallthrough to the model, and
- * superseded async ops.
+ * /new, /clear, /resume (real catalog action + direct id), /workspace flow
+ * delegation, external commands (registry truth), skill + unknown-slash
+ * fallthrough to the model, and superseded async ops.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,14 +15,11 @@ import { serializeCanonicalUiState } from '../../src/tui-v2/model/canonical-stat
 import { createReducer } from '../../src/tui-v2/model/reducer.js';
 import { replayTrace } from '../../src/tui-v2/controllers/replay.js';
 import type { LocalCommand } from '../../src/commands.js';
-import type {
-  TuiWorkspaceCommandResult,
-  TuiWorkspaceTarget,
-} from '../../src/dsh-adapter/workspaces.js';
 import { createControllerRig, addUserRows, ManualClock, type ControllerRig } from './helpers/controller-rig.js';
 
 interface OverlayHarness {
-  resumeSelect: ((id: string) => void) | null;
+  sessionOpens: number;
+  workspaceInputs: string[];
   helpQueries: string[];
   historyQueries: string[];
   searchQueries: string[];
@@ -49,7 +45,8 @@ function commandsFor(rig: ControllerRig): CommandsRig {
     requestStop: () => {},
   });
   const overlays: OverlayHarness = {
-    resumeSelect: null,
+    sessionOpens: 0,
+    workspaceInputs: [],
     helpQueries: [],
     historyQueries: [],
     searchQueries: [],
@@ -68,8 +65,12 @@ function commandsFor(rig: ControllerRig): CommandsRig {
       },
     },
     overlays: {
-      openResumePicker: (onSelect) => {
-        overlays.resumeSelect = onSelect;
+      openSessionBrowser: () => {
+        overlays.sessionOpens += 1;
+        return true;
+      },
+      openWorkspace: (rawInput) => {
+        overlays.workspaceInputs.push(rawInput);
         return true;
       },
       openHelp: (query) => {
@@ -150,17 +151,15 @@ test('controller commands: /new and /clear reset through the replay controller',
   replayEquivalence(rig);
 });
 
-test('controller commands: /resume uses the generic picker callback boundary', async () => {
+test('controller commands: bare /resume opens the catalog; direct id keeps replay', async () => {
   const { commands, rig, overlays, resumed } = commandsFor(createControllerRig({ height: 5 }));
 
   assert.equal(commands.handleSubmittedText('/resume'), 'command');
-  assert.equal(typeof overlays.resumeSelect, 'function');
-  assert.equal(rig.state().overlays.stack.length, 0, 'commands never invent a session-browser payload');
-  overlays.resumeSelect?.('picked-session');
-  assert.deepEqual(resumed, ['picked-session']);
+  assert.equal(overlays.sessionOpens, 1);
+  assert.deepEqual(resumed, [], 'catalog selection belongs to the session controller');
 
   assert.equal(commands.handleSubmittedText('/resume abc123'), 'command');
-  assert.deepEqual(resumed, ['picked-session', 'abc123']);
+  assert.deepEqual(resumed, ['abc123']);
   await new Promise((resolve) => setImmediate(resolve));
   replayEquivalence(rig);
 });
@@ -176,52 +175,16 @@ test('controller commands: /help, /history and /search use utility actions with 
   assert.equal(commands.diagnostics().overlaysOpened, 3);
 });
 
-test('controller commands: /workspace usage, provider subcommands, choices and target', async () => {
-  const { commands, rig } = commandsFor(createControllerRig({ height: 5 }));
-  const switched: TuiWorkspaceTarget[] = [];
-  const target: TuiWorkspaceTarget = { kind: 'path', path: '/tmp/ws', title: 'ws' } as TuiWorkspaceTarget;
-  const choicesResult: TuiWorkspaceCommandResult = {
-    kind: 'choices',
-    title: 'pick one',
-    choices: [
-      { id: 'a', label: 'Choice A' },
-      { id: 'b', label: 'Choice B' },
-    ],
-  };
-  rig.channel.workspaceCommands = () => [
-    { name: 'review', aliases: ['rv'], description: 'Review workspaces' },
-  ];
-  rig.channel.runWorkspaceCommand = async (name, input) => {
-    if (input === 'pick') return choicesResult;
-    if (input === 'go') return { kind: 'target', target };
-    return undefined;
-  };
-  rig.channel.switchWorkspace = async (t) => {
-    switched.push(t);
-    return true;
-  };
+test('controller commands: /workspace delegates every form to the workspace owner', () => {
+  const { commands, rig, overlays } = commandsFor(createControllerRig({ height: 5 }));
 
-  // No subcommand: usage pushed as local rows.
   assert.equal(commands.handleSubmittedText('/workspace'), 'command');
-  assert.equal(rig.channel.localReports.length, 1);
-  assert.match(rig.channel.localReports[0]?.lines[0] ?? '', /Usage: \/workspace/);
-  assert.ok(rig.state().session.rowOrder.length >= 2, 'usage rows landed in the transcript');
-
-  // Alias match + choices degrade to a local list (WP-08 owns the picker).
-  assert.equal(commands.handleSubmittedText('/workspace rv pick'), 'command');
-  await new Promise((resolve) => setImmediate(resolve));
-  const degraded = rig.channel.localReports.find((report) => report.title === 'pick one');
-  assert.deepEqual(degraded?.lines, ['Choice A', 'Choice B']);
-
-  // Target result switches the workspace.
-  assert.equal(commands.handleSubmittedText('/workspace review go'), 'command');
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(switched.length, 1);
-
-  // Unknown subcommand notifies without touching providers.
-  assert.equal(commands.handleSubmittedText('/workspace nope'), 'command');
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.ok(rig.channel.notifyLog.some((entry) => /Unknown workspace command: nope/.test(entry.text)));
+  assert.equal(commands.handleSubmittedText('/workspace resume'), 'command');
+  assert.equal(commands.handleSubmittedText('/workspace open /tmp/demo'), 'command');
+  assert.equal(commands.handleSubmittedText('/workspace provider create'), 'command');
+  assert.deepEqual(overlays.workspaceInputs, ['', 'resume', 'open /tmp/demo', 'provider create']);
+  assert.equal(commands.diagnostics().workspaceCommands, 4);
+  assert.equal(commands.diagnostics().overlaysOpened, 4);
   replayEquivalence(rig);
 });
 
