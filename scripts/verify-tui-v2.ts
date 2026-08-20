@@ -26,6 +26,14 @@
  *                        cordis modules — plus a live/replay canonical-state
  *                        equivalence run driven through the controller rig
  *                        with dialog overlay open/navigate/settle/timeout.
+ *   - fullscreen (WP-06d): the §9.2 differential formula through the real
+ *                        pipeline — required goldens reproduced via base
+ *                        renderer → buildFrame → compositeFrame → backend →
+ *                        encoder → VirtualTerminal; every trace scanned
+ *                        frame-by-frame under the golden profiles; a scripted
+ *                        overlay open/move/resize/nest/close no-ghosting
+ *                        scan; and the §9.3 P0/P1 regression-fixture ledger
+ *                        (WP-07/WP-08 domains registered as deferred).
  *
  * Every check writes an atomic JSON artifact
  *   { schemaVersion: 1, check, status, details, startedAt, durationMs,
@@ -973,6 +981,427 @@ async function checkControllers(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
+// fullscreen check (WP-06d): §9.2 differential formula through the real
+// pipeline (golden replay + trace scan + overlay no-ghosting) and the §9.3
+// P0/P1 regression-fixture ledger.
+// ---------------------------------------------------------------------------
+
+type FullscreenLedgerRef =
+  | { readonly kind: 'conformance' | 'trace'; readonly name: string }
+  | { readonly kind: 'golden'; readonly name: string }
+  | { readonly kind: 'test'; readonly file: string }
+  | { readonly kind: 'check'; readonly name: string }
+  | { readonly kind: 'fullscreen-part'; readonly name: 'golden-replay' | 'differential' | 'overlay-scan' }
+
+interface FullscreenLedgerEntry {
+  readonly id: string
+  readonly severity: 'P0' | 'P1'
+  /** §9.3 requirement, abbreviated. */
+  readonly requirement: string
+  readonly covers: readonly FullscreenLedgerRef[]
+  /** WP-07/WP-08 domain entries are registered as deferred and never fail. */
+  readonly deferred?: 'WP-07' | 'WP-08'
+}
+
+const FULLSCREEN_SCAN_PROFILES = ['unicode-ambiguous-narrow', 'kitty-sync'] as const
+
+const FULLSCREEN_LEDGER: readonly FullscreenLedgerEntry[] = [
+  {
+    id: 'cjk-width1',
+    severity: 'P1',
+    requirement: '单个 CJK grapheme 在 width=1 时不递归、不溢出、不丢失后续 cursor',
+    covers: [{ kind: 'conformance', name: 'wide-cjk-width1' }],
+  },
+  {
+    id: 'wide-grapheme-boundaries',
+    severity: 'P1',
+    requirement: 'ZWJ emoji、regional indicator、组合字符和宽字符边界不被劈开',
+    covers: [
+      { kind: 'conformance', name: 'wide-zwj-emoji' },
+      { kind: 'conformance', name: 'wide-ambiguous-narrow' },
+      { kind: 'conformance', name: 'wide-ambiguous-wide' },
+      { kind: 'conformance', name: 'wide-cjk' },
+    ],
+  },
+  {
+    id: 'cjk-link-boundary',
+    severity: 'P1',
+    requirement: 'CJK URL/Markdown 链接在边界处不多一列或少一列',
+    covers: [
+      { kind: 'test', file: 'test/tui-v2/components-content.test.ts' },
+      { kind: 'test', file: 'test/tui-v2/fullscreen-overlay-scan.test.ts' },
+    ],
+  },
+  {
+    id: 'sgr-osc8-style-leak',
+    severity: 'P0',
+    requirement: 'ANSI SGR/OSC 8 在换行、截断、overlay 覆盖后 style 不泄漏',
+    covers: [
+      { kind: 'conformance', name: 'sgr-attributes' },
+      { kind: 'conformance', name: 'osc8-hyperlinks' },
+      { kind: 'fullscreen-part', name: 'overlay-scan' },
+    ],
+  },
+  {
+    id: 'cache-sliced-string',
+    severity: 'P1',
+    requirement: '长流式行的 cache key 不持有 sliced string（单调堆增长）',
+    covers: [{ kind: 'test', file: 'test/tui-v2/renderer-cache.test.ts' }],
+  },
+  {
+    id: 'row-cache-invalidation',
+    severity: 'P1',
+    requirement: '完成 row 的 cache 不因 spinner、通知或其他 row 更新而失效',
+    covers: [
+      { kind: 'test', file: 'test/tui-v2/base-renderer.test.ts' },
+      { kind: 'test', file: 'test/tui-v2/renderer-cache.test.ts' },
+    ],
+  },
+  {
+    id: 'overlay-restore',
+    severity: 'P1',
+    requirement: 'overlay 覆盖 transcript 后缩小、移动、关闭，base cell 完全恢复',
+    covers: [
+      { kind: 'test', file: 'test/tui-v2/compositor.test.ts' },
+      { kind: 'fullscreen-part', name: 'overlay-scan' },
+    ],
+  },
+  {
+    id: 'resize-no-ghost',
+    severity: 'P1',
+    requirement: 'resize 在 stream、dialog、selection、scroll 中不重复、不残影、不坐标漂移',
+    covers: [
+      { kind: 'trace', name: 'resize' },
+      { kind: 'golden', name: 'resize' },
+      { kind: 'test', file: 'test/tui-v2/fullscreen-backend.test.ts' },
+      { kind: 'fullscreen-part', name: 'differential' },
+    ],
+  },
+  {
+    id: 'sticky-scroll-resume',
+    severity: 'P1',
+    requirement: 'sticky scroll 打断后只在明确到达底部时恢复，new-message count 正确递减',
+    covers: [
+      { kind: 'test', file: 'test/tui-v2/controllers-scrolling.test.ts' },
+      { kind: 'trace', name: 'scroll' },
+    ],
+  },
+  {
+    id: 'ctrl-c-tristate',
+    severity: 'P0',
+    requirement: 'Ctrl+C 在 working/idle/second press 三种状态都能得到预期结果',
+    covers: [
+      { kind: 'test', file: 'test/tui-v2/controllers-input.test.ts' },
+      { kind: 'test', file: 'test/tui-v2/walking-skeleton.test.ts' },
+    ],
+  },
+  {
+    id: 'signal-mode-restore',
+    severity: 'P0',
+    requirement: 'SIGINT/SIGTERM/异常/stdin close/update restart 后 raw/alt/mouse/paste/cursor 全部恢复',
+    covers: [
+      { kind: 'test', file: 'test/tui-v2/terminal-lifecycle.test.ts' },
+      { kind: 'test', file: 'test/tui-v2/walking-skeleton.test.ts' },
+      { kind: 'golden', name: 'cleanup' },
+    ],
+  },
+  {
+    id: 'injection-sanitize',
+    severity: 'P0',
+    requirement: 'C0/CSI/OSC/DEC/OSC 8/52 payload 被当作数据清洗；fuzz 后 mode/cursor/scrollback/generation 不变量成立',
+    covers: [
+      { kind: 'conformance', name: 'unknown-sequences' },
+      { kind: 'conformance', name: 'dec9001' },
+      { kind: 'conformance', name: 'osc8-hyperlinks' },
+      { kind: 'conformance', name: 'osc52-clipboard' },
+      { kind: 'test', file: 'test/tui-v2/renderer-cells-width.test.ts' },
+      { kind: 'check', name: 'trace' },
+    ],
+  },
+  {
+    id: 'writer-backpressure',
+    severity: 'P1',
+    requirement: 'highWaterMark/partial write/write error/过期 frame/cleanup timeout/capability query timeout 有 fixture，诊断有限脱敏',
+    covers: [
+      { kind: 'test', file: 'test/tui-v2/terminal-writer.test.ts' },
+      { kind: 'conformance', name: 'partial-writes' },
+      { kind: 'test', file: 'test/tui-v2/terminal-lifecycle.test.ts' },
+    ],
+  },
+  {
+    id: 'kitty-keyboard',
+    severity: 'P1',
+    requirement: 'Kitty keyboard negotiation 最小 trace/profile',
+    covers: [{ kind: 'conformance', name: 'kitty-keyboard' }],
+  },
+  {
+    id: 'mouse-modes',
+    severity: 'P1',
+    requirement: 'mouse 最小 trace/profile',
+    covers: [{ kind: 'conformance', name: 'mouse-modes' }],
+  },
+  {
+    id: 'osc52-clipboard',
+    severity: 'P1',
+    requirement: 'OSC52 最小 trace/profile',
+    covers: [{ kind: 'conformance', name: 'osc52-clipboard' }],
+  },
+  {
+    id: 'image-fallback',
+    severity: 'P1',
+    requirement: 'image fallback 最小 trace/profile',
+    covers: [
+      { kind: 'conformance', name: 'image-kitty' },
+      { kind: 'conformance', name: 'image-iterm2-unsupported' },
+    ],
+  },
+  {
+    id: 'inline-scrollback-incremental',
+    severity: 'P1',
+    requirement: '主屏 inline 不把每次局部更新复制进 scrollback，不用清空 scrollback 的危险序列',
+    covers: [],
+    deferred: 'WP-07',
+  },
+  {
+    id: 'third-party-stdout',
+    severity: 'P1',
+    requirement: '第三方 stdout/stderr 最小 trace/profile',
+    covers: [],
+    deferred: 'WP-07',
+  },
+  {
+    id: 'external-editor-suspend-resume',
+    severity: 'P1',
+    requirement: 'external editor/update 暂停/恢复最小 trace/profile',
+    covers: [],
+    deferred: 'WP-08',
+  },
+  {
+    id: 'plugin-component-crash',
+    severity: 'P1',
+    requirement: 'plugin component 抛错最小 trace/profile',
+    covers: [],
+    deferred: 'WP-08',
+  },
+]
+
+async function checkFullscreen(): Promise<CheckResult> {
+  const {
+    evaluateGoldenFile,
+    readConformance,
+    readGoldenFile,
+    REQUIRED_GOLDENS,
+  } = await import('../src/tui-v2/testkit/conformance.js')
+  const { readTrace } = await import('../src/tui-v2/testkit/trace.js')
+  const { getProfile } = await import('../src/tui-v2/testkit/terminal-profiles.js')
+  const {
+    runGoldenPipelineReplay,
+    runOverlayGhostingScan,
+    runTraceDifferential,
+  } = await import('../test/tui-v2/helpers/fullscreen-harness.js')
+
+  const errors: string[] = []
+  const tracesDir = path.join(repoRoot, 'fixtures', 'tui-v2', 'traces')
+  const conformanceDir = path.join(repoRoot, 'fixtures', 'tui-v2', 'conformance')
+  const goldensDir = path.join(repoRoot, 'test', 'tui-v2', 'goldens')
+
+  // Part 1 — golden screens reproduced through the v2 fullscreen pipeline.
+  // Half A is the oracle replay (evaluateGoldenFile, reused as-is); half B
+  // rebuilds the same expected grid from base renderer output bytes.
+  const goldenResults: Record<string, unknown>[] = []
+  let goldenFiles: string[] = []
+  try {
+    goldenFiles = (await readdir(goldensDir)).filter((f) => f.endsWith('.json')).sort()
+  } catch (error: any) {
+    errors.push(`goldens dir unreadable: ${String(error?.message || error)}`)
+  }
+  const seenGoldens = new Set<string>()
+  for (const file of goldenFiles) {
+    try {
+      const golden = await readGoldenFile(path.join(goldensDir, file))
+      seenGoldens.add(golden.name)
+      const oracle = evaluateGoldenFile(golden)
+      const replay = runGoldenPipelineReplay(golden)
+      if (!oracle.ok) errors.push(`golden ${golden.name} oracle half: ${oracle.errors.join('; ')}`)
+      if (!replay.ok) {
+        errors.push(
+          `golden ${golden.name} pipeline half: ${replay.failures.map((f) => `[${f.scope}] ${f.message}`).join('; ')}`,
+        )
+      }
+      goldenResults.push({
+        name: golden.name,
+        profile: golden.profile,
+        oracleOk: oracle.ok,
+        pipelineOk: replay.ok,
+        bytes: replay.bytes,
+        gridHash: replay.gridHash,
+        projections: replay.projections,
+        failures: replay.failures,
+      })
+    } catch (error: any) {
+      errors.push(`golden ${file}: ${String(error?.message || error)}`)
+    }
+  }
+  for (const required of REQUIRED_GOLDENS) {
+    if (!seenGoldens.has(required)) errors.push(`missing required golden: ${required}.json`)
+  }
+
+  // Part 2 — §9.2 differential formula over every trace, under exactly the
+  // profiles the goldens pin.
+  const differential = {
+    profiles: [...FULLSCREEN_SCAN_PROFILES],
+    traces: 0,
+    frames: 0,
+    fullRedraws: 0,
+    modeOps: 0,
+    bytes: 0,
+    maxRowWidth: 0,
+    perTrace: [] as Record<string, unknown>[],
+    failures: [] as unknown[],
+  }
+  let traceFiles: string[] = []
+  try {
+    traceFiles = (await readdir(tracesDir)).filter((f) => f.endsWith('.jsonl')).sort()
+  } catch (error: any) {
+    errors.push(`traces dir unreadable: ${String(error?.message || error)}`)
+  }
+  for (const file of traceFiles) {
+    try {
+      const trace = await readTrace(path.join(tracesDir, file))
+      differential.traces += 1
+      for (const profileId of FULLSCREEN_SCAN_PROFILES) {
+        const result = runTraceDifferential(trace, getProfile(profileId))
+        differential.frames += result.frames
+        differential.fullRedraws += result.fullRedraws
+        differential.modeOps += result.modeOps
+        differential.bytes += result.bytes
+        differential.maxRowWidth = Math.max(differential.maxRowWidth, result.maxRowWidth)
+        if (!result.ok) {
+          errors.push(
+            `trace ${result.trace} @ ${profileId}: ${result.failures.map((f) => `[${f.scope}] ${f.frameId ?? ''} ${f.message}`).join('; ')}`,
+          )
+          differential.failures.push(...result.failures)
+        }
+        differential.perTrace.push({
+          trace: result.trace,
+          profile: profileId,
+          events: result.events,
+          frames: result.frames,
+          fullRedraws: result.fullRedraws,
+          modeOps: result.modeOps,
+          bytes: result.bytes,
+          ok: result.ok,
+          gridHash: result.gridHash,
+          vtHash: result.vtHash,
+        })
+      }
+    } catch (error: any) {
+      errors.push(`trace fixture ${file}: ${String(error?.message || error)}`)
+    }
+  }
+
+  // Part 3 — programmatic overlay no-ghosting scan (open/move/resize/nest/
+  // close, center+edge anchors, percentage sizes, two-level nesting).
+  const overlayScan = {
+    scenario: '',
+    steps: 0,
+    profiles: [] as Record<string, unknown>[],
+    failures: [] as unknown[],
+  }
+  for (const profileId of FULLSCREEN_SCAN_PROFILES) {
+    const result = runOverlayGhostingScan(getProfile(profileId))
+    overlayScan.scenario = result.scenario
+    overlayScan.steps = result.steps
+    if (!result.ok) {
+      errors.push(
+        `overlay scan @ ${profileId}: ${result.failures.map((f) => `[${f.scope}] ${f.frameId ?? ''} ${f.message}`).join('; ')}`,
+      )
+      overlayScan.failures.push(...result.failures)
+    }
+    overlayScan.profiles.push({
+      profile: profileId,
+      frames: result.frames,
+      fullRedraws: result.fullRedraws,
+      bytes: result.bytes,
+      ok: result.ok,
+      gridHash: result.gridHash,
+      vtHash: result.vtHash,
+    })
+  }
+
+  // Part 4 — §9.3 P0/P1 ledger: every entry maps to resolvable coverage;
+  // WP-07/WP-08 domains are registered as deferred and never fail.
+  const resolveRef = async (ref: FullscreenLedgerRef): Promise<string | null> => {
+    try {
+      switch (ref.kind) {
+        case 'conformance':
+          await readConformance(path.join(conformanceDir, `${ref.name}.jsonl`))
+          return null
+        case 'trace':
+          await readTrace(path.join(tracesDir, `${ref.name}.jsonl`))
+          return null
+        case 'golden':
+          await readGoldenFile(path.join(goldensDir, `${ref.name}.json`))
+          return null
+        case 'test':
+          await stat(path.join(repoRoot, ref.file))
+          return null
+        case 'check':
+          return checks.has(ref.name) ? null : `unknown check ${ref.name}`
+        case 'fullscreen-part':
+          return null
+      }
+    } catch (error: any) {
+      return String(error?.message || error)
+    }
+  }
+  const ledgerEntries: Record<string, unknown>[] = []
+  for (const entry of FULLSCREEN_LEDGER) {
+    if (entry.deferred !== undefined) {
+      ledgerEntries.push({ id: entry.id, severity: entry.severity, requirement: entry.requirement, status: 'deferred', deferred: entry.deferred })
+      continue
+    }
+    if (entry.covers.length === 0) {
+      errors.push(`ledger ${entry.id}: no coverage registered and not deferred`)
+      ledgerEntries.push({ id: entry.id, severity: entry.severity, requirement: entry.requirement, status: 'uncovered' })
+      continue
+    }
+    const missingRefs: string[] = []
+    for (const ref of entry.covers) {
+      const problem = await resolveRef(ref)
+      if (problem !== null) missingRefs.push(`${ref.kind}:${ref.kind === 'test' ? ref.file : ref.name} (${problem})`)
+    }
+    if (missingRefs.length > 0) {
+      errors.push(`ledger ${entry.id}: unresolved coverage: ${missingRefs.join('; ')}`)
+    }
+    ledgerEntries.push({
+      id: entry.id,
+      severity: entry.severity,
+      requirement: entry.requirement,
+      status: missingRefs.length === 0 ? 'covered' : 'uncovered',
+      covers: entry.covers.map((ref) => (ref.kind === 'test' ? ref.file : `${ref.kind}:${ref.name}`)),
+      ...(missingRefs.length > 0 ? { missingRefs } : {}),
+    })
+  }
+
+  return {
+    status: errors.length === 0 ? 'pass' : 'fail',
+    details: {
+      goldens: { required: [...REQUIRED_GOLDENS], results: goldenResults },
+      differential,
+      overlayScan,
+      ledger: {
+        total: FULLSCREEN_LEDGER.length,
+        covered: ledgerEntries.filter((e: any) => e.status === 'covered').length,
+        deferred: FULLSCREEN_LEDGER.filter((e) => e.deferred !== undefined).map((e) => ({ id: e.id, deferred: e.deferred })),
+        entries: ledgerEntries,
+      },
+      errors,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // registry + CLI
 // ---------------------------------------------------------------------------
 
@@ -983,6 +1412,7 @@ const checks = new Map<string, (ctx: CheckContext) => Promise<CheckResult>>([
   ['fork', () => checkFork()],
   ['skeleton', () => checkSkeleton()],
   ['controllers', () => checkControllers()],
+  ['fullscreen', () => checkFullscreen()],
 ])
 
 function defaultOutput(check: string): string {
