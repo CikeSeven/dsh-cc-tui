@@ -575,6 +575,7 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
       'exit-error.jsonl',
       'inline-scrollback.jsonl',
       'interrupt.jsonl',
+      'markdown-tool-rendering.jsonl',
       'notification-status.jsonl',
       'overlay.jsonl',
       'question.jsonl',
@@ -607,4 +608,22 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
     const raw = JSON.stringify(trace)
     assert.ok(!/sk-[A-Za-z0-9_-]{4,}/.test(raw), `${file}: no credential-shaped strings`)
   }
+})
+
+test('trace fixtures: WP-08b scenario preserves safe Markdown/tool discriminants', async () => {
+  const trace = await readTrace(path.join(fixturesDir, 'markdown-tool-rendering.jsonl'))
+  const upserts = trace.lines
+    .filter((line) => line.kind === 'event' && line.event.type === 'session/row-upsert')
+    .map((line) => (line as { event: AppEvent & { type: 'session/row-upsert' } }).event.row)
+  const assistant = upserts.find((row) => row.sourceId === 'assistant-markdown-rich-1')
+  const markdown = assistant?.blocks[0] as { readonly type?: string; readonly text?: string } | undefined
+  assert.equal(markdown?.type, 'markdown')
+  assert.ok(markdown?.text?.includes('| :--- | ---: |'))
+  assert.ok(markdown?.text?.includes('~~~ typescript title=fixture'))
+
+  const running = upserts.find((row) => row.sourceId === 'tool-render-edit-1' && row.tool?.phase === 'running')
+  assert.equal((running?.tool?.callView as { readonly card?: string } | undefined)?.card, 'diff')
+  const output = upserts.find((row) => row.sourceId === 'tool-render-output-1')
+  assert.equal((output?.tool?.resultView as { readonly card?: string } | undefined)?.card, 'terminal')
+  assert.ok(upserts.some((row) => row.sourceId === 'tool-render-error-1' && row.tool?.phase === 'error'))
 })

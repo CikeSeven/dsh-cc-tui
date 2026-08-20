@@ -29,6 +29,9 @@ export interface ComponentTheme {
     readonly link: LineStyle
     /** Tool display name in card headers. */
     readonly toolName: LineStyle
+    /** Full-row tool card surfaces; foreground styles are merged on top. */
+    readonly toolBackground: LineStyle
+    readonly toolBackgroundExpanded: LineStyle
   }
 }
 
@@ -45,5 +48,7 @@ export const DEFAULT_COMPONENT_THEME: ComponentTheme = Object.freeze({
     // WP-06a 15.1 note: component-emitted link text must carry SGR 4 itself.
     link: lineStyle({ foreground: 'cyan', underline: true }),
     toolName: lineStyle({ bold: true }),
+    toolBackground: lineStyle({ background: 'ansi256:236' }),
+    toolBackgroundExpanded: lineStyle({ background: 'ansi256:238' }),
   },
 })

@@ -21,6 +21,11 @@ export interface TranscriptRowView {
   readonly blocks: readonly RowBlock[]
   readonly streaming: boolean
   readonly tool?: ToolLifecycleSnapshot
+  /** Immutable tool-card display state supplied by the renderer/model view. */
+  readonly verbose?: boolean
+  readonly expanded?: boolean
+  /** Recessive pointer rendered outside the collapsed body budget. */
+  readonly footnote?: string
   readonly theme: ComponentTheme
 }
 

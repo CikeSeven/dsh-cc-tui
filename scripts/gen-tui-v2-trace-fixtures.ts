@@ -28,9 +28,11 @@ import type {
 } from '../src/tui-v2/model/schema.js'
 import { canonicalJson } from '../src/tui-v2/testkit/canonical.js'
 import {
+  DEFAULT_REDACTION_POLICY,
   redactTrace,
   writeTrace,
   TRACE_GENERATOR_VERSION,
+  type RedactionPolicy,
   type Trace,
   type TraceBodyLine,
 } from '../src/tui-v2/testkit/trace.js'
@@ -135,7 +137,28 @@ function makeOverlay(init: Partial<OverlayState> & { overlayId: string }): Overl
   }
 }
 
-const traces: Record<string, { terminalProfile: string; build: (fx: EventFactory) => TraceBodyLine[] }> = {}
+interface TraceSpec {
+  readonly terminalProfile: string
+  readonly redactionPolicy?: RedactionPolicy
+  readonly build: (fx: EventFactory) => TraceBodyLine[]
+}
+
+const traces: Record<string, TraceSpec> = {}
+
+/**
+ * New component fixtures may preserve only generator-owned placeholders and
+ * structural discriminants. Every other payload keeps the default hash
+ * redaction; existing traces do not opt in, so their bytes remain unchanged.
+ */
+const COMPONENT_TRACE_LITERALS = new Set(['markdown', 'text', 'diff', 'terminal'])
+const COMPONENT_TRACE_REDACTION: RedactionPolicy = {
+  redactPayload: (text) =>
+    text.startsWith('[placeholder]') || COMPONENT_TRACE_LITERALS.has(text)
+      ? undefined
+      : DEFAULT_REDACTION_POLICY.redactPayload?.(text),
+  redactCredential: DEFAULT_REDACTION_POLICY.redactCredential,
+  redactOsc: DEFAULT_REDACTION_POLICY.redactOsc,
+}
 
 function event(fx: EventFactory, source: EventSource, body: Omit<AppEvent, keyof EventMeta>): TraceBodyLine {
   return { kind: 'event', event: fx.stamp({ ...fx.meta(source), ...body } as AppEvent) }
@@ -278,6 +301,130 @@ traces['tool-lifecycle'] = {
       event(fx, 'session', { type: 'session/row-upsert', row: toolOk('result', 1, 1) }),
       event(fx, 'session', { type: 'session/row-upsert', row: toolErr('running', 0, 0) }),
       event(fx, 'session', { type: 'session/row-upsert', row: toolErr('error', 1, 1) }),
+    ]
+  },
+}
+
+// --- WP-08b Markdown + complete tool-card rendering -------------------------
+traces['markdown-tool-rendering'] = {
+  terminalProfile: 'unicode-ambiguous-narrow',
+  redactionPolicy: COMPONENT_TRACE_REDACTION,
+  build: (fx) => {
+    const editTool = (phase: 'running' | 'result', revision: number): UiRowSnapshot =>
+      makeRow(fx, {
+        source: 'session',
+        sourceId: 'tool-render-edit-1',
+        kind: 'tool',
+        revision,
+        blocks: [{ type: 'text', text: '[placeholder] Edit src/配置.ts' }],
+        tool: {
+          phase,
+          lifecycleRevision: revision,
+          ...(phase === 'running'
+            ? {
+                callView: {
+                  card: 'diff',
+                  title: '[placeholder] Edit src/配置.ts',
+                  diffs: [{
+                    path: '[placeholder] src/配置.ts',
+                    oldText: '[placeholder] const oldName = 1',
+                    newText: '[placeholder] const newName = 2 👨‍👩‍👧',
+                  }],
+                },
+              }
+            : {
+                durationMs: 320,
+                resultView: {
+                  card: 'diff',
+                  title: '[placeholder] Edit src/配置.ts',
+                  diffs: [
+                    {
+                      path: '[placeholder] src/配置.ts',
+                      oldText: '[placeholder] const oldName = 1',
+                      newText: '[placeholder] const newName = 2 👨‍👩‍👧',
+                    },
+                    {
+                      path: '[placeholder] src/配置.ts',
+                      oldText: '[placeholder] return oldName',
+                      newText: '[placeholder] return newName',
+                    },
+                  ],
+                },
+              }),
+        },
+      })
+
+    return [
+      resetEvent(fx, 'new-session', [], 'reset-markdown-tool-rendering-1'),
+      event(fx, 'terminal', { type: 'viewport/resize', width: 120, height: 30 }),
+      event(fx, 'session', {
+        type: 'session/row-upsert',
+        row: makeRow(fx, {
+          source: 'session',
+          sourceId: 'assistant-markdown-rich-1',
+          kind: 'assistant',
+          blocks: [{
+            type: 'markdown',
+            text: [
+              '[placeholder] soft paragraph',
+              'continues with _italic **nested bold**_ and [docs][ref].',
+              '',
+              'Setext heading',
+              '===',
+              '---',
+              '| Name | 状态 |',
+              '| :--- | ---: |',
+              '| renderer | ready 👨‍👩‍👧 |',
+              '',
+              '~~~ typescript title=fixture',
+              'const answer = 42 // highlighted',
+              '~~~',
+              '[ref]: https://example.invalid/docs',
+            ].join('\n'),
+          }],
+        }),
+      }),
+      event(fx, 'session', { type: 'session/row-upsert', row: editTool('running', 0) }),
+      event(fx, 'session', { type: 'session/row-upsert', row: editTool('result', 1) }),
+      event(fx, 'session', {
+        type: 'session/row-upsert',
+        row: makeRow(fx, {
+          source: 'session',
+          sourceId: 'tool-render-output-1',
+          kind: 'tool',
+          blocks: [{ type: 'text', text: '[placeholder] Bash(long-output)' }],
+          tool: {
+            phase: 'result',
+            lifecycleRevision: 1,
+            durationMs: 1500,
+            resultView: {
+              card: 'terminal',
+              output: '[placeholder] line one\nline two\n你好 👨‍👩‍👧\nline four\nline five',
+              exitCode: 0,
+            },
+          },
+        }),
+      }),
+      event(fx, 'session', {
+        type: 'session/row-upsert',
+        row: makeRow(fx, {
+          source: 'session',
+          sourceId: 'tool-render-error-1',
+          kind: 'tool',
+          blocks: [{ type: 'text', text: '[placeholder] Bash(false)' }],
+          tool: {
+            phase: 'error',
+            lifecycleRevision: 1,
+            durationMs: 20,
+            error: {
+              code: 'TOOL_RENDER_FAILED',
+              message: '[placeholder] command failed',
+              recoverable: true,
+              details: { stderr: '[placeholder] failure details' },
+            } satisfies SerializableError,
+          },
+        }),
+      }),
     ]
   },
 }
@@ -602,7 +749,7 @@ async function main(): Promise<void> {
       },
       lines: spec.build(fx),
     }
-    const redacted = redactTrace(trace)
+    const redacted = redactTrace(trace, spec.redactionPolicy)
     const filePath = path.join(outDir, `${name}.jsonl`)
     await writeTrace(filePath, redacted)
     console.log(`wrote ${path.relative(repoRoot, filePath)} (${redacted.lines.length} lines)`)

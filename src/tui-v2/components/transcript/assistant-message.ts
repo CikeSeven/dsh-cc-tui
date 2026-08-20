@@ -1,12 +1,11 @@
 /**
- * tui-v2 assistant message component (WP-04b; markdown upgraded in WP-06c).
+ * tui-v2 assistant message component (WP-04b; Markdown completed in WP-08b).
  *
  * Visual form mirrors the legacy `AssistantTextMessage.tsx`: a `● ` glyph on
  * the first line, body hung under a two-space indent. Markdown blocks render
- * through the WP-06c basic markdown line component (`markdown.ts`: headings,
- * paragraphs, lists, quotes, fenced code via code.ts, inline code/bold/italic
- * and profile-gated OSC 8 links; tables degrade to verbatim lines — full
- * CommonMark is WP-08). Plain `text` blocks stay unstyled, `reasoning` blocks
+ * through the streaming-safe full transcript surface (`markdown.ts`): joined
+ * paragraphs, emphasis/links, headings/rules, lists/quotes, aligned tables,
+ * and highlighted code/diff fences. Plain `text` blocks stay unstyled, `reasoning` blocks
  * render in the subtle role. Untrusted text always passes the §6.1
  * sanitize-then-restyle boundary inside those renderers.
  */

@@ -1,43 +1,39 @@
 /**
- * tui-v2 tool row component (WP-04b skeleton; WP-06c basic tool card).
+ * tui-v2 complete tool-card row component (WP-08b).
  *
- * Visual form mirrors the legacy `AssistantToolUseMessage.tsx` in basic-card
- * scope: a status-glyph + summary header (`● Bash(ls -la)`-shaped plain
- * summary from the projection's text block, falling back to the presentation
- * view's `title`), running/result/error glyph states (● running/accent,
- * ● result/success, ✗ error), a dim duration suffix, and the structured card
- * body hung under the ` ⎿ ` gutter (first body line) / blank continuation —
- * the body comes from the tool's presentation view (`resultView ?? callView`):
+ * The component is a pure projection of an immutable `TranscriptRowView`:
+ * `verbose` uncaps output, `expanded` selects the row background, and
+ * `footnote` is rendered outside the body cap. Running diff calls preview the
+ * pending `callView`; settled cards prefer `resultView ?? callView`. Text cards
+ * keep 3 physical rows, diffs 8, with a ctrl+o hint unless only one row would
+ * be hidden. Error cards include message/code/recoverability/details.
  *
- *  - `diff` card: synthesized unified diff (`--- a/path`/`+++ b/path` file
- *    headers when several files, `@@` between hunks of one file, `- `/`+ `
- *    lines) rendered through `diff.ts` (add/del/hunk roles, clipped, capped
- *    at DIFF_BODY_MAX_LINES);
- *  - `terminal` card: dim output lines + `Exit code N`/`Killed by signal S`
- *    error lines;
- *  - `read`/`generic` cards: joined text content, dim;
- *  - `search` card: plain paths, or path + `line: match` dim lines, with a
- *    `… (N total)` trailer when truncated;
- *  - strings/arrays/unknown shapes degrade to their text content (dim).
- *
- * Non-diff bodies wrap through the §6.1 pipeline and cap at
- * TOOL_BODY_MAX_LINES with a `… +N lines` hint. Side-by-side diffs, verbose
- * (ctrl+o) uncapping, `⋯` hunk separators, pending-call diff preview while
- * running and line-level backgrounds are WP-08. Untrusted payloads always
- * pass sanitizeText before styling (§6.1).
+ * Every card row receives a background through parsed `LineCell`s and is padded
+ * to the viewport width, so CJK/emoji, ANSI styles, and OSC links retain the
+ * single width pipeline. Payload strings remain untrusted and are sanitized by
+ * the hanging/diff renderers before trusted styling.
  */
 import type { Component } from '../../renderer/component.js'
-import { lineStyle, type LineStyle } from '../../renderer/lines.js'
+import {
+  assertLineWidth,
+  cellsToString,
+  lineStyle,
+  lineToCells,
+  padCells,
+  truncateCells,
+  type LineStyle,
+} from '../../renderer/lines.js'
 import type { SerializableValue, ToolLifecycleSnapshot } from '../../model/schema.js'
 import type { TerminalProfile } from '../../terminal/profile.js'
-import { hangingTextLines, singleLine, type HangingLayoutOptions } from './block-lines.js'
+import { hangingTextLines, type HangingLayoutOptions } from './block-lines.js'
 import { renderDiffLines } from './diff.js'
 import type { TranscriptRowView } from './row-view.js'
 
-/** Text-body line budget, mirroring the legacy collapsed card (renderTruncatedContent). */
-const TOOL_BODY_MAX_LINES = 3
-/** Diff bodies cap at the upstream chat row's 8 (CHAT_DIFF_MAX_LINES). */
-const DIFF_BODY_MAX_LINES = 8
+export const TOOL_BODY_MAX_LINES = 3
+export const DIFF_BODY_MAX_LINES = 8
+
+const GUTTER_FIRST = ' ⎿ '
+const GUTTER_REST = '   '
 
 const GLYPH: Record<ToolLifecycleSnapshot['phase'], string> = {
   running: '●',
@@ -45,7 +41,7 @@ const GLYPH: Record<ToolLifecycleSnapshot['phase'], string> = {
   error: '✗',
 }
 
-/** `12 ms` / `1.2 s` / `2 m 5 s` (reduced form of cc/format.ts formatDuration). */
+/** `12 ms` / `1.2 s` / `2 m 5 s`. */
 export function formatToolDuration(durationMs: number): string {
   const ms = Math.max(0, Math.floor(durationMs))
   if (ms < 1000) return `${ms} ms`
@@ -56,19 +52,21 @@ export function formatToolDuration(durationMs: number): string {
   return seconds === 0 ? `${minutes} m` : `${minutes} m ${seconds} s`
 }
 
-// ---------------------------------------------------------------------------
-// Presentation-view narrowing (SerializableValue -> structural card shapes)
-// ---------------------------------------------------------------------------
-
-type BodyTone = 'add' | 'del' | 'hunk' | 'dim' | 'plain' | 'error'
+type BodyTone = 'dim' | 'plain' | 'error' | 'hint'
 
 interface CardLine {
   readonly text: string
   readonly tone: BodyTone
 }
 
+interface CardBody {
+  readonly lines: readonly CardLine[]
+  readonly isDiff: boolean
+}
+
 const dim = (text: string): CardLine => ({ text, tone: 'dim' })
 const plain = (text: string): CardLine => ({ text, tone: 'plain' })
+const errorLine = (text: string): CardLine => ({ text, tone: 'error' })
 
 function asRecord(value: SerializableValue | undefined): { readonly [key: string]: SerializableValue } | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -84,13 +82,18 @@ function asNumber(value: SerializableValue | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
-/** `… (N total)` trailer for truncated search cards. */
+function printable(value: SerializableValue): string {
+  if (typeof value === 'string') return value
+  if (value === null || typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return JSON.stringify(value)
+}
+
 function truncatedTrailer(record: { readonly [key: string]: SerializableValue }): CardLine {
   const total = asNumber(record.total)
   return dim(total !== undefined ? `… (${total} total)` : '… (truncated)')
 }
 
-/** One side's text -> display lines (upstream contentLines rule). */
+/** Empty text is zero lines; one trailing newline is a terminator. */
 function sideLines(text: string): string[] {
   if (text === '') return []
   const lines = text.split('\n')
@@ -102,13 +105,12 @@ function dimLines(text: string): CardLine[] {
   return sideLines(text).map(dim)
 }
 
-/** Join the text blocks of a view's content payload (read/generic cards). */
 function contentCardLines(content: SerializableValue | undefined): CardLine[] {
   if (!Array.isArray(content)) return []
   const text = content
     .map((block) => {
       const record = asRecord(block as SerializableValue)
-      return record !== null ? (asString(record.text) ?? '') : ''
+      return record !== null ? (asString(record.text) ?? '') : printable(block as SerializableValue)
     })
     .join('')
     .trimEnd()
@@ -116,26 +118,20 @@ function contentCardLines(content: SerializableValue | undefined): CardLine[] {
 }
 
 /**
- * Synthesize unified-diff text from structured `{path, oldText, newText}`
- * file diffs (dsh-tools FileDiff) so one renderer (`diff.ts`) owns diff
- * coloring. Single-file cards omit the header (the card header carries the
- * path); multi-file cards get `---/+++` headers and `@@` between hunks of
- * one file. The `⋯` same-file separator is WP-08.
+ * Structured file hunks -> unified text. Different files get headers; another
+ * hunk of the same path gets the WP-08 `⋯` separator.
  */
 export function synthesizeUnifiedDiff(
   diffs: readonly { readonly path: string; readonly oldText: string | null; readonly newText: string }[],
 ): string {
   const out: string[] = []
-  let prevPath: string | undefined
+  let previousPath: string | undefined
   for (const diff of diffs) {
     if (diffs.length > 1) {
-      if (diff.path !== prevPath) {
-        out.push(`--- a/${diff.path}`, `+++ b/${diff.path}`)
-      } else {
-        out.push('@@')
-      }
+      if (diff.path !== previousPath) out.push(`--- a/${diff.path}`, `+++ b/${diff.path}`)
+      else out.push('⋯')
     }
-    prevPath = diff.path
+    previousPath = diff.path
     if (diff.oldText !== null) {
       for (const line of sideLines(diff.oldText)) out.push(`- ${line}`)
     }
@@ -164,13 +160,14 @@ function asDiffEntries(value: SerializableValue | undefined): DiffEntry[] {
   return out
 }
 
-/** Per-card body lines; unknown/absent shapes yield the text fallback. */
-function cardBodyLines(view: SerializableValue | undefined): { readonly lines: CardLine[]; readonly isDiff: boolean } {
+/** Presentation card narrowing; unknown records degrade through common text keys. */
+function cardBodyLines(view: SerializableValue | undefined): CardBody {
   if (view === undefined || view === null) return { lines: [], isDiff: false }
   if (typeof view === 'string') return { lines: dimLines(view), isDiff: false }
+  if (typeof view === 'number' || typeof view === 'boolean') return { lines: [dim(String(view))], isDiff: false }
   if (Array.isArray(view)) {
-    const lines = view.flatMap((item) => cardBodyLines(item as SerializableValue).lines)
-    return { lines, isDiff: false }
+    const bodies = view.map((item) => cardBodyLines(item as SerializableValue))
+    return { lines: bodies.flatMap((body) => body.lines), isDiff: bodies.some((body) => body.isDiff) }
   }
   const record = asRecord(view)
   if (record === null) return { lines: [], isDiff: false }
@@ -179,10 +176,10 @@ function cardBodyLines(view: SerializableValue | undefined): { readonly lines: C
       return { lines: [], isDiff: asDiffEntries(record.diffs).length > 0 }
     case 'terminal': {
       const lines = dimLines(asString(record.output) ?? '')
-      const exitCode = typeof record.exitCode === 'number' ? record.exitCode : undefined
-      if (exitCode !== undefined && exitCode !== 0) lines.push({ text: `Exit code ${exitCode}`, tone: 'error' })
+      const exitCode = asNumber(record.exitCode)
+      if (exitCode !== undefined && exitCode !== 0) lines.push(errorLine(`Exit code ${exitCode}`))
       const signal = asString(record.signal)
-      if (signal !== undefined) lines.push({ text: `Killed by signal ${signal}`, tone: 'error' })
+      if (signal !== undefined) lines.push(errorLine(`Killed by signal ${signal}`))
       return { lines, isDiff: false }
     }
     case 'read':
@@ -190,7 +187,7 @@ function cardBodyLines(view: SerializableValue | undefined): { readonly lines: C
       return { lines: contentCardLines(record.content), isDiff: false }
     case 'search': {
       if (record.shape === 'paths' && Array.isArray(record.paths)) {
-        const lines = record.paths.map((p) => plain(String(p)))
+        const lines = record.paths.map((path) => plain(printable(path as SerializableValue)))
         if (record.truncated === true) lines.push(truncatedTrailer(record))
         return { lines, isDiff: false }
       }
@@ -206,7 +203,7 @@ function cardBodyLines(view: SerializableValue | undefined): { readonly lines: C
               if (matchRecord === null) continue
               const lineNumber = asNumber(matchRecord.lineNumber)
               const matchText = asString(matchRecord.line) ?? ''
-              lines.push(dim(lineNumber !== undefined ? `${lineNumber}: ${matchText}` : matchText))
+              lines.push(dim(lineNumber === undefined ? matchText : `${lineNumber}: ${matchText}`))
             }
           }
         }
@@ -218,11 +215,12 @@ function cardBodyLines(view: SerializableValue | undefined): { readonly lines: C
     default:
       break
   }
-  // Card-less records: degrade to their text content (payloadLines parity).
   const output = asString(record.output)
   if (output !== undefined) return { lines: dimLines(output), isDiff: false }
   const content = contentCardLines(record.content)
   if (content.length > 0) return { lines: content, isDiff: false }
+  const text = asString(record.text)
+  if (text !== undefined) return { lines: dimLines(text), isDiff: false }
   const title = asString(record.title)
   if (title !== undefined) return { lines: [dim(title)], isDiff: false }
   return { lines: [], isDiff: false }
@@ -230,41 +228,22 @@ function cardBodyLines(view: SerializableValue | undefined): { readonly lines: C
 
 function toneStyle(tone: BodyTone, view: TranscriptRowView): LineStyle {
   switch (tone) {
-    case 'add':
-      return view.theme.roles.success
-    case 'del':
-      return view.theme.roles.error
-    case 'hunk':
-      return view.theme.roles.accent
     case 'error':
       return view.theme.roles.error
     case 'plain':
       return view.theme.roles.text
-    default:
+    case 'hint':
+    case 'dim':
       return view.theme.roles.subtle
   }
 }
 
-export function createToolRow(view: TranscriptRowView, profile: TerminalProfile): Component {
-  let cache: { width: number; lines: string[] } | null = null
-  const tool = view.tool
-  const phase: ToolLifecycleSnapshot['phase'] = tool?.phase ?? 'result'
-  const glyphStyle: LineStyle =
-    phase === 'error'
-      ? view.theme.roles.error
-      : phase === 'running'
-        ? view.theme.roles.accent
-        : view.theme.roles.success
-
-  const headerLayout: HangingLayoutOptions = {
-    prefix: `${GLYPH[phase]} `,
-    indent: '  ',
-    prefixStyle: glyphStyle,
-    textStyle: view.theme.roles.text,
-    profile,
-  }
-  const GUTTER_FIRST = ' ⎿ '
-  const GUTTER_REST = '   '
+function renderCardLines(
+  cardLines: readonly CardLine[],
+  view: TranscriptRowView,
+  profile: TerminalProfile,
+  width: number,
+): string[] {
   const bodyLayout: HangingLayoutOptions = {
     prefix: GUTTER_FIRST,
     indent: GUTTER_REST,
@@ -272,65 +251,148 @@ export function createToolRow(view: TranscriptRowView, profile: TerminalProfile)
     textStyle: view.theme.roles.subtle,
     profile,
   }
+  return cardLines.flatMap((line, index) =>
+    hangingTextLines(
+      line.text,
+      {
+        ...bodyLayout,
+        prefix: index === 0 ? GUTTER_FIRST : GUTTER_REST,
+        textStyle: toneStyle(line.tone, view),
+      },
+      width,
+    ),
+  )
+}
+
+function errorLines(tool: ToolLifecycleSnapshot | undefined): CardLine[] {
+  const error = tool?.error
+  if (error === undefined) return [errorLine('Tool failed')]
+  const out = [
+    errorLine(error.message),
+    errorLine(`Code: ${error.code}`),
+    dim(`Recoverable: ${error.recoverable ? 'yes' : 'no'}`),
+  ]
+  if (error.details !== undefined) out.push(dim(`Details: ${printable(error.details)}`))
+  return out
+}
+
+/** Apply one semantic background to every existing/padded cell in each row. */
+function cardBackground(
+  lines: readonly string[],
+  backgroundStyle: LineStyle,
+  profile: TerminalProfile,
+  width: number,
+): string[] {
+  const background = backgroundStyle.background
+  const padStyle = lineStyle({ background })
+  return lines.map((line) => {
+    const cells = lineToCells(line, profile).map((cell) => ({
+      ...cell,
+      style: lineStyle({ ...cell.style, background }),
+    }))
+    return assertLineWidth(cellsToString(padCells(truncateCells(cells, width), width, padStyle)), profile, width)
+  })
+}
+
+function capBody(
+  body: readonly string[],
+  cap: number,
+  verbose: boolean,
+  view: TranscriptRowView,
+  profile: TerminalProfile,
+  width: number,
+): string[] {
+  const hidden = body.length - cap
+  if (verbose || hidden <= 0 || hidden === 1) return [...body]
+  const hint = hangingTextLines(
+    `… +${hidden} lines (ctrl+o to expand)`,
+    {
+      prefix: GUTTER_REST,
+      indent: GUTTER_REST,
+      prefixStyle: view.theme.roles.subtle,
+      textStyle: lineStyle({ ...view.theme.roles.subtle, dim: true }),
+      profile,
+    },
+    width,
+  )
+  return [...body.slice(0, cap), ...hint]
+}
+
+export function createToolRow(view: TranscriptRowView, profile: TerminalProfile): Component {
+  let cache: { width: number; lines: string[] } | null = null
+  const tool = view.tool
+  const phase: ToolLifecycleSnapshot['phase'] = tool?.phase ?? 'result'
+  const glyphStyle = phase === 'error'
+    ? view.theme.roles.error
+    : phase === 'running'
+      ? view.theme.roles.accent
+      : view.theme.roles.success
 
   return {
     render(width: number): string[] {
       if (width <= 0) return []
       if (cache !== null && cache.width === width) return cache.lines
-      const lines: string[] = []
 
-      // Header: the projection's summary line, else the presentation title.
       const cardView = tool?.resultView ?? tool?.callView
       const cardRecord = asRecord(cardView)
       const summary = view.blocks.find((block) => block.type === 'text')
-      const headerText =
-        summary !== undefined && summary.type === 'text'
-          ? summary.text
-          : (cardRecord !== null ? asString(cardRecord.title) : undefined) ?? '(tool)'
-      const duration = tool?.durationMs !== undefined ? ` (${formatToolDuration(tool.durationMs)})` : ''
-      lines.push(...hangingTextLines(headerText + duration, headerLayout, width))
+      const headerText = summary !== undefined && summary.type === 'text'
+        ? summary.text
+        : (cardRecord === null ? undefined : asString(cardRecord.title)) ?? '(tool)'
+      const duration = tool?.durationMs === undefined ? '' : ` (${formatToolDuration(tool.durationMs)})`
+      const header = hangingTextLines(
+        headerText + duration,
+        {
+          prefix: `${GLYPH[phase]} `,
+          indent: '  ',
+          prefixStyle: glyphStyle,
+          textStyle: view.theme.roles.text,
+          profile,
+        },
+        width,
+      )
 
-      // Body: card-aware lines from the settled view (running rows stay
-      // header-only in the basic card; pending-diff preview is WP-08).
       let body: string[] = []
       let cap = TOOL_BODY_MAX_LINES
-      if (phase === 'error' && tool?.error !== undefined) {
-        body = hangingTextLines(tool.error.message, { ...bodyLayout, textStyle: view.theme.roles.error }, width)
-      } else if (phase === 'result' && cardView !== undefined) {
+      if (phase === 'error') {
+        body = renderCardLines(errorLines(tool), view, profile, width)
+      } else if (cardView !== undefined) {
         const card = cardBodyLines(cardView)
         if (card.isDiff) {
           cap = DIFF_BODY_MAX_LINES
           const record = asRecord(cardView)
           const diffs = asDiffEntries(record?.diffs)
-          body = renderDiffLines(synthesizeUnifiedDiff(diffs), {
-            theme: view.theme,
-            profile,
-            indent: GUTTER_REST,
-            firstIndent: GUTTER_FIRST,
-          }, width)
-        } else {
-          body = card.lines.flatMap((line, index) =>
-            hangingTextLines(
-              line.text,
-              {
-                ...bodyLayout,
-                prefix: index === 0 ? GUTTER_FIRST : GUTTER_REST,
-                textStyle: toneStyle(line.tone, view),
-              },
-              width,
-            ),
+          body = renderDiffLines(
+            synthesizeUnifiedDiff(diffs),
+            { theme: view.theme, profile, indent: GUTTER_REST, firstIndent: GUTTER_FIRST },
+            width,
           )
+        } else {
+          body = renderCardLines(card.lines, view, profile, width)
         }
       }
-      if (body.length > cap) {
-        const hidden = body.length - cap
-        body = [
-          ...body.slice(0, cap),
-          ...hangingTextLines(`… +${hidden} lines`, { ...bodyLayout, prefix: GUTTER_REST, textStyle: lineStyle({ dim: true }) }, width),
-        ]
+      if (phase === 'running' && body.length === 0) {
+        body = renderCardLines([dim('Running…')], view, profile, width)
       }
-      lines.push(...body)
-      if (lines.length === 0) lines.push(singleLine('(tool)', view.theme.roles.subtle, profile, width))
+
+      const visibleBody = capBody(body, cap, view.verbose === true, view, profile, width)
+      const footnote = view.footnote === undefined
+        ? []
+        : hangingTextLines(
+            view.footnote,
+            {
+              prefix: body.length === 0 ? GUTTER_FIRST : GUTTER_REST,
+              indent: GUTTER_REST,
+              prefixStyle: view.theme.roles.subtle,
+              textStyle: view.theme.roles.subtle,
+              profile,
+            },
+            width,
+          )
+      const background = view.expanded === true
+        ? view.theme.roles.toolBackgroundExpanded
+        : view.theme.roles.toolBackground
+      const lines = cardBackground([...header, ...visibleBody, ...footnote], background, profile, width)
       cache = { width, lines }
       return lines
     },
