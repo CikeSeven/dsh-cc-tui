@@ -19,6 +19,7 @@
  *  - scriptable command surfaces: commandList/runExternalCommand, workspace,
  *    model/preset/effort and settings capability seams.
  */
+import { createHash } from 'node:crypto';
 import type {
   Channel,
   ChatRow,
@@ -27,6 +28,7 @@ import type {
   PendingMessage,
   PresetOption,
   ResumeResult,
+  StagedImageMetadata,
   TokenUsage,
 } from '../../src/dsh-adapter/channel.js';
 import type { TuiRewindMode } from '../../src/dsh-adapter/extension-events.js';
@@ -118,6 +120,7 @@ export function createFakeChannel(): FakeChannel {
   const interruptedTexts: string[] = [];
   const notifyLog: { text: string; color?: 'error' | 'warning' | 'success' }[] = [];
   const localReports: { title: string; lines: readonly string[] }[] = [];
+  const stagedImages = new Map<string, StagedImageMetadata>();
 
   const bump = (): void => {
     version += 1;
@@ -202,6 +205,21 @@ export function createFakeChannel(): FakeChannel {
       working = true;
       channel.onSubmit?.();
       bump();
+    },
+    async stageImage(input) {
+      const token = `[Image #${stagedImages.size + 1}]`;
+      stagedImages.set(token, {
+        token,
+        payloadHash: createHash('sha256').update(input.data).digest('hex'),
+        mediaType: input.mediaType,
+        bytes: input.data.byteLength,
+        ...(input.name !== undefined ? { name: input.name } : {}),
+      });
+      return token;
+    },
+    stagedImageMetadata(token) {
+      const metadata = stagedImages.get(token);
+      return metadata === undefined ? undefined : { ...metadata };
     },
     steer(text) {
       submitted.push(text);

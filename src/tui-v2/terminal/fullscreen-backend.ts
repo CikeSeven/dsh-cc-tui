@@ -48,8 +48,9 @@
  *    (`encodePatchOperationsSync`) — the writer validates against exactly
  *    these bytes.
  *
- * Frames carrying `images` placements are rejected (RangeError) until the
- * ImageStore plumbing lands — same scope cut as the pi backends.
+ * Image placements are metadata-only at this layer.  Confirmed Kitty/iTerm2
+ * profiles are encoded by the shared writer; invalid or unsupported metadata
+ * is diagnosed and omitted rather than thrown into the user render path.
  */
 import {
   changedModeOperations,
@@ -58,12 +59,15 @@ import {
 } from '../renderer/diff-planner.js'
 import type {
   Frame,
+  ImageStore,
   PatchOperation,
   ScreenBackend,
   ScreenBackendCapabilities,
   TerminalCell,
   TerminalPatch,
 } from '../renderer/frame.js'
+import { planImageOperations, type UnsupportedImageDiagnostic } from '../renderer/image-placement.js'
+import { unknownConservativeDefaults, type TerminalProfile } from './profile.js'
 import { encodePatchOperationsSync } from './writer.js'
 
 // ---------------------------------------------------------------------------
@@ -80,11 +84,7 @@ function validateFrame(frame: Frame): void {
   if (!Array.isArray(frame.cells) || frame.cells.length < frame.stride * frame.height) {
     throw new TypeError('frame.cells must cover stride * height')
   }
-  if (frame.images.length > 0) {
-    throw new RangeError(
-      'fullscreen backend does not route frame images yet: image bytes flow through the pi compat write path (declared kitty/iTerm2 markers)',
-    )
-  }
+  if (!Array.isArray(frame.images)) throw new TypeError('frame.images must be an array')
 }
 
 // ---------------------------------------------------------------------------
@@ -201,14 +201,30 @@ export const FULLSCREEN_CAPABILITIES: ScreenBackendCapabilities = Object.freeze(
   supportsInlineLiveRegion: false,
 })
 
+export interface FullscreenBackendOptions {
+  readonly profile?: TerminalProfile
+  readonly imageStore?: ImageStore
+  readonly onDiagnostic?: (diagnostic: UnsupportedImageDiagnostic) => void
+}
+
 export class FullscreenBackend implements ScreenBackend {
   readonly mode = 'fullscreen' as const
   readonly capabilities: ScreenBackendCapabilities = FULLSCREEN_CAPABILITIES
 
+  private readonly profile: TerminalProfile | undefined
+  private readonly imageStore: ImageStore | undefined
+  private readonly onDiagnostic: ((diagnostic: UnsupportedImageDiagnostic) => void) | undefined
   private started = false
   private activeGeneration: number | null = null
   private plannedGeneration = -1
   private patchSeq = 0
+  private readonly plannedUploaded = new Set<string>()
+
+  constructor(options: FullscreenBackendOptions = {}) {
+    this.profile = options.profile
+    this.imageStore = options.imageStore
+    this.onDiagnostic = options.onDiagnostic
+  }
 
   /**
    * Generation gate only — the physical alt-screen entry is the terminal
@@ -221,6 +237,7 @@ export class FullscreenBackend implements ScreenBackend {
     }
     this.activeGeneration = generation
     this.patchSeq = 0
+    this.plannedUploaded.clear()
     this.started = true
     return Promise.resolve()
   }
@@ -238,6 +255,7 @@ export class FullscreenBackend implements ScreenBackend {
       // generation and resets its watermark baselines, §5.6).
       this.patchSeq = 0
       this.plannedGeneration = next.generation
+      this.plannedUploaded.clear()
     }
 
     const shape = decidePatchShape(previous, next)
@@ -253,11 +271,31 @@ export class FullscreenBackend implements ScreenBackend {
       hasCellOps = operations.length > before
     }
 
-    // The cursor op comes after cell writes: writes leave the physical
-    // cursor at the last written cell, so any patch with cell/erase ops
-    // re-asserts the frame's resting cursor (not only cursor changes).
+    // Images are planned from metadata only. Missing payload bytes suppress
+    // new uploads with a diagnostic, but removals from the previous frame must
+    // still reach the terminal (notably Kitty delete/clear).
+    let hasImageOps = false
+    if (next.images.length > 0 || (previous?.images.length ?? 0) > 0) {
+      const imageOps = planImageOperations(previous, next, {
+        profile: this.profile ?? unknownConservativeDefaults(),
+        store: this.imageStore,
+        requireStore: true,
+        forceFull: shape.fullRedraw,
+        onDiagnostic: this.onDiagnostic,
+      })
+      operations.push(...imageOps)
+      hasImageOps = imageOps.length > 0
+      for (const op of imageOps) {
+        if (op.kind === 'image-upload') this.plannedUploaded.add(op.storeKey)
+        else if (op.kind === 'image-delete') this.plannedUploaded.delete(op.storeKey)
+        else if (op.kind === 'image-clear') this.plannedUploaded.clear()
+      }
+    }
+
+    // The cursor op comes after cell and image writes: both may move the
+    // physical cursor, so re-assert the frame's resting cursor after either.
     const cursor = cursorOperation(previous, next)
-    if (cursor !== null || hasCellOps) {
+    if (cursor !== null || hasCellOps || hasImageOps) {
       operations.push(
         cursor ?? { kind: 'cursor', x: next.cursor.x, y: next.cursor.y, visible: next.cursor.visible },
       )
@@ -268,7 +306,12 @@ export class FullscreenBackend implements ScreenBackend {
       operations.push(...changedModeOperations(previous, next))
     }
 
-    const { bytes } = encodePatchOperationsSync(operations)
+    const { bytes } = encodePatchOperationsSync(operations, {
+      imageStore: this.imageStore,
+      profile: this.profile,
+      uploadedStoreKeys: this.plannedUploaded,
+      generation: next.generation,
+    })
     return {
       frameId: next.frameId,
       stateRevision: next.stateRevision,
@@ -287,6 +330,8 @@ export class FullscreenBackend implements ScreenBackend {
       return Promise.resolve() // stale: an older backend never gates a newer session
     }
     this.started = false
+    this.plannedUploaded.clear()
+    this.imageStore?.clearGeneration(generation)
     return Promise.resolve()
   }
 }

@@ -80,11 +80,11 @@
  * retained. All timers run on the injected `Clock` — no real timers exist in
  * this module.
  *
- * Known scope cuts for WP-03c (documented, not silent): PatchOperation
- * 'image-place'/'image-delete'/'image-clear' validate their shape but encode
- * zero bytes (kitty placement/delete id plumbing lands with the backends);
- * 'image-upload' requires the optional ImageStore and verifies payloadHash.
- * Mode ops that are not ANSI-expressible or not in the §5.6 allowlist
+ * Image operations are now controlled by the process-local ImageStore:
+ * upload validates hash/protocol before bytes leave the process, Kitty place /
+ * delete / clear use the allowlisted APC builders, and iTerm2 upload is the
+ * one inline display operation followed by a reference-only place marker.
+ * image-place without an earlier upload is rejected.  Mode ops that are not ANSI-expressible or not in the §5.6 allowlist
  * (rawInput termios, wrapPending derived state, windowsDec9001,
  * modifyOtherKeys, osc133) encode zero bytes by contract.
  */
@@ -99,7 +99,9 @@ import type {
   TerminalModeSnapshot,
   TerminalPatch,
 } from '../renderer/frame.js'
+import { isImagePayloadHash, isImageStoreKey, validateStoredImageIdentity } from '../renderer/image-store.js'
 import * as ansi from './ansi.js'
+import { kittyImageId, kittyPlacementId } from './image-protocol.js'
 import type { TerminalProfile } from './profile.js'
 import {
   expectedReportForKind,
@@ -217,6 +219,8 @@ interface Job {
   readonly patch?: TerminalPatch
   /** Clock time after which a queued query job must be dropped (§5.6 20 ms). */
   readonly queryDeadlineAt?: number
+  /** Complete accepted image state after this patch, in deterministic order. */
+  readonly imageReferences?: readonly string[]
   readonly resolve: (result: WriteResult) => void
 }
 
@@ -261,11 +265,18 @@ const MAX_COORD = 9999
 
 export interface EncodeOperationsOptions {
   readonly imageStore?: ImageStore
+  /** Profile is optional for legacy pure encoder callers; the writer supplies it. */
+  readonly profile?: TerminalProfile
+  readonly generation?: number
+  /** Store keys already uploaded in the current writer generation. */
+  readonly uploadedStoreKeys?: ReadonlySet<string>
 }
 
 export interface EncodedOperations {
   readonly encoded: string
   readonly bytes: number
+  /** Complete image state after this operation list. */
+  readonly imageReferences: readonly string[]
 }
 
 function encodeModeOperation(name: keyof TerminalModeSnapshot, value: unknown): string {
@@ -348,11 +359,37 @@ function encodeModeOperation(name: keyof TerminalModeSnapshot, value: unknown): 
   }
 }
 
-function kittyImageId(storeKey: string): number {
-  // Deterministic uint31 id derived from the store key (kitty requires a
-  // numeric image id at transmission time for later placement).
-  const digest = createHash('sha256').update(storeKey, 'utf8').digest()
-  return digest.readUInt32BE(0) % 0x7fffffff
+function validateImageUploadShape(op: Extract<PatchOperation, { kind: 'image-upload' }>): void {
+  if (op.protocol !== 'kitty' && op.protocol !== 'iterm2') throw new TypeError('image-upload.protocol must be kitty|iterm2')
+  if (!isImagePayloadHash(op.payloadHash)) throw new TypeError('image-upload.payloadHash must be a SHA-256 hex hash')
+  validateStoredImageIdentity(op.storeKey, op.payloadHash, op.protocol)
+}
+
+function validateImageProfile(protocol: 'kitty' | 'iterm2', profile: TerminalProfile | undefined): void {
+  if (profile !== undefined && profile.imageProtocol !== protocol) {
+    throw new TypeError(`unsupported-image: profile imageProtocol '${String(profile.imageProtocol)}' cannot send ${protocol}`)
+  }
+}
+
+function validateImagePlacementShape(placement: Extract<PatchOperation, { kind: 'image-place' }>['placement']): void {
+  if (placement === null || typeof placement !== 'object') throw new TypeError('image-place.placement required')
+  if (typeof placement.imageId !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(placement.imageId)) {
+    throw new TypeError('image-place.imageId must be 1-128 safe ASCII characters')
+  }
+  if (placement.protocol !== 'kitty' && placement.protocol !== 'iterm2') throw new TypeError('image-place.protocol must be kitty|iterm2')
+  if (!isImagePayloadHash(placement.payloadHash)) throw new TypeError('image-place.payloadHash must be a SHA-256 hex hash')
+  validateStoredImageIdentity(placement.storeKey, placement.payloadHash, placement.protocol)
+  requireInt('image-place.x', placement.x, 0, MAX_COORD - 1)
+  requireInt('image-place.y', placement.y, 0, MAX_COORD - 1)
+  requireInt('image-place.width', placement.width, 1, MAX_COORD)
+  requireInt('image-place.height', placement.height, 1, MAX_COORD)
+}
+
+function validateImageDeleteShape(op: Extract<PatchOperation, { kind: 'image-delete' }>): 'kitty' | 'iterm2' {
+  if (!isImageStoreKey(op.storeKey)) throw new TypeError('image-delete.storeKey must be image:<kitty|iterm2>:<sha256>')
+  const protocol = op.storeKey.split(':')[1]
+  if (protocol !== 'kitty' && protocol !== 'iterm2') throw new TypeError('image-delete.storeKey protocol invalid')
+  return protocol
 }
 
 /** Encode one operation list to bytes. Throws TypeError/RangeError on invalid input. */
@@ -361,29 +398,66 @@ export async function encodePatchOperations(
   options: EncodeOperationsOptions = {},
 ): Promise<EncodedOperations> {
   if (!Array.isArray(operations)) throw new TypeError('operations must be an array')
-  // Pre-resolve image uploads (async ImageStore reads + hash verification);
-  // the byte composition itself is synchronous and shared with the sync entry.
   const resolvedImages = new Map<number, string>()
+  const uploaded = new Set(options.uploadedStoreKeys ?? [])
+  const initialUploaded = new Set(uploaded)
+  const store = options.imageStore
+
   for (let index = 0; index < operations.length; index++) {
     const op = operations[index] as PatchOperation
-    if (op === null || typeof op !== 'object' || op.kind !== 'image-upload') continue
-    if (typeof op.storeKey !== 'string' || op.storeKey === '') throw new TypeError('image-upload.storeKey required')
-    if (op.protocol !== 'kitty' && op.protocol !== 'iterm2') throw new TypeError('image-upload.protocol must be kitty|iterm2')
-    if (typeof op.payloadHash !== 'string' || op.payloadHash === '') throw new TypeError('image-upload.payloadHash required')
-    const store = options.imageStore
-    if (store === undefined) throw new TypeError('image-upload requires a configured ImageStore')
-    const payload = await store.get(op.storeKey)
-    if (payload === null) throw new TypeError(`image-upload: unknown storeKey '${op.storeKey}'`)
-    const actualHash = createHash('sha256').update(payload).digest('hex')
-    if (actualHash !== op.payloadHash) throw new TypeError('image-upload: payload hash mismatch')
-    resolvedImages.set(index, Buffer.from(payload).toString('base64'))
+    if (op === null || typeof op !== 'object') throw new TypeError('operation must be an object')
+    if (op.kind === 'image-upload') {
+      validateImageUploadShape(op)
+      validateImageProfile(op.protocol, options.profile)
+      if (store === undefined) throw new TypeError('image-upload requires a configured ImageStore')
+      const metadata = store.metadata?.(op.storeKey)
+      if (metadata !== undefined && metadata !== null) {
+        if (metadata.payloadHash !== op.payloadHash || metadata.protocol !== op.protocol) {
+          throw new TypeError('image-upload: store metadata mismatch')
+        }
+      }
+      const payload = await store.get(op.storeKey)
+      if (payload === null) throw new TypeError(`image-upload: unknown storeKey '${op.storeKey}'`)
+      const actualHash = createHash('sha256').update(payload).digest('hex')
+      if (actualHash !== op.payloadHash) throw new TypeError('image-upload: payload hash mismatch')
+      resolvedImages.set(index, Buffer.from(payload).toString('base64'))
+      uploaded.add(op.storeKey)
+    } else if (op.kind === 'image-place') {
+      validateImagePlacementShape(op.placement)
+      validateImageProfile(op.placement.protocol, options.profile)
+      if (!uploaded.has(op.placement.storeKey)) {
+        throw new TypeError(`image-place references storeKey before image-upload: '${op.placement.storeKey}'`)
+      }
+      const metadata = store?.metadata?.(op.placement.storeKey)
+      if (
+        metadata !== undefined && metadata !== null &&
+        (metadata.protocol !== op.placement.protocol || metadata.payloadHash !== op.placement.payloadHash)
+      ) throw new TypeError('image-place: store metadata mismatch')
+    } else if (op.kind === 'image-delete') {
+      validateImageDeleteShape(op)
+      uploaded.delete(op.storeKey)
+    } else if (op.kind === 'image-clear') {
+      uploaded.clear()
+    }
   }
-  return encodePatchOperationsSync(operations, { resolvedImages })
+
+  return encodePatchOperationsSync(operations, {
+    resolvedImages,
+    imageStore: store,
+    profile: options.profile,
+    uploadedStoreKeys: initialUploaded,
+    generation: options.generation,
+  })
 }
 
 export interface EncodeOperationsSyncOptions {
   /** Operation-index → base64 payload, pre-resolved by encodePatchOperations. */
   readonly resolvedImages?: ReadonlyMap<number, string>
+  /** Optional process-local store for synchronous backend byte planning. */
+  readonly imageStore?: ImageStore
+  readonly profile?: TerminalProfile
+  readonly uploadedStoreKeys?: ReadonlySet<string>
+  readonly generation?: number
 }
 
 /**
@@ -400,6 +474,21 @@ export function encodePatchOperationsSync(
   if (!Array.isArray(operations)) throw new TypeError('operations must be an array')
   let resources: FrameResources | null = null
   let out = ''
+  const uploaded = new Set(options.uploadedStoreKeys ?? [])
+  const placementByUploadIndex = new Map<number, Extract<PatchOperation, { kind: 'image-place' }>['placement']>()
+  for (let index = 0; index < operations.length; index++) {
+    const operation = operations[index] as PatchOperation
+    if (operation.kind !== 'image-upload') continue
+    for (let next = index + 1; next < operations.length; next++) {
+      const candidate = operations[next] as PatchOperation
+      if (candidate.kind === 'image-place' && candidate.placement.storeKey === operation.storeKey) {
+        placementByUploadIndex.set(index, candidate.placement)
+        break
+      }
+      if (candidate.kind === 'image-upload' || candidate.kind === 'image-delete' || candidate.kind === 'image-clear') break
+    }
+  }
+  const kittyPlacementIds = new Map<number, string>()
 
   for (let opIndex = 0; opIndex < operations.length; opIndex++) {
     const op = operations[opIndex] as PatchOperation
@@ -494,42 +583,87 @@ export function encodePatchOperationsSync(
         out += encodeModeOperation(op.name, op.value)
         break
       case 'image-upload': {
-        if (typeof op.storeKey !== 'string' || op.storeKey === '') throw new TypeError('image-upload.storeKey required')
-        if (op.protocol !== 'kitty' && op.protocol !== 'iterm2') throw new TypeError('image-upload.protocol must be kitty|iterm2')
-        if (typeof op.payloadHash !== 'string' || op.payloadHash === '') throw new TypeError('image-upload.payloadHash required')
-        const base64 = options.resolvedImages?.get(opIndex)
+        validateImageUploadShape(op)
+        validateImageProfile(op.protocol, options.profile)
+        let base64 = options.resolvedImages?.get(opIndex)
+        if (base64 === undefined && options.imageStore?.getSync !== undefined) {
+          const payload = options.imageStore.getSync(op.storeKey)
+          if (payload !== null) {
+            const actualHash = createHash('sha256').update(payload).digest('hex')
+            if (actualHash !== op.payloadHash) throw new TypeError('image-upload: payload hash mismatch')
+            base64 = Buffer.from(payload).toString('base64')
+          }
+        }
         if (base64 === undefined) {
           throw new TypeError('image-upload requires a pre-resolved payload (use async encodePatchOperations)')
         }
+        const metadata = options.imageStore?.metadata?.(op.storeKey)
+        if (metadata !== undefined && metadata !== null && (metadata.payloadHash !== op.payloadHash || metadata.protocol !== op.protocol)) {
+          throw new TypeError('image-upload: store metadata mismatch')
+        }
+        const placement = placementByUploadIndex.get(opIndex)
         out +=
           op.protocol === 'kitty'
-            ? ansi.kittyImage({ a: 't', f: 100, q: 2, i: kittyImageId(op.storeKey) }, base64)
-            : ansi.iterm2Image({ name: Buffer.from(op.storeKey, 'utf8').toString('base64') }, base64)
+            ? ansi.kittyImageUpload(kittyImageId(op.storeKey), base64)
+            : ansi.iterm2Image({
+                size: Buffer.byteLength(base64, 'base64'),
+                ...(placement === undefined ? {} : {
+                  width: placement.width,
+                  height: placement.height,
+                  name: Buffer.from(placement.imageId, 'utf8').toString('base64'),
+                }),
+                ...(placement === undefined ? { name: Buffer.from(op.storeKey, 'utf8').toString('base64') } : {}),
+              }, base64)
+        uploaded.add(op.storeKey)
         break
       }
       case 'image-place': {
         const p = op.placement
-        if (p === null || typeof p !== 'object') throw new TypeError('image-place.placement required')
-        requireInt('image-place.x', p.x, 0, MAX_COORD - 1)
-        requireInt('image-place.y', p.y, 0, MAX_COORD - 1)
-        requireInt('image-place.width', p.width, 0, MAX_COORD)
-        requireInt('image-place.height', p.height, 0, MAX_COORD)
-        // Placement/delete byte encoding lands with the WP-03c backends
-        // (kitty placement ids need ImageStore plumbing); shape-validated
-        // here so invalid operations still fail fast.
+        validateImagePlacementShape(p)
+        validateImageProfile(p.protocol, options.profile)
+        if (!uploaded.has(p.storeKey)) {
+          throw new TypeError(`image-place references storeKey before image-upload: '${p.storeKey}'`)
+        }
+        if (p.protocol === 'kitty') {
+          // Kitty placement is reference-only: `i` owns the payload while `p`
+          // is a stable placement identity recoverable by the byte oracle.
+          const placementId = kittyPlacementId(p.imageId)
+          const owner = kittyPlacementIds.get(placementId)
+          if (owner !== undefined && owner !== p.imageId) {
+            throw new TypeError(`Kitty placement id collision between '${owner}' and '${p.imageId}'`)
+          }
+          kittyPlacementIds.set(placementId, p.imageId)
+          out += ansi.cursorTo(p.y + 1, p.x + 1)
+          out += ansi.kittyImagePlacement(kittyImageId(p.storeKey), placementId, p.width, p.height)
+        }
+        // iTerm2 inline images are displayed at the cursor during upload; it
+        // has no portable persistent placement reference. The planner places
+        // the cursor before image-upload and this op remains a validated
+        // reference-only marker (zero additional bytes).
         break
       }
-      case 'image-delete':
-        if (typeof op.storeKey !== 'string' || op.storeKey === '') throw new TypeError('image-delete.storeKey required')
+      case 'image-delete': {
+        const imageProtocol = validateImageDeleteShape(op)
+        const canSendKittyDelete = imageProtocol === 'kitty' &&
+          (options.profile?.imageProtocol === 'kitty' || options.profile === undefined)
+        if (canSendKittyDelete) out += ansi.kittyImageDelete(kittyImageId(op.storeKey))
+        uploaded.delete(op.storeKey)
         break
+      }
       case 'image-clear':
+        if (options.profile?.imageProtocol === 'kitty' || options.profile === undefined) out += ansi.kittyImageClear()
+        uploaded.clear()
         break
       default:
         throw new TypeError(`unsupported patch operation '${String((op as { kind?: unknown }).kind)}'`)
     }
   }
 
-  return { encoded: out, bytes: Buffer.byteLength(out, 'utf8') }
+  return {
+    encoded: out,
+    bytes: Buffer.byteLength(out, 'utf8'),
+    imageReferences: [...uploaded],
+  }
 }
 
 /** Encode a TerminalLifecycleOperation (fixed mapping, ansi builders only). */
@@ -625,6 +759,10 @@ class TerminalWriterImpl implements TerminalWriter {
   private readonly profile: TerminalProfile
   private readonly broker: TerminalQueryBroker | undefined
   private readonly imageStore: ImageStore | undefined
+  /** Store keys known to be uploaded by accepted (queued or flushed) patches. */
+  private readonly uploadedImages = new Set<string>()
+  /** Store keys referenced by the last successfully flushed patch. */
+  private readonly committedImageReferences = new Set<string>()
   private readonly queryTokenSink: TerminalWriterOptions['queryTokenSink']
 
   private state: TerminalLifecycleState = 'created'
@@ -707,6 +845,9 @@ class TerminalWriterImpl implements TerminalWriter {
       this.currentGeneration = generation
       this.committed = { generation, stateRevision: -1, patchSeq: -1 }
       this.accepted = { generation, stateRevision: -1, patchSeq: -1 }
+      this.uploadedImages.clear()
+      this.committedImageReferences.clear()
+      this.imageStore?.clearGeneration(generation - 1)
     }
   }
 
@@ -760,7 +901,12 @@ class TerminalWriterImpl implements TerminalWriter {
     return this.enqueueSerialized(async (): Promise<EnqueueOutcome> => {
       let encoded: EncodedOperations
       try {
-        encoded = await encodePatchOperations(patch.operations, { imageStore: this.imageStore })
+        encoded = await encodePatchOperations(patch.operations, {
+          imageStore: this.imageStore,
+          profile: this.profile,
+          generation: triple.generation,
+          uploadedStoreKeys: this.uploadedImages,
+        })
       } catch (error) {
         this.counters.encodeErrors += 1
         return { inline: this.errorResult('invalid-patch', `patch encoding failed: ${messageOf(error)}`, triple.generation, false) }
@@ -782,11 +928,16 @@ class TerminalWriterImpl implements TerminalWriter {
         this.counters.droppedPatches += 1
         return { inline: { status: 'stale' } }
       }
+      // Reserve the complete logical image state while the job is queued;
+      // process-local generation references are committed only after flush.
+      this.uploadedImages.clear()
+      for (const storeKey of encoded.imageReferences) this.uploadedImages.add(storeKey)
       return this.enqueueJob({
         generation: triple.generation,
         encoded: encoded.encoded,
         bytes: encoded.bytes,
         patch,
+        imageReferences: encoded.imageReferences,
       })
     })
   }
@@ -1143,9 +1294,32 @@ class TerminalWriterImpl implements TerminalWriter {
     this.counters.bytesWritten += flight.bytes
     this.counters.totalWriteMs += Math.max(0, this.clock.now() - flight.startedAt)
     this.inFlight = null
+    // A merged write may contain several image patches. Apply only the final
+    // reference snapshot per generation after the complete batch is flushed;
+    // clearing an intermediate snapshot must never evict a key needed by a
+    // later clear+re-upload in the same write.
+    const finalImageReferences = new Map<number, readonly string[]>()
+    for (const job of flight.jobs) {
+      if (job.patch !== undefined && job.imageReferences !== undefined) {
+        finalImageReferences.set(job.generation, job.imageReferences)
+      }
+    }
+    for (const generation of [...finalImageReferences.keys()].sort((a, b) => b - a)) {
+      const references = finalImageReferences.get(generation) as readonly string[]
+      if (this.imageStore?.setGenerationReferences !== undefined) {
+        this.imageStore.setGenerationReferences(generation, references)
+      } else {
+        this.imageStore?.clearGeneration(generation)
+        for (const storeKey of references) this.imageStore?.retain?.(storeKey, generation)
+      }
+      if (generation === this.currentGeneration) {
+        this.committedImageReferences.clear()
+        for (const storeKey of references) this.committedImageReferences.add(storeKey)
+      }
+    }
     for (const job of flight.jobs) {
       if (job.patch !== undefined) {
-        // Watermark advances only now: the whole batch containing this patch
+        // Watermark advances only now: the whole batch containing the patch
         // has been flushed (§5.6 partial-write rule).
         this.committed = {
           generation: job.generation,
@@ -1215,6 +1389,7 @@ class TerminalWriterImpl implements TerminalWriter {
   private async writeCleanupBundle(preserveScreen: boolean, preserveCursor: boolean): Promise<void> {
     if ((this.stream as { destroyed?: boolean }).destroyed === true) return
     let bundle =
+      (this.uploadedImages.size > 0 && this.profile.imageProtocol === 'kitty' ? ansi.kittyImageClear() : '') +
       ansi.syncOutputEnd() +
       ansi.sgrReset() +
       ansi.hyperlinkClose() +
@@ -1253,6 +1428,9 @@ class TerminalWriterImpl implements TerminalWriter {
         finish(false)
       }
     })
+    this.uploadedImages.clear()
+    this.committedImageReferences.clear()
+    this.imageStore?.clearGeneration(this.currentGeneration)
   }
 
   private destroyStream(): void {

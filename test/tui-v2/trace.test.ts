@@ -498,12 +498,13 @@ test('canonical grid: compareGrid is the only assertion entry (readable + sha256
 // terminal profiles
 // ---------------------------------------------------------------------------
 
-test('terminal profiles: the 13 deterministic emulator profiles are complete', () => {
+test('terminal profiles: the 14 deterministic emulator profiles are complete', () => {
   const expectedIds = [
     'ascii-narrow',
     'unicode-ambiguous-narrow',
     'unicode-ambiguous-wide',
     'kitty-sync',
+    'iterm2-images',
     'tmux',
     'ssh',
     'windows-conpty',
@@ -588,6 +589,7 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
       'assistant-stream.jsonl',
       'editor.jsonl',
       'exit-error.jsonl',
+      'image-fallback@v1.jsonl',
       'inline-scrollback.jsonl',
       'interactive-overlays.jsonl',
       'interrupt.jsonl',
@@ -627,6 +629,21 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
     const raw = JSON.stringify(trace)
     assert.ok(!/sk-[A-Za-z0-9_-]{4,}/.test(raw), `${file}: no credential-shaped strings`)
   }
+})
+
+test('trace fixtures: WP-08e2 image fallback carries only hashes/placeholders', async () => {
+  const trace = await readTrace(path.join(fixturesDir, 'image-fallback@v1.jsonl'))
+  const raw = JSON.stringify(trace)
+  for (const hash of ['1'.repeat(64), '2'.repeat(64), '3'.repeat(64), '4'.repeat(64)]) {
+    assert.ok(raw.includes(hash), `missing image hash ${hash.slice(0, 4)}`)
+  }
+  assert.ok(raw.includes('sixel-unsupported'))
+  assert.ok(raw.includes('[Image unavailable: unsupported-profile 333333333333]'))
+  assert.ok(!raw.includes('base64'))
+  assert.ok(!raw.includes('raw-image-bytes'))
+  assert.ok(!raw.includes('storeKey'))
+  assert.ok(!raw.includes('\\u001b]1337'))
+  assert.ok(!raw.includes('\\u001b_G'))
 })
 
 test('trace fixtures: WP-08b scenario preserves safe Markdown/tool discriminants', async () => {

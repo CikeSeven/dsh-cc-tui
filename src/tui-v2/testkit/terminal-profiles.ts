@@ -116,6 +116,20 @@ const KITTY_SYNC: TerminalProfile = {
   platform: 'linux',
 }
 
+/** iTerm2 fixture: OSC 1337 images, no Kitty keyboard/image protocol. */
+const ITERM2_IMAGES: TerminalProfile = {
+  ...KITTY_SYNC,
+  id: 'iterm2-images',
+  family: 'iterm2',
+  term: 'xterm-256color',
+  locale: 'en_US.UTF-8',
+  supportsKittyKeyboard: 'no',
+  supportsModifyOtherKeys: 'yes',
+  supportsCellSizeQuery: 'yes',
+  imageProtocol: 'iterm2',
+  platform: 'darwin',
+}
+
 /** tmux 3.x multiplexer: filters/passes a reduced protocol set; no sync output, no images. */
 const TMUX: TerminalProfile = {
   id: 'tmux',
@@ -333,6 +347,7 @@ const PROFILE_LIST: readonly TerminalProfile[] = [
   UNICODE_AMBIGUOUS_NARROW,
   UNICODE_AMBIGUOUS_WIDE,
   KITTY_SYNC,
+  ITERM2_IMAGES,
   TMUX,
   SSH,
   WINDOWS_CONPTY,

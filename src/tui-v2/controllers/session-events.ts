@@ -99,7 +99,7 @@ import {
   type UiRowSnapshot,
   type UiSnapshot,
 } from '../model/schema.js'
-import type { Channel, ChatRow, ResumeResult, ToolRow } from '../../dsh-adapter/channel.js'
+import type { Channel, ChatRow, ResumeResult, StagedImageInput, StagedImageMetadata, ToolRow } from '../../dsh-adapter/channel.js'
 import { createChannelSurfaceAdapter, type ChannelSurfaceAdapter } from '../../dsh-adapter/ui-surfaces.js'
 import type { UiSurfaceView } from '../model/surfaces.js'
 
@@ -203,6 +203,9 @@ export type ChannelUiChannel = Pick<
   | 'agentId'
   | 'setActivityFrames'
   | 'subscribe'
+  | 'notify'
+  | 'stageImage'
+  | 'stagedImageMetadata'
   | 'submit'
   | 'steer'
   | 'cancel'
@@ -213,8 +216,26 @@ export type ChannelUiChannel = Pick<
   | 'rewindTo'
 >
 
+export type StagedImageCommandResult =
+  | {
+      readonly status: 'stored'
+      readonly token: string
+      readonly metadata: StagedImageMetadata
+      readonly storeKey: string
+      readonly protocol: 'kitty' | 'iterm2'
+    }
+  | {
+      readonly status: 'fallback'
+      readonly token: string
+      readonly metadata: StagedImageMetadata
+      readonly placeholder: string
+      readonly reason: 'unsupported-profile' | 'store-over-budget' | 'store-error'
+    }
+
 /** Controller command surface (§7.2: components never call the channel). */
 export interface ChannelCommands {
+  /** Existing attachment boundary: validates/persists bytes in dsh-adapter. */
+  stageImage(input: StagedImageInput): Promise<StagedImageCommandResult>
   submit(text: string): void
   steer(text: string): void
   /** Abort the in-flight turn. */
@@ -310,6 +331,11 @@ export interface ChannelUiAdapterOptions {
   readonly onSurfaceChange?: (surface: UiSurfaceView) => void
   /** Optional injected surface adapter for deterministic tests. */
   readonly surfaceAdapter?: ChannelSurfaceAdapter
+  /** Process-local image-store bridge; bytes never enter AppEvent/trace. */
+  readonly storeStagedImage?: (
+    input: StagedImageInput,
+    metadata: StagedImageMetadata,
+  ) => Promise<StagedImageCommandResult>
   readonly onDiagnostic?: (diagnostic: { code: string; message: string }) => void
 }
 
@@ -1028,6 +1054,33 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
     },
 
     commands: {
+      async stageImage(input) {
+        try {
+          const token = await channel.stageImage(input)
+          const metadata = channel.stagedImageMetadata(token)
+          if (metadata === undefined) throw new Error('staged image metadata unavailable')
+          const result = options.storeStagedImage === undefined
+            ? {
+                status: 'fallback' as const,
+                token,
+                metadata,
+                placeholder: `[Image unavailable: unsupported-profile ${metadata.payloadHash.slice(0, 12)}]`,
+                reason: 'unsupported-profile' as const,
+              }
+            : await options.storeStagedImage(input, metadata)
+          channel.notify(
+            result.status === 'stored' ? `Image staged as ${token}` : result.placeholder,
+            result.status === 'stored' ? { timeoutMs: 2500 } : { color: 'warning', timeoutMs: 5000 },
+          )
+          return result
+        } catch (error) {
+          const clean = (error instanceof Error ? error.message : String(error))
+            .replace(/[\x00-\x1f\x7f-\x9f]/g, '')
+            .slice(0, 160)
+          channel.notify(`Image staging failed: ${clean}`, { color: 'warning', timeoutMs: 5000 })
+          throw error
+        }
+      },
       submit(text) {
         channel.submit(text)
       },

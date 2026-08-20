@@ -1010,7 +1010,7 @@ interface FullscreenLedgerEntry {
   /** §9.3 requirement, abbreviated. */
   readonly requirement: string
   readonly covers: readonly FullscreenLedgerRef[]
-  /** WP-07/WP-08 domain entries are registered as deferred and never fail. */
+  /** Remaining WP-07/WP-08 domain entries may be deferred; completed domains carry explicit coverage. */
   readonly deferred?: 'WP-07' | 'WP-08'
 }
 
@@ -1160,10 +1160,15 @@ const FULLSCREEN_LEDGER: readonly FullscreenLedgerEntry[] = [
   {
     id: 'image-fallback',
     severity: 'P1',
-    requirement: 'image fallback 最小 trace/profile',
+    requirement: 'Kitty/iTerm2 image store、writer ordering/chunking、inline/null/sixel fallback 与 hash-only trace/profile',
     covers: [
+      { kind: 'trace', name: 'image-fallback@v1' },
       { kind: 'conformance', name: 'image-kitty' },
       { kind: 'conformance', name: 'image-iterm2-unsupported' },
+      { kind: 'test', file: 'test/tui-v2/image-store.test.ts' },
+      { kind: 'test', file: 'test/tui-v2/image-placement.test.ts' },
+      { kind: 'test', file: 'test/tui-v2/image-writer.test.ts' },
+      { kind: 'test', file: 'test/tui-v2/image-adapter-boundary.test.ts' },
     ],
   },
   {

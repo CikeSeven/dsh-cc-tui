@@ -5,7 +5,7 @@
  * capabilities, generation gates, initial append paint, append recipe with
  * the minimal-scroll search (growth / settle / duplicate / blank-pad /
  * mutation-fallback / followEnd gating / missing hint), re-anchor recipes,
- * the exit park patch, and image rejection. Byte-level checks replay the
+ * the exit park patch, and explicit image fallback. Byte-level checks replay the
  * encoded patches through the VirtualTerminal (scrollback included).
  *
  * Top-level names carry "inline"/"scrollback" so
@@ -342,10 +342,14 @@ test('inline backend exit park is stale-safe across generations', async () => {
   assert.throws(() => backend.planExitPark(-1), TypeError);
 });
 
-test('inline backend rejects image placements (RangeError)', async () => {
-  const backend = new InlineBackend();
+test('inline backend image capability is an explicit unsupported fallback, never fullscreen parity', async () => {
+  const diagnostics: string[] = [];
+  const backend = new InlineBackend({
+    profile: { ...PROFILE, imageProtocol: 'kitty' },
+    onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.code),
+  });
   await backend.start(0);
-  const base = mkFrame('img', 0, ['x'], HINT_4, { fullRedraw: true, fullRedrawReason: 'initial' });
+  const base = mkFrame('img', 0, ['[Image unavailable]'], HINT_4, { fullRedraw: true, fullRedrawReason: 'initial' });
   const frame: Frame = {
     ...base,
     images: [
@@ -356,12 +360,15 @@ test('inline backend rejects image placements (RangeError)', async () => {
         y: 0,
         width: 1,
         height: 1,
-        payloadHash: 'hash',
-        storeKey: 'key',
+        payloadHash: '1'.repeat(64),
+        storeKey: `image:kitty:${'1'.repeat(64)}`,
       },
     ],
   };
-  assert.throws(() => backend.plan(null, frame), RangeError);
+  const patch = backend.plan(null, frame);
+  assert.equal(patch.operations.some((operation) => operation.kind.startsWith('image-')), false);
+  assert.ok(patch.operations.some((operation) => operation.kind === 'append'), 'append-only initial recipe remains intact');
+  assert.deepEqual(diagnostics, ['unsupported-image']);
 });
 
 test('inline backend identical frame produces a resources-only patch', async () => {

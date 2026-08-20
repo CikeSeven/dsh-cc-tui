@@ -86,6 +86,7 @@ import {
 import { initialUiState, type UiState } from '../model/state.js';
 import { createBaseRenderer, fallbackRowComponent, type BaseRenderer } from '../renderer/base-renderer.js';
 import { compositeFrame } from '../renderer/compositor.js';
+import { createImageStore } from '../renderer/image-store.js';
 import type { Frame, ScreenBackend } from '../renderer/frame.js';
 import {
   createRenderScheduler,
@@ -405,6 +406,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   let frameSeq = 0;
   let lastFrameFullRedraw: boolean | null = null;
   let lastFrameFullRedrawReason: string | null = null;
+  /** Bytes stay process-local; AppEvents/trace receive only hash metadata. */
+  const imageStore = createImageStore();
 
   const reducer: Reducer = createReducer({ clock });
   const meta = createEventMetaFactory({
@@ -615,6 +618,40 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     dispatch: (event) => streamingController.ingest(event),
     ...(options.initialResetReason !== undefined ? { initialResetReason: options.initialResetReason } : {}),
     ...(options.welcomeText !== undefined ? { welcomeText: options.welcomeText } : {}),
+    storeStagedImage: async (input, metadata) => {
+      const protocol = profile.imageProtocol
+      if (protocol !== 'kitty' && protocol !== 'iterm2') {
+        diagnostic('image/unsupported-profile', 'unsupported-image', {
+          payloadHash: metadata.payloadHash,
+          profileId: profile.id,
+          protocol: String(protocol),
+        });
+        return {
+          status: 'fallback',
+          token: metadata.token,
+          metadata,
+          placeholder: `[Image unavailable: unsupported-profile ${metadata.payloadHash.slice(0, 12)}]`,
+          reason: 'unsupported-profile',
+        } as const;
+      }
+      try {
+        const stored = await imageStore.put(metadata.payloadHash, input.data, protocol);
+        return { status: 'stored', token: metadata.token, metadata, storeKey: stored.storeKey, protocol } as const;
+      } catch (error) {
+        const reason = error instanceof RangeError ? 'store-over-budget' : 'store-error';
+        diagnostic(`image/${reason}`, 'unsupported-image', {
+          payloadHash: metadata.payloadHash,
+          protocol,
+        });
+        return {
+          status: 'fallback',
+          token: metadata.token,
+          metadata,
+          placeholder: `[Image unavailable: ${reason} ${metadata.payloadHash.slice(0, 12)}]`,
+          reason,
+        } as const;
+      }
+    },
     onDockChange: (dock) => {
       dockMirror = dock;
       surfaceController?.refresh(dock.surface);
@@ -1169,10 +1206,13 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   // off its CAPABILITIES, never a mode string. The inline backend shares only
   // the contract with fullscreen (plan: no `if (mode === 'inline')` copies of
   // fullscreen logic). The pi main-screen adapter is gone from this path.
+  const onImageDiagnostic = (imageDiagnostic: { readonly code: string; readonly reason: string; readonly imageId?: string; readonly payloadHash?: string; readonly protocol?: string }): void => {
+    diagnostic(`image/${imageDiagnostic.reason}`, imageDiagnostic.code, imageDiagnostic as unknown as Record<string, unknown>);
+  };
   const backend: ScreenBackend =
     modeSelection.ok && modeSelection.mode === 'fullscreen'
-      ? new FullscreenBackend()
-      : new InlineBackend();
+      ? new FullscreenBackend({ profile, imageStore, onDiagnostic: onImageDiagnostic })
+      : new InlineBackend({ profile, onDiagnostic: onImageDiagnostic });
 
   const onForeignOutput = (bytes: number): void => {
     diagnostic('output/foreign', 'foreign write on the main screen; scheduling a damage re-anchor', { bytes });
@@ -1191,7 +1231,12 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     ? createForeignOutputGuard(options.stream, onForeignOutput)
     : null;
 
-  const writer = createTerminalWriter({ stream: foreignGuard?.writerStream ?? options.stream, clock, profile });
+  const writer = createTerminalWriter({
+    stream: foreignGuard?.writerStream ?? options.stream,
+    clock,
+    profile,
+    imageStore,
+  });
 
   const lifecycle: TerminalLifecycle = createTerminalLifecycle({
     writer,
@@ -1213,7 +1258,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   const sceneTakeover = createScreenTakeover({
     lifecycle,
     writer,
-    onRestore: () => {
+    onRestore: (lease) => {
+      imageStore.clearGeneration(lease.generation);
       pendingFullRedraw = true;
       fullRedrawReason = 'resume';
       previousFrame = null;
@@ -1230,6 +1276,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   });
   scheduler.onResize(() => {
     baseRenderer.applyEnvironmentChange({ widthChanged: true });
+    imageStore.clearGeneration(lifecycle.generation());
     previousFrame = null;
     prevFollowEnd = false;
     pendingFullRedraw = true;
@@ -1535,6 +1582,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           diagnostic('inline/park-error', error instanceof Error ? error.message : String(error));
         }
       }
+      imageStore.clearGeneration(lifecycle.generation());
       // Backend generation gate closes before the lifecycle teardown emits
       // any physical restore bytes (§6.4; backend.stop emits nothing).
       await backend.stop(lifecycle.generation());
@@ -1546,6 +1594,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         await lifecycle.stop(reason);
       } catch (error) {
         diagnostic('lifecycle/stop-error', error instanceof Error ? error.message : String(error));
+      } finally {
+        imageStore.clear();
       }
       phase = 'stopped';
     })();

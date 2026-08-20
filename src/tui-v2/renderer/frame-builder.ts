@@ -202,8 +202,13 @@ export function buildFrame(input: FrameBuilderInput): Frame {
       progress: { ...input.modes.progress },
     },
     resources: table.snapshot(),
-    images: input.images ?? [],
-    layers: input.layers ?? [],
+    // Images/layers are metadata-only, but still caller-owned arrays/objects:
+    // copy them before deepFreeze so publishing a frame never freezes aliases.
+    images: (input.images ?? []).map((image) => ({ ...image })),
+    layers: (input.layers ?? []).map((layer) => ({
+      ...layer,
+      ...(layer.clip !== undefined ? { clip: { ...layer.clip } } : {}),
+    })),
     generation: input.generation,
     fullRedraw,
     metadata: {

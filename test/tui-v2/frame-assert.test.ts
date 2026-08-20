@@ -169,6 +169,10 @@ test('virtual terminal patch replay: erase, scroll, mode and cursor ops', () => 
 })
 
 test('virtual terminal patch replay: image upload/place/delete/clear lifecycle', () => {
+  const kittyHash = '1'.repeat(64)
+  const itermHash = '2'.repeat(64)
+  const kittyKey = `image:kitty:${kittyHash}`
+  const itermKey = `image:iterm2:${itermHash}`
   const placement = {
     imageId: 'img-1',
     protocol: 'kitty' as const,
@@ -176,41 +180,39 @@ test('virtual terminal patch replay: image upload/place/delete/clear lifecycle',
     y: 0,
     width: 2,
     height: 1,
-    payloadHash: 'hash-1',
-    storeKey: 'k1',
+    payloadHash: kittyHash,
+    storeKey: kittyKey,
   }
   let grid = applyPatchToCanonicalGrid(
     blankGrid(),
     patch([
-      { kind: 'image-upload', storeKey: 'k1', protocol: 'kitty', payloadHash: 'hash-1' },
+      { kind: 'image-upload', storeKey: kittyKey, protocol: 'kitty', payloadHash: kittyHash },
       { kind: 'image-place', placement },
     ]),
   )
   assert.equal(grid.images.length, 1)
-  assert.equal(grid.images[0].imageId, 'img-1')
-  assert.equal(grid.images[0].payloadHash, 'hash-1')
+  assert.match(grid.images[0].imageId, /^kitty-p[1-9]\d*$/)
+  assert.equal(grid.images[0].payloadHash, kittyHash)
 
   grid = applyPatchToCanonicalGrid(
     grid,
     patch([
-      // Deleting a placement from an EARLIER patch is a no-op: canonical
-      // grids carry no storeKey, so pre-existing placements are keyed
-      // `preexisting:<imageId>` and only re-uploaded keys can be deleted.
-      { kind: 'image-delete', storeKey: 'k1' },
+      // Canonical replay reconstructs the deterministic protocol+hash storeKey.
+      { kind: 'image-delete', storeKey: kittyKey },
     ]),
   )
-  assert.equal(grid.images.length, 1)
+  assert.equal(grid.images.length, 0)
 
   grid = applyPatchToCanonicalGrid(
     grid,
     patch([
-      { kind: 'image-upload', storeKey: 'k2', protocol: 'iterm2', payloadHash: 'hash-2' },
-      { kind: 'image-place', placement: { ...placement, storeKey: 'k2', protocol: 'iterm2', payloadHash: 'hash-2' } },
+      { kind: 'image-upload', storeKey: itermKey, protocol: 'iterm2', payloadHash: itermHash },
+      { kind: 'image-place', placement: { ...placement, storeKey: itermKey, protocol: 'iterm2', payloadHash: itermHash } },
       // Same-patch delete removes the placement.
-      { kind: 'image-delete', storeKey: 'k2' },
+      { kind: 'image-delete', storeKey: itermKey },
     ]),
   )
-  assert.equal(grid.images.length, 1)
+  assert.equal(grid.images.length, 0)
 
   grid = applyPatchToCanonicalGrid(grid, patch([{ kind: 'image-clear' }]))
   assert.equal(grid.images.length, 0)

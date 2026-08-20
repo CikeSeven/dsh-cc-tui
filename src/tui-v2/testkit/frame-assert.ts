@@ -37,6 +37,7 @@ import {
   type CanonicalStyle,
   type GridDiff,
 } from './canonical.js'
+import { canonicalImageId } from '../terminal/image-protocol.js'
 import { writeTraceFailure, TRACE_GENERATOR_VERSION } from './trace.js'
 
 const DEFAULT_STYLE: CanonicalStyle = Object.freeze({
@@ -127,10 +128,13 @@ export function applyPatchToCanonicalGrid(grid: CanonicalGridV1, patch: Terminal
   const hyperlinks = new Map<number, CanonicalHyperlink>()
   const uploads = new Map<string, { protocol: 'kitty' | 'iterm2'; payloadHash: string }>()
   let placements: WorkingPlacement[] = grid.images.map((placement) => ({
-    // Canonical grids carry no storeKey; pre-existing placements are keyed
-    // by imageId so image-delete on them is a no-op unless re-uploaded.
-    storeKey: `preexisting:${placement.imageId}`,
-    placement,
+    // The production store key is deterministic from protocol+payloadHash;
+    // canonical grids omit it but replay can reconstruct it without bytes.
+    storeKey: `image:${placement.protocol}:${placement.payloadHash}`,
+    placement: {
+      ...placement,
+      imageId: canonicalImageId(placement.protocol, placement.imageId),
+    },
   }))
 
   const blankAt = (index: number) => {
@@ -360,15 +364,31 @@ export function applyPatchToCanonicalGrid(grid: CanonicalGridV1, patch: Terminal
         break
       case 'image-upload':
         if (op.storeKey === '') fail('image-upload: empty storeKey')
+        if (op.protocol !== 'kitty' && op.protocol !== 'iterm2') fail('image-upload: unsupported protocol')
+        if (!/^[0-9a-f]{64}$/.test(op.payloadHash)) fail('image-upload: invalid payload hash')
         uploads.set(op.storeKey, { protocol: op.protocol, payloadHash: op.payloadHash })
         break
       case 'image-place': {
         const upload = uploads.get(op.placement.storeKey)
         if (!upload) fail(`image-place references unknown storeKey ${op.placement.storeKey}`)
+        if (upload.protocol !== op.placement.protocol || upload.payloadHash !== op.placement.payloadHash) {
+          fail(`image-place metadata mismatch for storeKey ${op.placement.storeKey}`)
+        }
+        if (
+          op.placement.x < 0 || op.placement.y < 0 ||
+          op.placement.width < 1 || op.placement.height < 1 ||
+          op.placement.x + op.placement.width > width ||
+          op.placement.y + op.placement.height > height
+        ) fail(`image-place out of bounds for storeKey ${op.placement.storeKey}`)
+        // One canonical imageId has one semantic placement in the grid. Kitty
+        // uses the recoverable wire placement identity rather than the logical
+        // frame-local id.
+        const canonicalId = canonicalImageId(op.placement.protocol, op.placement.imageId)
+        placements = placements.filter((item) => item.placement.imageId !== canonicalId)
         placements.push({
           storeKey: op.placement.storeKey,
           placement: {
-            imageId: op.placement.imageId,
+            imageId: canonicalId,
             protocol: op.placement.protocol,
             x: op.placement.x,
             y: op.placement.y,

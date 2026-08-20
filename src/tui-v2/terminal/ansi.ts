@@ -437,6 +437,58 @@ export function kittyImage(keys: Readonly<Record<string, string | number>>, payl
   return brand(`${ESC}_G${pairs.join(',')};${requireBase64Payload(payloadBase64)}${ST}`)
 }
 
+const KITTY_CHUNK_BASE64_CHARS = 4096
+
+/** Kitty upload with the protocol-mandated 4096-character continuation chunks. */
+export function kittyImageUpload(imageId: number, payloadBase64: string): ControlSequence {
+  requireBoundedInteger('kitty image id', imageId, 1, 0x7ffffffe)
+  const payload = requireBase64Payload(payloadBase64)
+  if (payload.length <= KITTY_CHUNK_BASE64_CHARS) {
+    return kittyImage({ a: 't', f: 100, q: 2, i: imageId }, payload)
+  }
+  const chunks: string[] = []
+  for (let offset = 0; offset < payload.length; offset += KITTY_CHUNK_BASE64_CHARS) {
+    const chunk = payload.slice(offset, offset + KITTY_CHUNK_BASE64_CHARS)
+    const first = offset === 0
+    const last = offset + KITTY_CHUNK_BASE64_CHARS >= payload.length
+    chunks.push(
+      first
+        ? kittyImage({ a: 't', f: 100, q: 2, i: imageId, m: 1 }, chunk)
+        : kittyImage({ m: last ? 0 : 1 }, chunk),
+    )
+  }
+  return brand(chunks.join(''))
+}
+
+function imageDimension(name: string, value: number, max = MAX_CURSOR_PARAM): number {
+  return requireBoundedInteger(`image ${name}`, value, 1, max)
+}
+
+/** Payload-free Kitty placement at the writer's current cursor. */
+export function kittyImagePlacement(
+  imageId: number,
+  placementId: number,
+  width: number,
+  height: number,
+): ControlSequence {
+  requireBoundedInteger('kitty image id', imageId, 1, 0x7ffffffe)
+  requireBoundedInteger('kitty placement id', placementId, 1, 0x7ffffffe)
+  imageDimension('width', width)
+  imageDimension('height', height)
+  return kittyImage({ a: 'p', q: 2, i: imageId, p: placementId, c: width, r: height, C: 1 }, '')
+}
+
+/** Delete one Kitty image and its decoded data. */
+export function kittyImageDelete(imageId: number): ControlSequence {
+  requireBoundedInteger('kitty image id', imageId, 1, 0x7ffffffe)
+  return kittyImage({ a: 'd', d: 'I', i: imageId, q: 2 }, '')
+}
+
+/** Delete all Kitty placements and image data. */
+export function kittyImageClear(): ControlSequence {
+  return kittyImage({ a: 'd', d: 'A', q: 2 }, '')
+}
+
 const ITERM2_DIMENSION = /^\d+(?:px|%)?$|^auto$/
 
 /**

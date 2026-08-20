@@ -50,8 +50,8 @@ writer/lifecycle 的职责；异步失败经 `onError`（adapter）与 lifecycle
 | progress state 0/1/2/4 | lifecycle `progress` none/normal/error/paused（value 0–100） |
 | progress state 3（indeterminate） | sequence lane `ansi.progress('indeterminate')`（pinned lifecycle op 无此状态） |
 | clipboard（OSC 52） | sequence lane `ansi.osc52Clipboard` |
-| image kitty（APC `_G`） | sequence lane `ansi.kittyImage(keys, payload)`；空 payload 仅 a=d/a=p |
-| image iterm2（OSC 1337） | sequence lane `ansi.iterm2Image`；`size` 取 payload 解码字节数，width/height 原样透传（N/Npx/N%/auto） |
+| image kitty（APC `_G`） | v2 fullscreen `ImageStore` → writer `ansi.kittyImageUpload`（4096-char continuation chunks）+ `kittyImagePlacement`/delete/clear；所有 bytes 只在 writer encode 临时转 base64，legacy pi planner 明确拒绝 `Frame.images`，inline 只发 fallback |
+| image iterm2（OSC 1337） | v2 fullscreen `ImageStore` → sequence lane `ansi.iterm2Image`；`size` 取 payload 解码字节数，width/height 原样透传（N/Npx/N%/auto），每个 placement 在目标 cursor upload；无持久 delete parity，legacy/inline 不伪装支持 |
 
 ## ScreenBackend 接线（`terminal/main-screen.ts` / `terminal/alt-screen.ts`）
 
@@ -71,8 +71,9 @@ writer/lifecycle 的职责；异步失败经 `onError`（adapter）与 lifecycle
   + cursor（变化时）+ 变更 mode（浅比较，scrollRegion/progress 用 JSON）。
   `bytes` 用 writer 自己的 `encodePatchOperationsSync` 计算；`patchSeq` 为
   backend 内递增计数（start 重置）。`next.generation < activeGeneration` 抛
-  RangeError。带 `images` 的 frame 抛 RangeError（图像字节走 compat write
-  路径的已声明 marker，ImageStore plumbing 未接）。
+  RangeError。带 `images` 的 frame 在 legacy `screen-plan.ts` 明确抛 RangeError；生产
+  v2 fullscreen 由 `FullscreenBackend` 接 ImageStore/writer，inline 只记录
+  `unsupported-image` fallback，不把图片 marker 当作 parity。
 - `stop(generation)`：旧 generation 直接忽略；main backend 额外 await
   `adapter.awaitStop()`（会话结束 barrier 由会话 owner 触发）。alt backend 的
   vendored TUI 拿到的是 **scoped `Terminal` facade**（`AltScreenTerminalScope`）：

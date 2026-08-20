@@ -1,4 +1,4 @@
-# tui-v2 终端模式支持矩阵（WP-07）
+# tui-v2 终端模式与图片支持矩阵（WP-07/WP-08e2）
 
 本文是 fullscreen（alt-screen）与 inline（main-screen）两种后端的**能力对账表**。文末的
 `json` 机器块由 `pnpm verify:tui-v2 -- --check inline` 解析，逐字段与
@@ -25,6 +25,13 @@ fullscreen 专属能力必须显式登记差异，不允许静默伪装 parity�
   与回到 follow-end 的第一帧一律原地重绘，不喂 scrollback，杜绝 pageUp→pageDown
   重复入行。危险序列禁令：inline patch 字节里永不出现 ED 3（`CSI 3 J` 清 scrollback）
   与 DECSTBM。
+
+## 图片协议边界（WP-08e2）
+
+- **fullscreen**：仅对 profile 明确确认的 Kitty APC 与 iTerm2 OSC 1337 输出受控协议字节；Kitty 上传先分块、再以 placement reference 放置，iTerm2 每个 placement 在目标 cursor 处执行一次 inline upload。`sixel`、`null`、`unknown` 或 profile/request 不匹配均不发送图片字节，改为占位符与 `unsupported-image` 诊断。
+- **inline**：不发送 Kitty/iTerm2 图片字节，也不伪装 fullscreen parity；图片只走明确 placeholder/fallback，append-only cell path 保持不变。
+- **进程内 store**：默认 32 MiB、最多 128 entries，单 entry 上限 5 MiB；内容以 SHA-256/hash-only metadata 寻址，bytes 不进入 Frame、AppEvent、trace、诊断或 JSON。LRU 只能淘汰没有 generation reference 或 explicit lease 的 entry；resize、generation 失效、delete/clear 和 stop 释放引用。
+- **安全 seam**：`stageImage` 只返回 token/hash/mediaType/bytes/dimensions/name metadata；唯一 writer 在 upload 前再次校验 storeKey/hash/protocol，并拒绝 place-before-upload。Kitty canonical placement identity 从受控 `p=` 恢复，避免 byte-level oracle 静默忽略 image 差异。
 
 ## 第三方输出（main-screen 共享）
 

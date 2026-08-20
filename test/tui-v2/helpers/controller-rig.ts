@@ -20,11 +20,13 @@ import {
   type ChannelUiAdapter,
   type DockStoreView,
   type EventMetaFactory,
+  type StagedImageCommandResult,
 } from '../../../src/tui-v2/controllers/session-events.js';
 import {
   createStreamingController,
   type StreamingController,
 } from '../../../src/tui-v2/controllers/streaming.js';
+import type { StagedImageInput, StagedImageMetadata } from '../../../src/dsh-adapter/channel.js';
 import { createFakeChannel, type FakeChannel } from './fake-channel.js';
 
 export class ManualClock implements Clock {
@@ -81,6 +83,7 @@ export function createControllerRig(options: {
   width?: number;
   height?: number;
   welcomeText?: string;
+  storeStagedImage?: (input: StagedImageInput, metadata: StagedImageMetadata) => Promise<StagedImageCommandResult>;
 } = {}): ControllerRig {
   const channel = options.channel ?? createFakeChannel();
   const clock = new ManualClock();
@@ -127,6 +130,7 @@ export function createControllerRig(options: {
     meta,
     dispatch: (event) => streaming.ingest(event),
     ...(options.welcomeText !== undefined ? { welcomeText: options.welcomeText } : {}),
+    ...(options.storeStagedImage !== undefined ? { storeStagedImage: options.storeStagedImage } : {}),
     onDockChange: (dock) => {
       dockView = dock;
     },

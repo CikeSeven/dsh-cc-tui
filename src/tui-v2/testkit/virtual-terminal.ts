@@ -152,6 +152,14 @@ function sha256Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex')
 }
 
+function imagePayloadHash(payloadBase64: string): string {
+  try {
+    return createHash('sha256').update(Buffer.from(payloadBase64, 'base64')).digest('hex')
+  } catch {
+    return sha256Hex(payloadBase64)
+  }
+}
+
 function blankLine(width: number, style: CanonicalStyle = DEFAULT_STYLE): VtCell[] {
   const cell: VtCell = style === DEFAULT_STYLE ? BLANK_CELL : { grapheme: '', width: 1, style, link: null }
   return Array.from({ length: width }, () => cell)
@@ -209,6 +217,12 @@ export class VirtualTerminal {
 
   private images: CanonicalImagePlacement[] = []
   private imageCounter = 0
+  /** Kitty numeric image id -> decoded-payload hash (never payload bytes). */
+  private kittyUploads = new Map<string, { payloadHash: string; width: number; height: number }>()
+  /** Kitty placement id -> payload id, used for delete-by-payload semantics. */
+  private kittyImageOwners = new Map<string, string>()
+  /** Active Kitty 4096-character base64 continuation, retaining only a hash. */
+  private kittyTransfer: { id: string; hash: ReturnType<typeof createHash>; width: number; height: number } | null = null
 
   private buffer = ''
 
@@ -336,6 +350,9 @@ export class VirtualTerminal {
     this.progress = { state: 'none' }
     this.images = []
     this.imageCounter = 0
+    this.kittyUploads = new Map()
+    this.kittyImageOwners = new Map()
+    this.kittyTransfer = null
     this.buffer = ''
     this.unsupportedCount = 0
     this.unsupportedByType = new Map()
@@ -928,7 +945,8 @@ export class VirtualTerminal {
       this.unsupported('apc:kitty')
       return
     }
-    // ESC _ G key=value,... ; base64payload ST — register placement only.
+    // ESC _ G action/key=value,... ; base64payload ST. Bytes are never kept;
+    // only a decoded-payload hash is retained by the oracle.
     const body = content.slice(1)
     const semi = body.indexOf(';')
     const keyText = semi < 0 ? body : body.slice(0, semi)
@@ -938,16 +956,107 @@ export class VirtualTerminal {
       const eq = pair.indexOf('=')
       if (eq > 0) keys.set(pair.slice(0, eq), pair.slice(eq + 1))
     }
+    const action = keys.get('a')
     const id = keys.get('i') ?? keys.get('I')
+    const continuation = keys.get('m')
+    if (action === 'd') {
+      const deleteMode = keys.get('d')
+      this.kittyTransfer = null
+      if (deleteMode === 'A' || deleteMode === 'a') {
+        this.images = []
+        this.kittyImageOwners.clear()
+      }
+      if (deleteMode === 'A' || deleteMode === 'I') {
+        if (id === undefined) this.kittyUploads.clear()
+        else this.kittyUploads.delete(id)
+        if (id !== undefined) {
+          this.images = this.images.filter((image) => {
+            const owned = this.kittyImageOwners.get(image.imageId) === id
+            if (owned) this.kittyImageOwners.delete(image.imageId)
+            return !owned
+          })
+        }
+      }
+      return
+    }
+
+    if (action === 't' || action === 'T') {
+      if (id === undefined || payload === '') {
+        this.unsupported('apc:kitty-upload')
+        return
+      }
+      const width = Number.parseInt(keys.get('c') ?? '0', 10) || 0
+      const height = Number.parseInt(keys.get('r') ?? '0', 10) || 0
+      if (continuation === '1') {
+        const hash = createHash('sha256')
+        hash.update(Buffer.from(payload, 'base64'))
+        this.kittyTransfer = { id, hash, width, height }
+        return
+      }
+      const payloadHash = imagePayloadHash(payload)
+      this.kittyUploads.set(id, { payloadHash, width, height })
+      if (action === 'T') this.placeKittyImage(id, undefined, width, height, payloadHash)
+      return
+    }
+
+    // Kitty continuation chunks omit action/id. The first and middle chunks
+    // carry m=1; the final chunk carries m=0.
+    if (action === undefined && (continuation === '1' || continuation === '0')) {
+      const transfer = this.kittyTransfer
+      if (transfer === null || payload === '') {
+        this.unsupported('apc:kitty-upload-continuation')
+        return
+      }
+      transfer.hash.update(Buffer.from(payload, 'base64'))
+      if (continuation === '0') {
+        const payloadHash = transfer.hash.digest('hex')
+        this.kittyUploads.set(transfer.id, { payloadHash, width: transfer.width, height: transfer.height })
+        this.kittyTransfer = null
+      }
+      return
+    }
+
+    if (action === 'p') {
+      if (id === undefined) {
+        this.unsupported('apc:kitty-place')
+        return
+      }
+      const upload = this.kittyUploads.get(id)
+      if (upload === undefined) {
+        this.unsupported('apc:kitty-place-before-upload')
+        return
+      }
+      const placementId = keys.get('p')
+      this.placeKittyImage(
+        id,
+        placementId,
+        Number.parseInt(keys.get('c') ?? String(upload.width), 10) || upload.width,
+        Number.parseInt(keys.get('r') ?? String(upload.height), 10) || upload.height,
+        upload.payloadHash,
+      )
+      return
+    }
+    this.unsupported('apc:kitty-action')
+  }
+
+  private placeKittyImage(
+    id: string,
+    placementId: string | undefined,
+    width: number,
+    height: number,
+    payloadHash: string,
+  ): void {
     this.imageCounter += 1
+    const imageId = placementId === undefined ? `kitty-i${id}` : `kitty-p${placementId}`
+    this.kittyImageOwners.set(imageId, id)
     this.images.push({
-      imageId: id === undefined ? `kitty-${this.imageCounter}` : `kitty-i${id}`,
+      imageId,
       protocol: 'kitty',
       x: this.cursorX,
       y: this.cursorY,
-      width: Number.parseInt(keys.get('c') ?? '0', 10) || 0,
-      height: Number.parseInt(keys.get('r') ?? '0', 10) || 0,
-      payloadHash: sha256Hex(payload),
+      width,
+      height,
+      payloadHash,
     })
   }
 
@@ -962,6 +1071,7 @@ export class VirtualTerminal {
     const payload = colon < 0 ? '' : spec.slice(colon + 1)
     let width = 0
     let height = 0
+    let imageName = ''
     for (const pair of keyText.split(';')) {
       const eq = pair.indexOf('=')
       if (eq <= 0) continue
@@ -970,16 +1080,19 @@ export class VirtualTerminal {
       const cells = Number.parseInt(value, 10)
       if (key === 'width' && Number.isFinite(cells) && !value.endsWith('px')) width = cells
       if (key === 'height' && Number.isFinite(cells) && !value.endsWith('px')) height = cells
+      if (key === 'name') {
+        try { imageName = Buffer.from(value, 'base64').toString('utf8') } catch { imageName = '' }
+      }
     }
     this.imageCounter += 1
     this.images.push({
-      imageId: `iterm2-${this.imageCounter}`,
+      imageId: imageName === '' ? `iterm2-${this.imageCounter}` : imageName,
       protocol: 'iterm2',
       x: this.cursorX,
       y: this.cursorY,
       width,
       height,
-      payloadHash: sha256Hex(payload),
+      payloadHash: imagePayloadHash(payload),
     })
   }
 

@@ -18,10 +18,10 @@
  *   `encodePatchOperationsSync`, so the bytes the writer validates against
  *   are identical to what it will encode.
  *
- * Scope cut (documented in pi-terminal-method-matrix.md): frames carrying
- * `images` placements are rejected — image bytes reach the terminal through
- * the pi compat write path (declared kitty/iTerm2 markers), not through
- * backend patches, until the ImageStore plumbing lands.
+ * The legacy pi compatibility planner deliberately does not own an
+ * ImageStore. Frame image metadata is rejected explicitly; the v2 fullscreen
+ * planner/writer is the only path that can emit confirmed image protocols, and
+ * the inline backend reports an explicit fallback instead of pretending parity.
  */
 
 import type { Frame, PatchOperation, TerminalCell, TerminalModeSnapshot, TerminalPatch } from '../renderer/frame.js'
@@ -77,11 +77,7 @@ function validateFrame(frame: Frame): void {
   if (!Array.isArray(frame.cells) || frame.cells.length < frame.stride * frame.height) {
     throw new TypeError('frame.cells must cover stride * height')
   }
-  if (frame.images.length > 0) {
-    throw new RangeError(
-      'pi screen backends do not route frame images yet: image bytes flow through the pi compat write path (declared kitty/iTerm2 markers)',
-    )
-  }
+  if (!Array.isArray(frame.images)) throw new TypeError('frame.images must be an array')
 }
 
 /**
@@ -91,6 +87,9 @@ function validateFrame(frame: Frame): void {
 export function planScreenPatch(previous: Frame | null, next: Frame, patchSeq: number): TerminalPatch {
   validateFrame(next)
   if (previous !== null) validateFrame(previous)
+  if (next.images.length > 0 || (previous?.images.length ?? 0) > 0) {
+    throw new RangeError('legacy pi screen planner does not support Frame.images; use FullscreenBackend')
+  }
 
   const full =
     previous === null ||

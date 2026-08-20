@@ -49,8 +49,9 @@
  * change and never on the first frame; `patch.bytes` computed with the
  * writer's fixed encoder.
  *
- * Frames carrying `images` placements are rejected (RangeError) — inline has
- * no image protocol path yet (same scope cut as the fullscreen backend).
+ * Frames carrying `images` placements take the explicit unsupported-image
+ * fallback path — inline never emits fullscreen image protocol bytes or claims
+ * image parity.  Append-only/live-region semantics remain unchanged.
  *
  * Known, documented limitation (support matrix + §15.1): scrollback receives
  * SETTLED lines only. While one streaming row is taller than the transcript
@@ -64,6 +65,8 @@ import {
   cursorOperation,
   decidePatchShape,
 } from '../renderer/diff-planner.js'
+import { unknownConservativeDefaults, type TerminalProfile } from './profile.js'
+import { planImageOperations, type UnsupportedImageDiagnostic } from '../renderer/image-placement.js'
 import type {
   Frame,
   PatchOperation,
@@ -88,11 +91,7 @@ function validateFrame(frame: Frame): void {
   if (!Array.isArray(frame.cells) || frame.cells.length < frame.stride * frame.height) {
     throw new TypeError('frame.cells must cover stride * height')
   }
-  if (frame.images.length > 0) {
-    throw new RangeError(
-      'inline backend does not route frame images yet: image bytes flow through the pi compat write path (declared kitty/iTerm2 markers)',
-    )
-  }
+  if (!Array.isArray(frame.images)) throw new TypeError('frame.images must be an array')
 }
 
 // ---------------------------------------------------------------------------
@@ -343,16 +342,28 @@ export interface InlineScreenBackend extends ScreenBackend {
   planExitPark(generation: number): TerminalPatch | null
 }
 
+export interface InlineBackendOptions {
+  readonly profile?: TerminalProfile
+  readonly onDiagnostic?: (diagnostic: UnsupportedImageDiagnostic) => void
+}
+
 export class InlineBackend implements InlineScreenBackend {
   readonly mode = 'inline' as const
   readonly capabilities: ScreenBackendCapabilities = INLINE_CAPABILITIES
 
+  private readonly profile: TerminalProfile | undefined
+  private readonly onDiagnostic: ((diagnostic: UnsupportedImageDiagnostic) => void) | undefined
   private started = false
   private activeGeneration: number | null = null
   private plannedGeneration = -1
   private patchSeq = 0
   private lastPlanned: { readonly height: number; readonly stateRevision: number; readonly generation: number } | null =
     null
+
+  constructor(options: InlineBackendOptions = {}) {
+    this.profile = options.profile
+    this.onDiagnostic = options.onDiagnostic
+  }
 
   /**
    * Generation gate only — inline mode never enters the alternate screen, so
@@ -411,6 +422,17 @@ export class InlineBackend implements InlineScreenBackend {
     // Mode transition (never on the first frame: the lifecycle owns it).
     if (previous !== null) {
       operations.push(...changedModeOperations(previous, next))
+    }
+
+    // Inline deliberately keeps the append-only cell recipe and reports an
+    // unsupported image instead of emitting fullscreen protocol bytes.
+    if (next.images.length > 0 || (previous?.images.length ?? 0) > 0) {
+      operations.push(...planImageOperations(previous, next, {
+        profile: this.profile ?? unknownConservativeDefaults(),
+        inline: true,
+        forceFull: shape.fullRedraw,
+        onDiagnostic: this.onDiagnostic,
+      }))
     }
 
     const { bytes } = encodePatchOperationsSync(operations)

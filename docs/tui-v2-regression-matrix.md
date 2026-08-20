@@ -19,7 +19,7 @@
 - disposition：`rewrite-v2`（旧入口删除，v2 fixture 替代）/ `remove` / `offline-baseline` /
   `unaffected`（不触及被迁移的渲染/插件面，原样保留并由 CI 持续证明；扩展原因见计划文档 15.1）。
 - status：`rewrite-v2` 行从 `open` 起步；`unaffected` 行当前 CI 已通过，记 `verified`。
-- 当前分布：severity {"P2":53,"P1":44,"P0":7}；disposition {"unaffected":53,"rewrite-v2":51}。
+- 当前分布：severity {"P2":53,"P1":44,"P0":7}；disposition {"unaffected":52,"rewrite-v2":52}。
 
 ## 机器可读矩阵
 
@@ -441,13 +441,13 @@
       "severity": "P2",
       "owner": "tui-v2",
       "status": "verified",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
-      "traceId": "clipboard-image-attachment@v1",
-      "assertion": "domain: 剪贴板位图占位符与图片 @ 引用进附件库",
-      "ciCommand": "node --import tsx/esm scripts/verify-clipboard-image.ts",
+      "updatedAt": "2026-08-20T17:55:50.000Z",
+      "traceId": "image-fallback@v1",
+      "assertion": "domain seam: 既有 Ctrl+V clipboard image/@ 引用回归保持通过；v2 ImageStore 32 MiB/128 entries、hash-only metadata、Kitty/iTerm2 writer 与 inline/null/sixel fallback 有定向覆盖",
+      "ciCommand": "node --import tsx/esm scripts/verify-clipboard-image.ts；node --import tsx/esm --test test/tui-v2/image-adapter-boundary.test.ts test/tui-v2/image-store.test.ts test/tui-v2/image-placement.test.ts test/tui-v2/image-writer.test.ts",
       "blockDefault": false,
-      "deleteCondition": "该回归不触及被迁移的渲染/插件面，原样保留；最终 gate 要求 ciCommand 在最终树仍通过；仅在入口本身被移除时删除本行",
-      "disposition": "unaffected"
+      "deleteCondition": "旧 clipboard seam 与 image-fallback@v1 及 v2 image tests 均保留并通过；WP-09 删除旧入口时同步删除旧脚本行，并保留 v2 image coverage 行",
+      "disposition": "rewrite-v2"
     },
     {
       "id": "REG-033",

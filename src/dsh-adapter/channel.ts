@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { assembleContextFor, installModelSelection, type Agent, type AgentHandle, type AgentStatus, type CreateAgentOptions, type ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import { isUserInvocable, renderSkillContent, type SkillSummary } from '@deepseek-ai/dsh-skill'
@@ -170,6 +170,40 @@ export interface StagedImageInput {
   data: Uint8Array
   mediaType: ChannelImageMediaType
   name?: string
+}
+
+/**
+ * Safe process-local projection of a staged image.  It intentionally contains
+ * no bytes; v2 components may use it for a placeholder/Frame image metadata
+ * seam while model events continue to carry only the token/attachment ref.
+ */
+export interface StagedImageMetadata {
+  readonly token: string
+  readonly payloadHash: string
+  readonly mediaType: ChannelImageMediaType
+  readonly bytes: number
+  readonly width?: number
+  readonly height?: number
+  readonly name?: string
+}
+
+/** Hash-only projection helper shared by the live Channel and regression test. */
+export function projectStagedImageMetadata(
+  token: string,
+  input: StagedImageInput,
+  attachment: ChannelImageBlock['attachment'],
+): StagedImageMetadata {
+  if (typeof token !== 'string' || token === '') throw new TypeError('staged image token must be non-empty')
+  const payloadHash = createHash('sha256').update(input.data).digest('hex')
+  return {
+    token,
+    payloadHash,
+    mediaType: input.mediaType,
+    bytes: attachment.bytes,
+    ...(typeof attachment.width === 'number' ? { width: attachment.width } : {}),
+    ...(typeof attachment.height === 'number' ? { height: attachment.height } : {}),
+    ...(typeof attachment.name === 'string' ? { name: attachment.name } : {}),
+  }
 }
 
 /** Tool-call card state, mirroring the Claude Code tool-use presentation. */
@@ -530,6 +564,8 @@ export interface Channel {
   subscribe: (listener: () => void) => () => void
   /** Validate and persist a pasted image, returning its prompt placeholder. */
   stageImage(input: StagedImageInput): Promise<string>
+  /** Hash/metadata-only projection; never returns the staged bytes. */
+  stagedImageMetadata(token: string): StagedImageMetadata | undefined
   submit(text: string): void
   /**
    * Steer a message into the running turn (Codex/pi semantics): injected at
@@ -818,6 +854,7 @@ export interface ChannelState {
   }
   subscribe: (listener: () => void) => () => void
   stageImage(input: StagedImageInput): Promise<string>
+  stagedImageMetadata(token: string): StagedImageMetadata | undefined
   /** @internal event bump (the public `notify(text)` posts a notification). */
   emit(): void
   /** @internal frame-aligned emit for high-frequency streaming deltas:
@@ -1326,8 +1363,10 @@ export function createChannel(
   let sendChain: Promise<void> = Promise.resolve()
   let stagedImageSequence = 0
   const stagedImages = new Map<string, ChannelImageBlock['attachment']>()
+  const stagedImageMetadata = new Map<string, StagedImageMetadata>()
   const clearStagedImages = (): void => {
     stagedImages.clear()
+    stagedImageMetadata.clear()
     stagedImageSequence = 0
   }
   /**
@@ -1949,14 +1988,20 @@ export function createChannel(
       stagedImageSequence += 1
       const token = `[Image #${stagedImageSequence}]`
       stagedImages.set(token, attachment)
-      // References are content-addressed and durable. This map only connects
-      // editable prompt placeholders to them; cap it to bound a long TUI run.
+      stagedImageMetadata.set(token, projectStagedImageMetadata(token, input, attachment))
+      // References are content-addressed and durable. These maps only connect
+      // editable prompt placeholders to them; cap them to bound a long TUI run.
       while (stagedImages.size > 128) {
         const oldest = stagedImages.keys().next().value as string | undefined
         if (oldest === undefined) break
         stagedImages.delete(oldest)
+        stagedImageMetadata.delete(oldest)
       }
       return token
+    },
+    stagedImageMetadata(token: string) {
+      const metadata = stagedImageMetadata.get(token)
+      return metadata === undefined ? undefined : { ...metadata }
     },
     submit(text) {
       const trimmed = text.trim()

@@ -131,11 +131,21 @@ export interface FrameImagePlacement {
 }
 
 export interface ImageStore {
-  put(payloadHash: string, bytes: Uint8Array, protocol: 'kitty' | 'iterm2'): Promise<{ storeKey: string; bytes: number }>
+  /** The optional generation argument is a process-local retention seam. */
+  put(payloadHash: string, bytes: Uint8Array, protocol: 'kitty' | 'iterm2', generation?: number): Promise<{ storeKey: string; bytes: number }>
   get(storeKey: string): Promise<Uint8Array | null>
   release(storeKey: string): void
   clearGeneration(generation: number): void
   stats(): { entries: number; bytes: number; maxBytes: number }
+  /** Optional capabilities implemented by the native bounded store. */
+  retain?(storeKey: string, generation: number): void
+  releaseReference?(storeKey: string, generation: number): void
+  /** Atomically replace one generation's complete reference set. */
+  setGenerationReferences?(generation: number, storeKeys: readonly string[]): void
+  releaseGeneration?(generation: number): void
+  clear?(): void
+  getSync?(storeKey: string): Uint8Array | null
+  metadata?(storeKey: string): { storeKey: string; payloadHash: string; protocol: 'kitty' | 'iterm2'; bytes: number } | null
 }
 
 export type PatchOperation =

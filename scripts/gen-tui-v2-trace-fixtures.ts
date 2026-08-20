@@ -161,10 +161,29 @@ const traces: Record<string, TraceSpec> = {}
  * structural discriminants. Every other payload keeps the default hash
  * redaction; existing traces do not opt in, so their bytes remain unchanged.
  */
-const COMPONENT_TRACE_LITERALS = new Set(['markdown', 'text', 'diff', 'terminal'])
+const COMPONENT_TRACE_LITERALS = new Set([
+  'markdown', 'text', 'diff', 'terminal', 'image-fallback', 'kitty', 'iterm2',
+  'unknown', 'sixel', 'supported', 'fallback', 'profile-mismatch',
+  'unsupported-profile', 'sixel-unsupported', 'unsupported-image',
+])
 const COMPONENT_TRACE_REDACTION: RedactionPolicy = {
   redactPayload: (text) =>
     text.startsWith('[placeholder]') || COMPONENT_TRACE_LITERALS.has(text)
+      ? undefined
+      : DEFAULT_REDACTION_POLICY.redactPayload?.(text),
+  redactCredential: DEFAULT_REDACTION_POLICY.redactCredential,
+  redactOsc: DEFAULT_REDACTION_POLICY.redactOsc,
+}
+
+const IMAGE_TRACE_LITERALS = new Set([
+  ...COMPONENT_TRACE_LITERALS,
+  'kitty-preview', 'iterm-preview', 'unknown-preview', 'sixel-preview',
+  '[Image unavailable: unsupported-profile 333333333333]',
+  '1'.repeat(64), '2'.repeat(64), '3'.repeat(64), '4'.repeat(64),
+])
+const IMAGE_TRACE_REDACTION: RedactionPolicy = {
+  redactPayload: (text) =>
+    text.startsWith('[placeholder]') || IMAGE_TRACE_LITERALS.has(text)
       ? undefined
       : DEFAULT_REDACTION_POLICY.redactPayload?.(text),
   redactCredential: DEFAULT_REDACTION_POLICY.redactCredential,
@@ -1524,6 +1543,45 @@ traces['trajectory-goal-activity-context@v1'] = {
       event(fx, 'session', { type: 'surface/update', surface: surface(2, 'blocked', 'thinking') }),
       event(fx, 'session', { type: 'surface/update', surface: surface(3, 'complete', 'done') }),
       event(fx, 'plugin', { type: 'scene/close', sceneId: 'trajectory', reason: 'user' }),
+    ]
+  },
+}
+
+// --- WP-08e2 image capability/fallback --------------------------------------
+traces['image-fallback@v1'] = {
+  terminalProfile: 'kitty-sync',
+  redactionPolicy: IMAGE_TRACE_REDACTION,
+  build: (fx) => {
+    const kittyHash = '1'.repeat(64)
+    const itermHash = '2'.repeat(64)
+    const unknownHash = '3'.repeat(64)
+    return [
+      resetEvent(fx, 'new-session', [], 'reset-image-fallback-1'),
+      event(fx, 'session', {
+        type: 'session/row-upsert',
+        row: makeRow(fx, {
+          source: 'local', sourceId: 'image-fallback', kind: 'notice',
+          blocks: [{
+            type: 'image-fallback', version: 1,
+            images: [
+              { imageId: 'kitty-preview', protocol: 'kitty', payloadHash: kittyHash, x: 2, y: 1, width: 8, height: 4, status: 'supported' },
+              { imageId: 'iterm-preview', protocol: 'iterm2', payloadHash: itermHash, x: 0, y: 0, width: 6, height: 3, status: 'fallback', reason: 'profile-mismatch' },
+              { imageId: 'unknown-preview', protocol: 'unknown', payloadHash: unknownHash, x: 0, y: 0, width: 4, height: 2, status: 'fallback', reason: 'unsupported-profile' },
+              { imageId: 'sixel-preview', protocol: 'sixel', payloadHash: '4'.repeat(64), x: 0, y: 0, width: 4, height: 2, status: 'fallback', reason: 'sixel-unsupported' },
+            ],
+            placeholder: '[Image unavailable: unsupported-profile 333333333333]',
+          }],
+        }),
+      }),
+      event(fx, 'app', {
+        type: 'app/error',
+        error: {
+          code: 'unsupported-image',
+          message: '[placeholder] image fallback recorded',
+          recoverable: true,
+          details: { protocol: 'sixel', payloadHash: '4'.repeat(64), bytes: 0 },
+        },
+      }),
     ]
   },
 }

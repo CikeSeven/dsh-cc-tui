@@ -391,10 +391,11 @@ test('pi fork integration: backend plan() builds conservative patches with gener
   const third = main.plan(makeFrame('abcd', 5), makeFrame('abcd', 5, true))
   assert.equal(third.fullRedraw, true)
 
-  // Stale frame generation is rejected; images are out of the backend scope.
+  // Stale frame generation is rejected. The legacy pi planner also rejects
+  // image metadata explicitly; only the v2 fullscreen backend owns the store.
   assert.throws(() => main.plan(null, makeFrame('abcd', 4)), RangeError)
   const withImage = { ...makeFrame('abcd', 5), images: [{ imageId: 'i', protocol: 'kitty' as const, x: 0, y: 0, width: 1, height: 1, payloadHash: 'h', storeKey: 'k' }] }
-  assert.throws(() => main.plan(null, withImage), RangeError)
+  assert.throws(() => main.plan(null, withImage), /does not support Frame.images/)
 
   await settleStop(rig.clock, main.stop(5))
 })

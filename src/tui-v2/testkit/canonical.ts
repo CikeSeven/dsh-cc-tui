@@ -22,6 +22,7 @@ import type {
   StyleDescriptor,
   TerminalModeSnapshot,
 } from '../renderer/frame.js'
+import { canonicalImageId } from '../terminal/image-protocol.js'
 
 export type CanonicalStyle = Omit<StyleDescriptor, 'id'>
 export type CanonicalHyperlink = Omit<HyperlinkDescriptor, 'id'>
@@ -141,7 +142,7 @@ export function canonicalizeFrame(frame: Frame): CanonicalGridV1 {
   })
 
   const images: CanonicalImagePlacement[] = frame.images.map((image) => ({
-    imageId: image.imageId,
+    imageId: canonicalImageId(image.protocol, image.imageId),
     protocol: image.protocol,
     x: image.x,
     y: image.y,
