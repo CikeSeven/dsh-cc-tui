@@ -221,3 +221,134 @@ test('components: tool row width contract (0/1/2/5/40, CJK tool output)', () => 
     else assertWidthContract(lines, width)
   }
 })
+
+// ---------------------------------------------------------------------------
+// tool card (WP-06c): callView/resultView card bodies
+// ---------------------------------------------------------------------------
+
+test('components: tool card renders a diff result through the diff line component', () => {
+  const component = createToolRow(
+    view([{ type: 'text', text: 'Edit /tmp/a.ts' }], {
+      tool: tool('result', {
+        resultView: {
+          card: 'diff',
+          diffs: [
+            { path: 'a.ts', oldText: 'const x = 1', newText: 'const x = 2\nconst y = 3' },
+            { path: 'b.ts', oldText: null, newText: 'created' },
+          ],
+        } as never,
+      }),
+    }),
+    PROFILE,
+  )
+  const lines = component.render(40)
+  const texts = lines.map((l) => visible(l))
+  assert.ok(texts[0]?.startsWith('● Edit /tmp/a.ts'), 'header unchanged')
+  // Multi-file: ---/+++ headers per file, dim; -/+ lines colored.
+  assert.ok((texts[1] as string).startsWith(' ⎿ --- a/a.ts'), 'first body line carries the gutter')
+  assert.ok(texts.some((t) => t.includes('+++ b/b.ts')), 'per-file headers for multi-file diffs')
+  const del = lines.find((l) => visible(l).includes('- const x = 1')) as string
+  const add = lines.find((l) => visible(l).includes('+ const x = 2')) as string
+  assert.ok(del.includes('\x1b[0;31m'), 'deletion red')
+  assert.ok(add.includes('\x1b[0;32m'), 'addition green')
+  assert.ok(visible(del).startsWith('   '), 'continuation body lines use the blank gutter')
+  // New file (oldText null) contributes additions only.
+  assert.ok(texts.some((t) => t.includes('+ created')))
+  assert.ok(!texts.some((t) => t.includes('- created')))
+})
+
+test('components: tool card diff body caps at 8 lines with a fold hint', () => {
+  const component = createToolRow(
+    view([{ type: 'text', text: 'Edit big.ts' }], {
+      tool: tool('result', {
+        resultView: {
+          card: 'diff',
+          diffs: [{ path: 'big.ts', oldText: 'a\nb\nc\nd\ne', newText: '1\n2\n3\n4\n5\n6\n7' }],
+        } as never,
+      }),
+    }),
+    PROFILE,
+  )
+  const lines = component.render(40)
+  // 12 diff body lines -> 8 shown + 1 hint (+ header).
+  assert.equal(lines.length, 1 + 8 + 1)
+  assert.ok(visible(lines[lines.length - 1] as string).includes('… +4 lines'))
+})
+
+test('components: tool card falls back to callView when no resultView exists', () => {
+  const component = createToolRow(
+    view([{ type: 'text', text: 'Bash(npm test)' }], {
+      tool: tool('result', {
+        callView: { card: 'terminal', title: 'npm test', output: 'ok\nok2' } as never,
+      }),
+    }),
+    PROFILE,
+  )
+  const lines = component.render(40)
+  assert.ok(lines.slice(1).some((l) => visible(l).includes('ok2')), 'callView body rendered')
+})
+
+test('components: tool card terminal result shows exit-code and signal lines', () => {
+  const component = createToolRow(
+    view([{ type: 'text', text: 'Bash(make)' }], {
+      tool: tool('result', {
+        resultView: { card: 'terminal', output: 'boom', exitCode: 2, signal: 'SIGKILL' } as never,
+      }),
+    }),
+    PROFILE,
+  )
+  const texts = component.render(60).map((l) => visible(l))
+  assert.ok(texts.some((t) => t.includes('Exit code 2')))
+  assert.ok(texts.some((t) => t.includes('Killed by signal SIGKILL')))
+})
+
+test('components: tool card header falls back to the view title without a summary block', () => {
+  const component = createToolRow(
+    view([], {
+      tool: tool('result', { resultView: { card: 'generic', title: 'WebSearch: dsh tui' } as never }),
+    }),
+    PROFILE,
+  )
+  const lines = component.render(60)
+  assert.ok(visible(lines[0] as string).startsWith('● WebSearch: dsh tui'))
+})
+
+test('components: tool card search results render paths and match lines', () => {
+  const component = createToolRow(
+    view([{ type: 'text', text: 'Grep(foo)' }], {
+      tool: tool('result', {
+        resultView: {
+          card: 'search',
+          shape: 'matches',
+          files: [{ path: 'src/a.ts', matches: [{ lineNumber: 12, line: 'const foo = 1' }] }],
+          truncated: true,
+          total: 42,
+        } as never,
+      }),
+    }),
+    PROFILE,
+  )
+  const texts = component.render(60).map((l) => visible(l))
+  assert.ok(texts.some((t) => t.includes('src/a.ts')))
+  assert.ok(texts.some((t) => t.includes('12: const foo = 1')))
+  assert.ok(texts.some((t) => t.includes('… (42 total)')))
+})
+
+test('components: tool card diff width contract (0/1/2/5/40, CJK diff)', () => {
+  const component = createToolRow(
+    view([{ type: 'text', text: 'Edit 配置.ts' }], {
+      tool: tool('result', {
+        resultView: {
+          card: 'diff',
+          diffs: [{ path: '配置.ts', oldText: '旧值 = 1', newText: '新值 = 2 // 非常非常长的注释非常非常长的注释' }],
+        } as never,
+      }),
+    }),
+    PROFILE,
+  )
+  for (const width of WIDTHS) {
+    const lines = component.render(width)
+    if (width === 0) assert.deepEqual(lines, [])
+    else assertWidthContract(lines, width)
+  }
+})

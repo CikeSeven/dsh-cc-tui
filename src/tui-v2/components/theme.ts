@@ -25,6 +25,8 @@ export interface ComponentTheme {
     readonly warning: LineStyle
     /** Inline code / fenced code blocks. */
     readonly code: LineStyle
+    /** Hyperlink text (underline + OSC 8 when the profile allows, §6.1). */
+    readonly link: LineStyle
     /** Tool display name in card headers. */
     readonly toolName: LineStyle
   }
@@ -40,6 +42,8 @@ export const DEFAULT_COMPONENT_THEME: ComponentTheme = Object.freeze({
     success: lineStyle({ foreground: 'green' }),
     warning: lineStyle({ foreground: 'yellow' }),
     code: lineStyle({ foreground: 'yellow' }),
+    // WP-06a 15.1 note: component-emitted link text must carry SGR 4 itself.
+    link: lineStyle({ foreground: 'cyan', underline: true }),
     toolName: lineStyle({ bold: true }),
   },
 })

@@ -20,7 +20,15 @@
  *  - Scroll anchor `{ sessionEpoch, rowId, intraRowOffset }`: follow-end
  *    moves only the tail; off-bottom viewports never jump on new rows (the
  *    unseen indicator counts them); prepend restore; unrecoverable anchors
- *    fall back to an explicit top/bottom policy with a diagnostic counter.
+ *    (row eviction, resize that emptied the index, session-epoch reset) fall
+ *    back to the explicit `anchorFallback` top/bottom policy and increment
+ *    the `anchorFallbacks` diagnostic counter (WP-06c: epoch resets with a
+ *    live anchor now record the fallback instead of silently bottoming out).
+ *  - When the provided row window exceeds MAX_MEASURED_ROWS the measured
+ *    slice is tail-biased by default (follow-end), but centers on a live
+ *    off-bottom anchor so anchor restore stays possible inside oversized
+ *    windows; rows outside the slice page in via `loadOlderRange`, never by
+ *    copying the full transcript into the frame (§6.2).
  *  - Every emitted line passes `assertLineWidth` (§3.3 I-06).
  *
  * Overscan (§6.2): `overscanRows(viewportHeight) = max(2*viewportHeight, 64)`
@@ -299,6 +307,10 @@ export function createBaseRenderer(options: BaseRendererOptions): BaseRenderer {
   let lastEpoch = ''
   let anchorFallbacks = 0
   let forceFullRedraw = true
+  /** Set when an epoch reset dropped a live anchor; consumed by the next scroll computation. */
+  let pendingAnchorFallback = false
+  /** Transcript region height of the last render; the loadOlder page-size basis (§6.2 overscan). */
+  let lastTranscriptHeight = 0
 
   const profile = options.profile
 
@@ -376,7 +388,11 @@ export function createBaseRenderer(options: BaseRendererOptions): BaseRenderer {
     },
 
     loadOlderRange(view) {
-      const count = Math.min(view.windowStart, overscanRows(view.visibleRows.length))
+      // §6.2 overscan is viewport-keyed: max(2 * transcriptViewportHeight, 64).
+      // Before the first render (or after a degenerate one) fall back to the
+      // provided window length so the page size stays deterministic.
+      const basis = lastTranscriptHeight > 0 ? lastTranscriptHeight : view.visibleRows.length
+      const count = Math.min(view.windowStart, overscanRows(basis))
       return { start: Math.max(0, view.windowStart - count), count }
     },
 
@@ -385,15 +401,26 @@ export function createBaseRenderer(options: BaseRendererOptions): BaseRenderer {
       const fullRedraw = forceFullRedraw
       forceFullRedraw = false
       if (input.sessionEpoch !== lastEpoch) {
-        // Epoch change: every old row identity is unreachable (§5.3).
+        // Epoch change: every old row identity is unreachable (§5.3). A live
+        // anchor cannot survive it — when the viewport is off-bottom (the
+        // anchor was driving the scroll) fall back to the explicit top/bottom
+        // policy on this very render and record the diagnostic (§6.2). In
+        // sticky follow-end mode the anchor was inactive: drop it silently.
         componentPool.clear()
         renderCache.clear()
         heightCache.clear()
-        anchor = null
+        if (anchor !== null) {
+          anchor = null
+          if (!input.sticky) {
+            anchorFallbacks += 1
+            pendingAnchorFallback = true
+          }
+        }
         lastEpoch = input.sessionEpoch
       }
       if (width <= 0 || height <= 0) {
         heightIndex = buildHeightIndex([])
+        lastTranscriptHeight = 0
         return {
           lines: [],
           diagnostics: {
@@ -435,11 +462,28 @@ export function createBaseRenderer(options: BaseRendererOptions): BaseRenderer {
       if (dockLines.length > height) dockLines = dockLines.slice(dockLines.length - height)
       const dockHeight = dockLines.length
       const transcriptHeight = Math.max(0, height - dockHeight)
+      lastTranscriptHeight = transcriptHeight
 
       // ---- transcript rows (measurement bounded by §6.2 caps) --------------
       const allRows = input.transcript.visibleRows
       let rows = allRows
-      if (rows.length > MAX_MEASURED_ROWS) rows = rows.slice(rows.length - MAX_MEASURED_ROWS)
+      if (rows.length > MAX_MEASURED_ROWS) {
+        // Tail-biased by default (follow-end renders the newest rows); with a
+        // live off-bottom anchor center the measured slice on the anchor row
+        // so an oversized provided window cannot make it unrecoverable. Rows
+        // outside the slice stay pageable through loadOlderRange (§6.2).
+        let sliceStart = rows.length - MAX_MEASURED_ROWS
+        if (!input.sticky && anchor !== null && anchor.sessionEpoch === input.sessionEpoch) {
+          const anchorIndex = rows.findIndex((candidate) => candidate.rowId === anchor?.rowId)
+          if (anchorIndex >= 0) {
+            sliceStart = Math.min(
+              Math.max(0, anchorIndex - (MAX_MEASURED_ROWS >> 1)),
+              rows.length - MAX_MEASURED_ROWS,
+            )
+          }
+        }
+        rows = rows.slice(sliceStart, sliceStart + MAX_MEASURED_ROWS)
+      }
       const entries: HeightIndexEntry[] = []
       const renderedBlocks: Array<readonly string[]> = []
       let measuredCells = 0
@@ -463,13 +507,15 @@ export function createBaseRenderer(options: BaseRendererOptions): BaseRenderer {
       const contentHeight = heightIndex.totalHeight
       const maxScroll = Math.max(0, contentHeight - transcriptHeight)
       let scrollTopLine: number
-      if (input.sticky || anchor === null) {
-        scrollTopLine = maxScroll
-      } else if (anchor.sessionEpoch !== input.sessionEpoch) {
-        anchorFallbacks += 1
+      if (pendingAnchorFallback) {
+        // The epoch reset above dropped a live anchor: explicit policy (§6.2).
+        pendingAnchorFallback = false
         scrollTopLine = anchorFallback === 'top' ? 0 : maxScroll
-        anchor = null
+      } else if (input.sticky || anchor === null) {
+        scrollTopLine = maxScroll
       } else {
+        // Invariant: a live anchor always carries the current epoch (the
+        // epoch-reset branch above clears it otherwise).
         const base = heightIndex.offsetOf(anchor.rowId)
         if (base === undefined) {
           // Row evicted from the measured window: explicit fallback + diagnostic.

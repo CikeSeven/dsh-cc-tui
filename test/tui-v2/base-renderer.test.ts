@@ -268,6 +268,21 @@ test('base-renderer: applyEnvironmentChange clears caches and forces full redraw
   assert.equal(out2.diagnostics.fullRedraw, false)
 })
 
+test('base-renderer: theme/profile transactions clear the row caches too', () => {
+  for (const changes of [{ themeChanged: true }, { profileChanged: true }]) {
+    const calls: string[] = []
+    const renderer = makeRenderer({ registry: echoRegistry(calls) })
+    const rows = [row('a', 'hello')]
+    renderer.render(renderInput(rows, 20, 10))
+    renderer.render(renderInput(rows, 20, 10))
+    assert.equal(calls.length, 1, 'cache hit before the transaction')
+    renderer.applyEnvironmentChange(changes)
+    const out = renderer.render(renderInput(rows, 20, 10))
+    assert.equal(calls.length, 2, `re-render after ${JSON.stringify(changes)}`)
+    assert.equal(out.diagnostics.fullRedraw, true)
+  }
+})
+
 // ---------------------------------------------------------------------------
 // scroll anchor (§6.2)
 // ---------------------------------------------------------------------------
@@ -348,6 +363,76 @@ test('base-renderer: epoch change resets anchor and caches', () => {
   assert.equal(renderer.anchor, null)
   assert.equal(calls.length, 2, 'row caches cleared on epoch change')
   assert.equal(out.diagnostics.measuredRows, 1)
+})
+
+test('base-renderer scroll: epoch reset with a live anchor records the fallback and applies the policy', () => {
+  const renderer = createBaseRenderer({
+    profile: PROFILE,
+    theme: 'default',
+    registry: echoRegistry(),
+    anchorFallback: 'top',
+    dock: {
+      editor: () => ({ render: () => ['ed'], invalidate() {} }),
+      status: () => ({ render: () => ['st'], invalidate() {} }),
+    },
+  })
+  const rows = Array.from({ length: 12 }, (_, i) => row(`r${i}`, `row-${i}`))
+  renderer.render(renderInput(rows, 20, 6, { sticky: false }))
+  renderer.captureAnchorAt(3) // anchor on row r3
+  assert.ok(renderer.anchor !== null)
+  // Epoch reset while off-bottom: the anchor is unrecoverable (§6.2) — one
+  // diagnostic, explicit 'top' policy on the same render.
+  const epoch2 = rows.map((r) => ({ ...r, sessionEpoch: 'epoch-2' }))
+  const out = renderer.render(renderInput(epoch2, 20, 6, { sessionEpoch: 'epoch-2', sticky: false }))
+  assert.equal(renderer.anchor, null)
+  assert.equal(out.diagnostics.anchorFallbacks, 1)
+  assert.equal(out.diagnostics.scrollTopLine, 0, "'top' policy pins the region top")
+  assert.equal(out.lines[0], 'row-0')
+  // Consumed: the next render is plain non-sticky (no anchor) => bottom.
+  const out2 = renderer.render(renderInput(epoch2, 20, 6, { sessionEpoch: 'epoch-2', sticky: false }))
+  assert.equal(out2.diagnostics.anchorFallbacks, 1, 'no repeated fallback')
+  // Sticky epoch resets drop the anchor silently (follow-end semantics win).
+  const stickyRenderer = makeRenderer()
+  stickyRenderer.render(renderInput(rows, 20, 6, { sticky: false }))
+  stickyRenderer.captureAnchorAt(3)
+  const epoch3 = rows.map((r) => ({ ...r, sessionEpoch: 'epoch-3' }))
+  const stickyOut = stickyRenderer.render(renderInput(epoch3, 20, 6, { sessionEpoch: 'epoch-3', sticky: true }))
+  assert.equal(stickyOut.diagnostics.anchorFallbacks, 0, 'sticky reset is follow-end, not a fallback')
+  assert.equal(stickyRenderer.anchor, null)
+})
+
+test('base-renderer scroll: oversized windows center measurement on a live anchor', () => {
+  const renderer = makeRenderer()
+  // One stable row list (rowIds must be identical across renders).
+  const many = Array.from({ length: 700 }, (_, i) => row(`r${i}`, `row-${i}`))
+  renderer.render(renderInput(many.slice(0, 100), 20, 6, { sticky: false }))
+  renderer.captureAnchorAt(10) // anchor on row r10
+  // The controller then hands over an oversized 700-row window (cap breach):
+  // tail-biasing would drop the anchor row; centering keeps it recoverable.
+  const out = renderer.render(renderInput(many, 20, 6, { sticky: false }))
+  assert.equal(out.diagnostics.measuredRows, MAX_MEASURED_ROWS)
+  assert.equal(out.diagnostics.unmeasuredRows, 700 - MAX_MEASURED_ROWS)
+  assert.equal(out.diagnostics.anchorFallbacks, 0, 'anchor row stayed measured')
+  assert.equal(out.diagnostics.scrollTopLine, 10, 'anchor restored inside the centered slice')
+  assert.equal(out.lines[0], 'row-10')
+  // Without an anchor the same oversized window is tail-biased (follow-end).
+  const tail = makeRenderer()
+  const tailOut = tail.render(renderInput(many, 20, 6))
+  assert.equal(tailOut.lines[3], 'row-699')
+})
+
+test('base-renderer scroll: loadOlderRange pages one viewport-overscan deep', () => {
+  const renderer = makeRenderer()
+  // Before any render the page size derives from the provided window length.
+  const cold = transcriptView([], { windowStart: 200, visibleRows: [] })
+  assert.deepEqual(renderer.loadOlderRange(cold), { start: 136, count: 64 })
+  // After a render with a 40-line transcript region: overscan = max(2*40, 64) = 80.
+  renderer.render(renderInput([row('a', 'x')], 20, 42))
+  const view = transcriptView([], { windowStart: 200, visibleRows: [] })
+  assert.deepEqual(renderer.loadOlderRange(view), { start: 120, count: 80 })
+  // Never crosses the transcript start.
+  const near = transcriptView([], { windowStart: 30, visibleRows: [] })
+  assert.deepEqual(renderer.loadOlderRange(near), { start: 0, count: 30 })
 })
 
 // ---------------------------------------------------------------------------
