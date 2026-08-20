@@ -34,11 +34,15 @@
  *    streaming controller re-sequences onto the contiguous outgoing order
  *    (cancel drops would otherwise gap the reducer's seq check).
  *  - WP-05 controllers: replay (session navigation/rewind/update-restart),
- *    commands (slash routing), scrolling (wheel/keys/loadOlder anchor). Input
- *    routing order: resize → lifecycle; mouse wheel → scrolling; scroll keys
- *    (pageUp/pageDown/ctrl+home/ctrl+end) → scrolling BEFORE the editor (the
- *    vendored editor's own pageScroll yields to transcript scrolling);
- *    everything else → input controller.
+ *    commands (slash routing), scrolling (wheel/keys/loadOlder anchor),
+ *    dialogs (WP-05b: approval/question/plugin-dialog overlay priority +
+ *    capture). Input routing order: resize → lifecycle; mouse wheel →
+ *    scrolling; WHILE `focus.target === 'overlay'` every key/paste goes to
+ *    the dialogs controller (the overlay owns the keyboard; legacy: Chat's
+ *    global handler early-returns while a dialog snapshot is pending);
+ *    otherwise scroll keys (pageUp/pageDown/ctrl+home/ctrl+end) → scrolling
+ *    BEFORE the editor (the vendored editor's own pageScroll yields to
+ *    transcript scrolling); everything else → input controller.
  */
 import { randomUUID } from 'node:crypto';
 import type { Writable } from 'node:stream';
@@ -113,6 +117,13 @@ import {
   type CommandChannel,
   type CommandsController,
 } from '../controllers/commands.js';
+import {
+  createDialogsController,
+  type ApprovalStoreLike,
+  type DialogsController,
+  type PluginDialogStoreLike,
+  type QuestionStoreLike,
+} from '../controllers/dialogs.js';
 import { linesToFrame } from './lines-frame.js';
 import { selectTerminalMode } from './modes.js';
 
@@ -153,6 +164,14 @@ export interface TuiV2CoordinatorOptions {
   /** Default true; tests disable to keep synthetic signal hosts inert. */
   readonly attachProcessHandlers?: boolean;
   readonly streamWindowMs?: number;
+  /**
+   * WP-05b dialog stores (approval/question/managed plugin dialog). Absent
+   * stores are simply never pending — the dialogs controller stays inert.
+   * Production wiring hands the plugin.ts instances in; tests hand fakes.
+   */
+  readonly approvalStore?: ApprovalStoreLike;
+  readonly questionStore?: QuestionStoreLike;
+  readonly pluginDialogStore?: PluginDialogStoreLike;
   readonly onDiagnostic?: (diagnostic: CoordinatorDiagnostic) => void;
 }
 
@@ -172,6 +191,7 @@ export interface CoordinatorDiagnostics {
   readonly replay: ReturnType<ReplayController['diagnostics']>;
   readonly scrolling: ReturnType<ScrollingController['diagnostics']>;
   readonly commands: ReturnType<CommandsController['diagnostics']>;
+  readonly dialogs: ReturnType<DialogsController['diagnostics']>;
 }
 
 /** WP-05 controller handles (tests/verify introspection). */
@@ -182,6 +202,7 @@ export interface CoordinatorControllers {
   readonly replay: ReplayController;
   readonly scrolling: ScrollingController;
   readonly commands: CommandsController;
+  readonly dialogs: DialogsController;
 }
 
 export interface TuiV2Coordinator {
@@ -506,6 +527,16 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     onDiagnostic: (d) => diagnostic(`scroll/${d.code}`, d.message),
   });
 
+  const dialogsController = createDialogsController({
+    dispatch: (event) => streamingController.ingest(event),
+    nextMeta: (sourceSeq) => meta.next('overlay', sourceSeq),
+    getState: () => state,
+    ...(options.approvalStore !== undefined ? { approvals: options.approvalStore } : {}),
+    ...(options.questionStore !== undefined ? { questions: options.questionStore } : {}),
+    ...(options.pluginDialogStore !== undefined ? { dialogs: options.pluginDialogStore } : {}),
+    onDiagnostic: (code, message) => diagnostic(`dialogs/${code}`, message),
+  });
+
   const inputController = createInputController({
     clock,
     dispatch: (event) => streamingController.ingest(event),
@@ -562,11 +593,23 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           }
         } else if (event.kind === 'key') {
           const payload = event.payload as KeyPayload;
+          // While an overlay holds focus it owns the keyboard entirely
+          // (WP-05b; legacy: Chat's global handler early-returns while a
+          // dialog snapshot is pending) — ctrl+c/escape included: the dialog
+          // maps them to its own cancel semantics.
+          if (state.focus.target === 'overlay') {
+            dialogsController.handleInput(event);
+            return;
+          }
           // Scroll keys are transcript-bound and preempt the editor (the
           // vendored editor's pageScroll yields); ctrl+c/escape stay with
           // the input controller.
           if (payload.eventType !== 'release' && scrollingController.handleKey(payload.key)) return;
           inputController.handleEvent(event);
+        } else if (event.kind === 'paste' && state.focus.target === 'overlay') {
+          // Only text-bearing dialogs (plugin input / optionless question)
+          // consume pastes; other dialogs count-and-drop them.
+          dialogsController.handleInput(event);
         } else {
           inputController.handleEvent(event);
         }
@@ -735,6 +778,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       if (options.attachProcessHandlers !== false) lifecycle.attachProcessHandlers();
       scheduler.start();
       adapter.start();
+      dialogsController.start();
       phase = 'active';
       scheduler.requestRender('sync', getScheduledState);
     } catch (error) {
@@ -752,6 +796,9 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     }
     phase = 'stopping';
     stopPromise = (async () => {
+      // Unsubscribe the dialog stores first: a teardown settleAll must not
+      // dispatch overlay/close into a streaming controller that is stopping.
+      dialogsController.dispose();
       scheduler.stop();
       streamingController.stop();
       adapter.stop();
@@ -790,6 +837,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       replay: replayController,
       scrolling: scrollingController,
       commands: commandsController,
+      dialogs: dialogsController,
     },
     diagnostics: () => ({
       phase,
@@ -807,6 +855,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       replay: replayController.diagnostics(),
       scrolling: scrollingController.diagnostics(),
       commands: commandsController.diagnostics(),
+      dialogs: dialogsController.diagnostics(),
     }),
   };
 }

@@ -20,6 +20,12 @@
  *                        validate and replay; every stored expected grid is
  *                        scanned for line-width violations and control-char
  *                        injection.
+ *   - controllers (WP-05): static guards — src/tui-v2/controllers/** never
+ *                        touch process.stdout/process.stderr/console;
+ *                        src/tui-v2/components/** never import dsh-adapter or
+ *                        cordis modules — plus a live/replay canonical-state
+ *                        equivalence run driven through the controller rig
+ *                        with dialog overlay open/navigate/settle/timeout.
  *
  * Every check writes an atomic JSON artifact
  *   { schemaVersion: 1, check, status, details, startedAt, durationMs,
@@ -799,6 +805,174 @@ async function checkSkeleton(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
+// controllers check (WP-05): static guards + live/replay canonical equivalence
+// ---------------------------------------------------------------------------
+
+async function checkControllers(): Promise<CheckResult> {
+  const errors: string[] = []
+  const details: Record<string, unknown> = {}
+
+  // (a) controllers never write to the terminal directly: no process.stdout /
+  //     process.stderr / console.* outside comment lines (the model is the
+  //     only output; §4.3/§5.2).
+  const controllersDir = path.join(repoRoot, 'src', 'tui-v2', 'controllers')
+  const controllerFiles = (await readdir(controllersDir)).filter((f) => f.endsWith('.ts')).sort()
+  const CONTROLLER_FORBIDDEN = /process\.stdout|process\.stderr|console\./
+  const stdoutHits: { file: string; line: number; text: string }[] = []
+  for (const file of controllerFiles) {
+    const source = await readFile(path.join(controllersDir, file), 'utf8')
+    source.split('\n').forEach((line, index) => {
+      const trimmed = line.trim()
+      if (trimmed.startsWith('//') || trimmed.startsWith('*')) return
+      if (CONTROLLER_FORBIDDEN.test(line)) {
+        stdoutHits.push({ file, line: index + 1, text: trimmed.slice(0, 120) })
+      }
+    })
+  }
+  for (const hit of stdoutHits) {
+    errors.push(`controllers guard: ${hit.file}:${hit.line} touches stdout/stderr/console: ${hit.text}`)
+  }
+  details.controllerGuard = { files: controllerFiles, hits: stdoutHits }
+
+  // (b) components never import dsh-adapter / cordis (pure renderers, §4.3).
+  const componentFiles = await walkCodeFiles(path.join(repoRoot, 'src', 'tui-v2', 'components'), repoRoot)
+  const COMPONENT_FORBIDDEN = /dsh-adapter|cordis/i
+  const importHits: { file: string; specifier: string }[] = []
+  for (const rel of componentFiles) {
+    for (const spec of await fileSpecifiers(rel)) {
+      if (COMPONENT_FORBIDDEN.test(spec)) importHits.push({ file: rel, specifier: spec })
+    }
+  }
+  for (const hit of importHits) {
+    errors.push(`components guard: ${hit.file} imports ${hit.specifier} (dsh-adapter/cordis forbidden in components)`)
+  }
+  details.componentGuard = { files: componentFiles, hits: importHits }
+
+  // (c) live/replay canonical equivalence over a dialog scenario: overlay
+  //     open / navigate / preemption chain / settle / timeout, driven through
+  //     the controller rig; the recorded live stream must replay to a
+  //     byte-identical canonical state (§5.2).
+  const { createControllerRig, ManualClock, addUserRows } = await import(
+    '../test/tui-v2/helpers/controller-rig.js'
+  )
+  const { createFakeApprovalStore, createFakePluginDialogStore, createFakeQuestionStore } = await import(
+    '../test/tui-v2/helpers/fake-dialog-stores.js'
+  )
+  const { createDialogsController } = await import('../src/tui-v2/controllers/dialogs.js')
+  const { replayTrace } = await import('../src/tui-v2/controllers/replay.js')
+  const { serializeCanonicalUiState } = await import('../src/tui-v2/model/canonical-state.js')
+  const { createReducer } = await import('../src/tui-v2/model/reducer.js')
+
+  try {
+    const rig = createControllerRig({ height: 8 })
+    const approvals = createFakeApprovalStore()
+    const questions = createFakeQuestionStore()
+    const dialogs = createFakePluginDialogStore(rig.clock)
+    const controller = createDialogsController({
+      dispatch: (event) => rig.streaming.ingest(event),
+      nextMeta: (sourceSeq) => rig.meta.next('overlay', sourceSeq),
+      getState: rig.state,
+      approvals,
+      questions,
+      dialogs,
+    })
+    controller.start()
+    const key = (name: string) =>
+      ({
+        kind: 'key' as const,
+        sequence: 0,
+        generation: 0,
+        payload: { key: name, raw: '', text: null, eventType: 'press' as const },
+      })
+    const focusId = () => {
+      const focus = rig.state().focus
+      return focus.target === 'overlay' ? focus.overlayId : 'editor'
+    }
+
+    addUserRows(rig, 2)
+
+    // Priority chain: question < plugin dialog < approval. The question parks
+    // first; the plugin dialog preempts it; the approval preempts both.
+    const questionPromise = questions.ask({
+      questions: [{ id: 'q1', question: 'Pick', options: [{ label: 'a' }, { label: 'b' }] }],
+    })
+    const selectPromise = dialogs.ask({
+      kind: 'select',
+      title: 'Choose',
+      options: [
+        { id: 'o1', label: 'One' },
+        { id: 'o2', label: 'Two' },
+      ],
+    })
+    const approvalPromise = approvals.park({ toolName: 'Bash', command: 'ls' })
+    if (focusId() !== 'dialog/approval/1') errors.push(`approval should hold focus, got ${focusId()}`)
+
+    // Reject the approval (down -> No -> Enter): the plugin dialog resurfaces.
+    controller.handleInput(key('down'))
+    controller.handleInput(key('enter'))
+    if ((await approvalPromise) !== 'rejected') errors.push('approval outcome must be rejected')
+    if (focusId() !== 'dialog/plugin-dialog/dlg-1') {
+      errors.push(`plugin dialog should resurface after the approval, got ${focusId()}`)
+    }
+
+    // Settle the select: the question resurfaces; answer it (down -> 'b').
+    controller.handleInput(key('enter'))
+    if ((await selectPromise) !== 'o1') errors.push('select answer must be o1')
+    if (focusId() !== 'dialog/question/1-0') {
+      errors.push(`question should resurface after the select, got ${focusId()}`)
+    }
+    controller.handleInput(key('down'))
+    controller.handleInput(key('enter'))
+    const answered = await questionPromise
+    if (JSON.stringify(answered.answers) !== JSON.stringify([{ id: 'q1', selected: ['b'] }])) {
+      errors.push(`question answers mismatch: ${JSON.stringify(answered.answers)}`)
+    }
+    if (focusId() !== 'editor') errors.push(`focus must fall back to the editor, got ${focusId()}`)
+
+    // Timeout path: settle via the store clock, overlay closes, focus editor.
+    const timed = dialogs.ask({ kind: 'confirm', title: 'T', confirmLabel: '', cancelLabel: '' }, 250)
+    if (focusId() !== 'dialog/plugin-dialog/dlg-2') errors.push(`confirm dialog should open, got ${focusId()}`)
+    rig.clock.advance(250)
+    if ((await timed) !== undefined) errors.push('a timed-out dialog must resolve undefined')
+    if (focusId() !== 'editor') errors.push(`timeout must close the overlay, focus=${focusId()}`)
+
+    controller.dispose()
+
+    // Overlay event hygiene: source discipline + explicit capturing pair.
+    const overlayEvents = rig.applied.filter((e) => e.type === 'overlay/open' || e.type === 'overlay/close')
+    if (overlayEvents.length === 0) errors.push('scenario produced no overlay events')
+    for (const event of overlayEvents) {
+      if (event.source !== 'overlay') errors.push(`overlay event with wrong source: ${event.source}`)
+      if (event.type === 'overlay/open') {
+        const overlay = event.overlay
+        if (overlay.captureInput !== true || overlay.nonCapturing !== false) {
+          errors.push(`overlay ${overlay.overlayId} not normalized as capturing`)
+        }
+      }
+    }
+
+    const liveCanonical = serializeCanonicalUiState(rig.state())
+    const replayed = replayTrace(rig.applied, createReducer({ clock: new ManualClock() }), rig.initialState)
+    const replayCanonical = serializeCanonicalUiState(replayed)
+    if (liveCanonical !== replayCanonical) {
+      errors.push('live/replay canonical state mismatch (serializeCanonicalUiState bytes differ)')
+    }
+    details.equivalence = {
+      events: rig.applied.length,
+      overlayEvents: overlayEvents.length,
+      canonicalHash: sha256Hex(liveCanonical).slice(0, 16),
+      equal: liveCanonical === replayCanonical,
+    }
+    details.dialogDiagnostics = controller.diagnostics()
+  } catch (error: any) {
+    errors.push(`scenario failed: ${String(error?.message || error)}`)
+  }
+
+  details.errors = errors
+  return { status: errors.length === 0 ? 'pass' : 'fail', details }
+}
+
+// ---------------------------------------------------------------------------
 // registry + CLI
 // ---------------------------------------------------------------------------
 
@@ -808,6 +982,7 @@ const checks = new Map<string, (ctx: CheckContext) => Promise<CheckResult>>([
   ['trace', () => checkTrace()],
   ['fork', () => checkFork()],
   ['skeleton', () => checkSkeleton()],
+  ['controllers', () => checkControllers()],
 ])
 
 function defaultOutput(check: string): string {
