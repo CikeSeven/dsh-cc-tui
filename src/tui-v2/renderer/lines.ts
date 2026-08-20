@@ -37,7 +37,16 @@
  * only; the SGR replay encoder below intentionally mirrors
  * `terminal/ansi.ts` `sgrStyle` param order (0,attrs,fg,bg) because the
  * runtime builder lives behind the writer boundary and cannot be imported
- * here. WP-06 re-encodes cells through `sgrStyle` for writer output.
+ * here.
+ *
+ * WP-06 SGR unification (the WP-04 deviation, now closed): `sgrForLineStyle`/
+ * `cellsToString` remain the COMPONENT-SIDE logical-line builders — component
+ * output strings never reach the tty. The frame builder (`frame-builder.ts`)
+ * re-parses every logical line through this pipeline into `TerminalCell`s
+ * whose style/hyperlink ids resolve against `FrameResources`, and the ONLY
+ * encoder that turns cells into terminal bytes is the fixed writer-side
+ * `terminal/ansi.ts` `encodeCells` (SGR/OSC 8 from StyleDescriptor/
+ * HyperlinkDescriptor).
  */
 import { eastAsianWidth } from 'get-east-asian-width'
 
@@ -449,11 +458,25 @@ export function lineToCells(
   profile: TerminalProfile,
   cache: GraphemeWidthCache = sharedGraphemeWidthCache,
 ): LineCell[] {
+  return tokensToCells(tokenizeAnsi(raw), profile, cache)
+}
+
+/**
+ * The token -> cell stage of the pipeline (SGR/OSC 8 state machine + tabstop
+ * expansion). Exported so the WP-06 cell layer (`cells.ts`) can tokenize once
+ * — counting dropped control sequences for diagnostics — and still share this
+ * single state machine.
+ */
+export function tokensToCells(
+  tokens: readonly AnsiToken[],
+  profile: TerminalProfile,
+  cache: GraphemeWidthCache = sharedGraphemeWidthCache,
+): LineCell[] {
   const cells: LineCell[] = []
   let style: LineStyle = DEFAULT_LINE_STYLE
   let hyperlink: string | null = null
   let column = 0
-  for (const token of tokenizeAnsi(raw)) {
+  for (const token of tokens) {
     switch (token.kind) {
       case 'text': {
         for (const grapheme of segmentGraphemes(token.text)) {

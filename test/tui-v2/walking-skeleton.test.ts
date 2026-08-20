@@ -4,7 +4,7 @@
  * Full chain under test:
  *
  *   FakeChannel → ChannelUiAdapter → StreamingController → reducer → selectors
- *     → base-renderer → linesToFrame → ScreenBackend.plan → TerminalWriter
+ *     → base-renderer → buildFrame → ScreenBackend.plan → TerminalWriter
  *     → VirtualTerminal
  *
  * plus the input path (stdin → InputSource → InputController → PromptEditor /

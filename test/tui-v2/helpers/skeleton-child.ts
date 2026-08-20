@@ -2,7 +2,7 @@
  * WP-04 walking-skeleton child process.
  *
  * Runs the full v2 chain (fake Channel → adapter → streaming → reducer →
- * selectors → base-renderer → linesToFrame → backend.plan → writer → VT)
+ * selectors → base-renderer → buildFrame → backend.plan → writer → VT)
  * against a real-process signal host, then writes a JSON report:
  *
  *   skeleton-child.ts <scenario> <reportPath> [profileId]

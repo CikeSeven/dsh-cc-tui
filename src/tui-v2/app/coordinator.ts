@@ -7,8 +7,9 @@
  *   stdin ──▶ InputSource ──▶ InputController / TerminalLifecycleController ──┘
  *   dispatch: validateAppEvent → deepFreeze → reducer.reduce → stateRevision++
  *     → (pendingReset? adapter.recoverSnapshotGap) → scheduler.requestRender
- *   scheduler render: selectors → base-renderer lines → linesToFrame
- *     → backend.plan(prev, frame) → writer.write(patch)
+ *   scheduler render: selectors → base-renderer lines → buildFrame
+ *     (renderer/frame-builder.ts, WP-06a) → backend.plan(prev, frame)
+ *     → writer.write(patch)
  *
  * Design notes / registered deviations:
  *
@@ -124,7 +125,7 @@ import {
   type PluginDialogStoreLike,
   type QuestionStoreLike,
 } from '../controllers/dialogs.js';
-import { linesToFrame } from './lines-frame.js';
+import { buildFrame } from '../renderer/frame-builder.js';
 import { selectTerminalMode } from './modes.js';
 
 export type CoordinatorPhase = 'created' | 'starting' | 'active' | 'stopping' | 'stopped' | 'failed';
@@ -715,18 +716,19 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       });
       framesRendered += 1;
       const fullRedraw = pendingFullRedraw || output.diagnostics.fullRedraw;
-      const frame = linesToFrame(output.lines, {
-        profile,
+      const frame = buildFrame({
+        frameId: `frame-${++frameSeq}`,
+        stateRevision,
         width: state.viewport.width,
         height: state.viewport.height,
-        stateRevision,
-        generation: lifecycle.generation(),
+        lines: output.lines,
+        profile,
         modes: lifecycle.currentModeSnapshot(),
-        cursor: output.cursor ?? { x: 0, y: 0, visible: false },
+        cursor: output.cursor,
+        generation: lifecycle.generation(),
         fullRedraw,
-        renderMs: Math.max(0, clock.now() - startedAt),
         fullRedrawReason: fullRedraw ? fullRedrawReason : undefined,
-        frameSeq: ++frameSeq,
+        renderMs: Math.max(0, clock.now() - startedAt),
       });
       const patch = backend.plan(previousFrame, frame);
       const result = await writer.write(patch);
