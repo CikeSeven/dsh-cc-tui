@@ -8,17 +8,30 @@
  *   dispatch: validateAppEvent → deepFreeze → reducer.reduce → stateRevision++
  *     → (pendingReset? adapter.recoverSnapshotGap) → scheduler.requestRender
  *   scheduler render: selectors → base-renderer lines → buildFrame
- *     (renderer/frame-builder.ts, WP-06a) → backend.plan(prev, frame)
- *     → writer.write(patch)
+ *     (renderer/frame-builder.ts, WP-06a) → compositeFrame
+ *     (renderer/compositor.ts, WP-06b: overlay stack + highlight skeleton
+ *     over the base frame) → backend.plan(prev, frame) → writer.write(patch)
  *
  * Design notes / registered deviations:
  *
- *  - The screen backend's `start()` is deliberately NOT called: it would run
- *    the vendored TUI's own timer-driven render loop and input ownership,
- *    double-writing the terminal around the patch channel. Takeover/cleanup
- *    are driven by the lifecycle module; the backend is used as a pure
- *    Frame → TerminalPatch planner (generation checks are inert until the
- *    backend is started, which WP-06 revisits).
+ *  - WP-06b: the fullscreen backend is `terminal/fullscreen-backend.ts`
+ *    (v2-native cell-diff planner; capabilities per §6.4). Its
+ *    start()/stop() are generation gates only — alt-screen enter/exit bytes
+ *    stay with the lifecycle orchestration. The coordinator calls them for
+ *    the fullscreen backend; the inline path keeps the pi main-screen
+ *    backend as a pure Frame → TerminalPatch planner whose start() is
+ *    deliberately NOT called (it would run the vendored TUI's own
+ *    timer-driven render loop and input ownership, double-writing the
+ *    terminal around the patch channel; inline semantics are WP-07).
+ *  - Full-redraw triggers (§6.4, WP-06b): resize → scheduler resize
+ *    transaction ('resize'); SIGCONT → terminal/resumed journal +
+ *    markFullRedraw ('resume'); Ctrl+L → input controller onRedrawRequest
+ *    ('damage'); app/error → 'cleanup' marker for any frame rendered on the
+ *    abnormal-teardown path; reducer-driven needsFullRedraw without a
+ *    specific cause keeps the 'unknown-mode' default. A patch the writer
+ *    did not land (stale/dropped) invalidates previousFrame: the physical
+ *    screen no longer provably matches it, so the next frame is a 'damage'
+ *    full redraw.
  *  - The input source's onEvent is wired to the coordinator's own routing
  *    (NOT `createPiTerminalStack`, whose fixed wiring forwards raw input to
  *    the vendored TUI): resize → lifecycle controller, key/paste → input
@@ -67,7 +80,8 @@ import {
 } from '../model/selectors.js';
 import { initialUiState, type UiState } from '../model/state.js';
 import { createBaseRenderer, type BaseRenderer } from '../renderer/base-renderer.js';
-import type { Frame } from '../renderer/frame.js';
+import { compositeFrame } from '../renderer/compositor.js';
+import type { Frame, ScreenBackend } from '../renderer/frame.js';
 import {
   createRenderScheduler,
   type RenderPriority,
@@ -81,7 +95,8 @@ import { createAssistantMessage } from '../components/transcript/assistant-messa
 import { asRowBlocks } from '../components/transcript/row-view.js';
 import { createToolRow } from '../components/transcript/tool-row.js';
 import { createUserMessage } from '../components/transcript/user-message.js';
-import { PiTuiAltScreenBackend } from '../terminal/alt-screen.js';
+import { renderDialogOverlayLines } from '../components/overlays/render-dialog.js';
+import { FullscreenBackend } from '../terminal/fullscreen-backend.js';
 import {
   createInputSource,
   type InputStdin,
@@ -182,6 +197,10 @@ export interface CoordinatorDiagnostics {
   readonly framesRendered: number;
   readonly patchesWritten: number;
   readonly writtenBytes: number;
+  /** Last composed frame's fullRedraw flag (null before the first render). */
+  readonly lastFrameFullRedraw: boolean | null;
+  /** Last composed frame's fullRedrawReason (null when none/not rendered). */
+  readonly lastFrameFullRedrawReason: string | null;
   readonly eventsApplied: number;
   readonly eventsRejected: number;
   readonly snapshotGapRecoveries: number;
@@ -290,6 +309,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   let patchesWritten = 0;
   let writtenBytes = 0;
   let frameSeq = 0;
+  let lastFrameFullRedraw: boolean | null = null;
+  let lastFrameFullRedrawReason: string | null = null;
 
   const reducer: Reducer = createReducer({ clock });
   const meta = createEventMetaFactory({
@@ -403,7 +424,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   let phase: CoordinatorPhase = 'created';
   let stopPromise: Promise<void> | null = null;
   let pendingFullRedraw = true;
-  let fullRedrawReason: 'initial' | 'resize' | 'resume' | 'unknown-mode' = 'initial';
+  let fullRedrawReason: 'initial' | 'resize' | 'resume' | 'damage' | 'unknown-mode' | 'cleanup' = 'initial';
   let previousFrame: Frame | null = null;
 
   const getScheduledState = (): ScheduledFrame => ({ stateRevision });
@@ -427,6 +448,12 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     eventsApplied += 1;
     stateRevision += 1;
     if (state.terminal.needsFullRedraw) pendingFullRedraw = true;
+    if (validated.type === 'app/error') {
+      // Abnormal path (§6.4): any frame rendered from here on cannot trust
+      // the physical screen — mark the cleanup full-redraw reason.
+      pendingFullRedraw = true;
+      fullRedrawReason = 'cleanup';
+    }
     // Reducer gap marker → adapter heals with a fresh rows-reset (§5.2).
     if (
       state.session.pendingReset !== null &&
@@ -571,6 +598,13 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     onExitArm: () => {
       channel.notify('Press Ctrl+C again to exit', { color: 'warning' });
     },
+    onRedrawRequest: () => {
+      // Ctrl+L (§6.4): user-forced full redraw. The journaled app/redraw
+      // command already scheduled an 'input'-priority render; these flags are
+      // read when it executes.
+      pendingFullRedraw = true;
+      fullRedrawReason = 'damage';
+    },
   });
 
   const input = createInputSource({
@@ -651,9 +685,9 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     fullRedrawReason = 'resize';
   });
 
-  const backend =
+  const backend: ScreenBackend =
     modeSelection.ok && modeSelection.mode === 'fullscreen'
-      ? new PiTuiAltScreenBackend(stack)
+      ? new FullscreenBackend()
       : new PiTuiMainScreenBackend(stack);
 
   // ------------------------------------------------------------ render loop
@@ -716,7 +750,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       });
       framesRendered += 1;
       const fullRedraw = pendingFullRedraw || output.diagnostics.fullRedraw;
-      const frame = buildFrame({
+      const baseFrame = buildFrame({
         frameId: `frame-${++frameSeq}`,
         stateRevision,
         width: state.viewport.width,
@@ -730,6 +764,19 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         fullRedrawReason: fullRedraw ? fullRedrawReason : undefined,
         renderMs: Math.max(0, clock.now() - startedAt),
       });
+      // WP-06b: composite the overlay stack (back -> front) over THIS frame's
+      // base; no overlays = the base frame passes through unchanged (the
+      // base-only degradation path stays byte-equivalent to WP-06a).
+      const frame = compositeFrame({
+        base: baseFrame,
+        profile,
+        overlays: state.overlays.stack,
+        renderOverlay: (overlay, width) =>
+          renderDialogOverlayLines(overlay.payload, width, { profile, theme }),
+        previous: previousFrame,
+      }).frame;
+      lastFrameFullRedraw = frame.fullRedraw;
+      lastFrameFullRedrawReason = frame.metadata.fullRedrawReason ?? null;
       const patch = backend.plan(previousFrame, frame);
       const result = await writer.write(patch);
       if (result.status === 'error') {
@@ -740,10 +787,16 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       if (result.status === 'written') {
         patchesWritten += 1;
         writtenBytes += result.bytes ?? 0;
+        previousFrame = frame;
+        pendingFullRedraw = false;
+        fullRedrawReason = 'unknown-mode';
+        return;
       }
-      previousFrame = frame;
-      pendingFullRedraw = false;
-      fullRedrawReason = 'unknown-mode';
+      // The patch did not land (stale/dropped): the physical screen no longer
+      // provably matches previousFrame — the next frame must be a full redraw.
+      previousFrame = null;
+      pendingFullRedraw = true;
+      fullRedrawReason = 'damage';
     } catch (error) {
       diagnostic('render/error', error instanceof Error ? error.message : String(error));
       void stop('error');
@@ -777,6 +830,11 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       if (result.status !== 'active') {
         throw new CoordinatorStartError(result.error.code, result.error.message);
       }
+      if (backend.mode === 'fullscreen') {
+        // Generation gate for the fullscreen backend; the physical
+        // alt-screen entry already ran inside lifecycle.start (§6.4).
+        await backend.start(lifecycle.generation());
+      }
       if (options.attachProcessHandlers !== false) lifecycle.attachProcessHandlers();
       scheduler.start();
       adapter.start();
@@ -802,6 +860,11 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       // dispatch overlay/close into a streaming controller that is stopping.
       dialogsController.dispose();
       scheduler.stop();
+      if (backend.mode === 'fullscreen') {
+        // Backend generation gate closes before the lifecycle teardown emits
+        // the alt-screen exit bytes (§6.4; backend.stop emits nothing).
+        await backend.stop(lifecycle.generation());
+      }
       streamingController.stop();
       adapter.stop();
       lifecycle.detachProcessHandlers();
@@ -847,6 +910,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       framesRendered,
       patchesWritten,
       writtenBytes,
+      lastFrameFullRedraw,
+      lastFrameFullRedrawReason,
       eventsApplied,
       eventsRejected,
       snapshotGapRecoveries,

@@ -24,6 +24,11 @@
  *                            forwarded to the editor's own addToHistory when
  *                            present.
  *
+ * WP-06b addition: Ctrl+L → journal `app redraw` + onRedrawRequest() — the
+ * user-suspects-screen-damage full redraw (plan §6.4; the coordinator marks
+ * the next frame fullRedraw with reason 'damage'). The key never reaches
+ * the editor.
+ *
  * The editor itself stays the single owner of editor text: this controller
  * journals every editor command as an `input/command` event and forwards
  * submit to the channel commands. It holds no UI truth beyond the Ctrl+C
@@ -88,6 +93,11 @@ export interface InputControllerOptions {
   readonly onInterrupt?: () => void;
   /** Armed-Ctrl+C hook (WP-05): the coordinator surfaces the notify. */
   readonly onExitArm?: () => void;
+  /**
+   * Ctrl+L hook (WP-06b): the coordinator forces a full redraw
+   * (fullRedrawReason 'damage'). The `app redraw` command is journaled first.
+   */
+  readonly onRedrawRequest?: () => void;
   /** Arming window for the double-Ctrl+C exit. Default 2000ms. */
   readonly ctrlCArmMs?: number;
 }
@@ -101,6 +111,7 @@ export interface InputControllerDiagnostics {
   readonly ctrlCArms: number;
   readonly exitRequests: number;
   readonly escapeInterrupts: number;
+  readonly redrawRequests: number;
   readonly submittedCommands: number;
 }
 
@@ -134,6 +145,7 @@ export function createInputController(options: InputControllerOptions): InputCon
     ctrlCArms: 0,
     exitRequests: 0,
     escapeInterrupts: 0,
+    redrawRequests: 0,
     submittedCommands: 0,
   };
   /** Submission history mirror: newest first, consecutive duplicates merged. */
@@ -202,6 +214,15 @@ export function createInputController(options: InputControllerOptions): InputCon
       const payload = event.payload as KeyPayload;
       if (payload.key === 'ctrl+c') {
         handleCtrlC();
+        return;
+      }
+      if (payload.key === 'ctrl+l') {
+        // WP-06b: user-forced full redraw (screen damage suspicion). The key
+        // is consumed here — the editor never sees it.
+        counts.redrawRequests += 1;
+        disarm();
+        journal({ type: 'app', command: 'redraw' });
+        options.onRedrawRequest?.();
         return;
       }
       if (payload.key === 'escape' && options.isWorking()) {
