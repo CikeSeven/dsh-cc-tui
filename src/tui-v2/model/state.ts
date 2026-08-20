@@ -14,6 +14,7 @@ import type { AppEvent } from './events.js'
 import type {
   InputCommand,
   OverlayState,
+  SceneViewModel,
   TerminalMode,
   UiRowSnapshot,
 } from './schema.js'
@@ -166,6 +167,21 @@ export interface UiOverlayStackState {
   readonly stack: readonly OverlayState[]
 }
 
+// ---------------------------------------------------------------------------
+// Plugin scenes (WP-08a, plan §7.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * The open plugin scene's immutable view model, if any (§7.4: scene v2 输入
+ * 不可变 SceneViewModel). The SceneV2 instance itself is NOT model data —
+ * it lives in the scene runtime (function-bearing, non-serializable), the
+ * same split as the vendored PromptEditor mirror. While a scene is open,
+ * `focus.target === 'scene'` (a capturing overlay may temporarily override).
+ */
+export interface UiSceneState {
+  readonly view: SceneViewModel
+}
+
 export interface UiTerminalState {
   readonly mode: TerminalMode
   readonly profileId: string
@@ -259,6 +275,8 @@ export interface UiState {
   readonly viewport: UiViewportState
   readonly dock: UiDockState
   readonly overlays: UiOverlayStackState
+  /** Open plugin scene's view model; null when no scene is open. */
+  readonly scene: UiSceneState | null
   readonly terminal: UiTerminalState
   readonly preferences: UiPreferencesState
   readonly diagnostics: UiDiagnosticsState
@@ -314,6 +332,7 @@ export function initialUiState(options: InitialUiStateOptions): UiState {
       notifications: [],
     },
     overlays: { stack: [] },
+    scene: null,
     terminal: {
       mode: options.mode ?? 'fullscreen',
       profileId: options.profileId,

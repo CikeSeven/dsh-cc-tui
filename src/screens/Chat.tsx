@@ -1,7 +1,6 @@
 import React from 'react'
 import { t, getLang, setLang, isLang, writeLangPref, subscribeLang, type I18nKey } from '../i18n.js'
 import { AlternateScreen, Box, Text, useInput, ScrollBox, type ScrollBoxHandle, useTheme, useTerminalSize } from '../ui.js'
-import * as tuiKit from '../ui.js'
 import { POINTER } from '../cc/figures.js'
 import { isMod, isPlainReturnInput, modLabel } from '../utils/modifiers.js'
 import { formatTokens } from '../cc/format.js'
@@ -34,7 +33,6 @@ import { StatusLine } from './StatusLine.js'
 import { WorkingSpinner, useThinkingStatus } from '../components/WorkingSpinner.js'
 import { ActivityLine, contextPressurePct } from '../components/ActivityLine.js'
 import { ModelPicker } from '../components/ModelPicker.js'
-import { PluginSceneBoundary } from '../components/PluginSceneBoundary.js'
 import { SkillsPicker, SkillsPickerLoading } from '../components/SkillsPicker.js'
 import { SessionBrowser } from './SessionBrowser.js'
 import { Settings } from './Settings.js'
@@ -1422,11 +1420,11 @@ export function Chat({
     // Same for the settings screen: plain letters (s save / d discard) and
     // the field draft editor belong to it alone.
     if (settingsOpen) return
-    // A plugin scene (dsh-tui-scenes) or the trajectory scene owns the whole
-    // screen while open: every key belongs to it. Unguarded, an Esc meant to
-    // CLOSE the scene also reached the chat:cancel branch below whenever a
-    // turn was in flight — closing the view and killing the turn in one key.
-    if (sceneOpen || channel.pluginScene !== undefined) return
+    // The trajectory scene owns the whole screen while open: every key
+    // belongs to it. Unguarded, an Esc meant to CLOSE the scene also reached
+    // the chat:cancel branch below whenever a turn was in flight — closing
+    // the view and killing the turn in one key.
+    if (sceneOpen) return
     // The questionnaire / approval panel / managed plugin dialog owns the
     // keyboard while one is pending (the panel's own useInput handles
     // ↑/↓/Space/Tab/Enter/Esc; the prompt input is unmounted, so nothing
@@ -1952,40 +1950,6 @@ export function Chat({
   // Working-activity line (spinner slot): context-pressure prefix shares the
   // StatusLine thresholds (amber ≥ 80, red ≥ 95).
   const activityWarnPct = contextPressurePct(channel.lastUsage, channel.contextWindow)
-
-  // A plugin scene (dsh-tui-scenes) takes the whole terminal the same way
-  // the trajectory scene does, and sits at the TOP of this return chain:
-  // an open() landing while the session browser or the trajectory scene is
-  // up must still take the screen (and the keyboard, via the useInput guard
-  // above), not queue silently behind them. Closing the plugin scene lands
-  // back on whatever screen was up before, so these early returns read as a
-  // stack. The component comes from the registry, so its identity is stable
-  // across renders and its hook state survives re-renders; it receives the
-  // TUI's own React + ui kit because a plugin importing its own React copy
-  // would die on the first hook call under this reconciler.
-  // The scene is third-party code, so it renders inside a boundary: a render
-  // crash reports to the transcript and closes the scene instead of taking
-  // the whole TUI down through ink's app-level boundary.
-  const pluginScene = channel.pluginScene
-  if (pluginScene !== undefined) {
-    const node = (
-      <PluginSceneBoundary
-        id={pluginScene.id}
-        onError={(id, error) => {
-          channel.notify(t('plugin-scene-crashed', { id, err: error.message }), { color: 'error' })
-          channel.closePluginScene()
-        }}
-      >
-        {React.createElement(pluginScene.component, {
-          React,
-          ui: tuiKit,
-          channel,
-          close: () => channel.closePluginScene(),
-        })}
-      </PluginSceneBoundary>
-    )
-    return fullscreen ? node : <AlternateScreen>{node}</AlternateScreen>
-  }
 
   // The browser is a screen, not an overlay: it REPLACES the conversation
   // rather than floating above it. Rendering it as an early return (after

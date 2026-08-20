@@ -62,4 +62,13 @@ if (invariant.name !== 'dsh-tui-invariant' || typeof invariant.apply !== 'functi
   throw new Error('compiled invariant entry does not expose the expected contract')
 }
 
+// WP-08a: the `./tui-v2` capability export is the versioned plugin surface —
+// it must import cleanly from the compiled package and carry the SceneV2
+// runtime anchors (and nothing stateful beyond them).
+const tuiV2 = await import(new URL('../lib/types/tui-v2/index.js', import.meta.url))
+if (tuiV2.SCENE_API_VERSION !== '2' || !Array.isArray(tuiV2.SUPPORTED_SCENE_API_VERSIONS)
+  || tuiV2.SUPPORTED_SCENE_API_VERSIONS[0] !== '2') {
+  throw new Error('compiled tui-v2 export does not expose the SceneV2 runtime anchors')
+}
+
 console.log(`package surface OK (${packed.size} files, ${targets.size} entry targets)`)

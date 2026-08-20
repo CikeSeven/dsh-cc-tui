@@ -232,67 +232,105 @@ if (settingsPlugin.tuiSettingsSections.list().length !== 0) {
 await settingsActivation.fiber.dispose()
 await settingsCtx.fiber.dispose()
 
-// Plugin scene seam: registration validates and dedupes ids, open/close
-// drive the subscribe feed exactly once per transition, and disposing the
-// open scene closes it instead of stranding the user on a dead screen.
-const scenesModule = await import('../src/scenes.js')
+// Plugin scene seam (SceneV2, WP-08a): registration validates and dedupes
+// ids, legacy React descriptors come back as a structured rejection, and
+// open/close drive the owner-scoped subscribe feed once per transition.
+// Mounting needs the coordinator hooks the v2 host attaches at startup —
+// the smoke supplies an in-memory stand-in (events collected, forged opaque
+// takeover lease, renders dropped).
+const scenesModule = await import('../src/dsh-adapter/scenes.js')
 const sceneCtx = new Context()
 await sceneCtx.plugin(scenesModule.default).await()
 const sceneActivation = await activate(sceneCtx, ['tuiScenes'])
 const sceneRuntime = sceneActivation.ctx.tuiScenes
+const sceneHost = scenesModule.getHostSceneRuntime(sceneCtx.get('tuiScenes'))
+if (sceneHost === undefined) throw new Error('scene smoke: host handle unavailable')
+const sceneEvents: string[] = []
+let sceneEventSeq = 0
+sceneHost.runtime.attach({
+  dispatch: (event) => { sceneEvents.push(event.type) },
+  nextMeta: (sourceSeq) => ({
+    schemaVersion: 1, adapterInstanceId: 'smoke', durableSessionId: 'smoke',
+    uiSessionGeneration: 'gen-1', resetEpoch: 0, sessionEpoch: 'gen-1:0',
+    source: 'plugin', sourceSeq, seq: ++sceneEventSeq, at: 0,
+  }),
+  takeover: {
+    request: async (ownerKind) => ({
+      token: { id: `smoke-takeover-${sceneEventSeq}`, ownerKind, generation: 0 },
+      generation: 0, modeBeforeTakeover: {}, barrier: { generation: 0, committedPatchSeq: 0 },
+    }) as never,
+    restore: async () => {},
+    current: () => null,
+  },
+  requestRender: () => {},
+})
 let sceneNotifications = 0
 const unsubscribeScenes = sceneRuntime.subscribe(() => { sceneNotifications += 1 })
 if (sceneRuntime.active !== undefined) throw new Error('scene smoke: active scene before any open')
 if (sceneRuntime.open('missing') !== false) throw new Error('scene smoke: opening an unregistered id must fail')
-const demoScene = { id: 'demo', component: () => null }
-const disposeDemo = sceneRuntime.register(demoScene)
-if (sceneRuntime.open('DEMO') !== true || sceneRuntime.active?.id !== 'demo') {
-  throw new Error('scene smoke: ids must normalize to lowercase on open')
-}
+const demoDescriptor = {
+  apiVersion: '2',
+  id: 'demo',
+  requiredGrants: [],
+  commands: [{
+    commandId: 'refresh',
+    schemaVersion: 1,
+    validate: (payload) => {
+      if (typeof payload !== 'object' || payload === null) throw new TypeError('refresh payload must be an object')
+    },
+  }],
+  create: () => ({
+    apiVersion: '2',
+    sceneId: 'demo',
+    focused: false,
+    render: () => ['demo scene'],
+    invalidate: () => {},
+  }),
+} as const
+const demoHandle = sceneRuntime.register(demoDescriptor)
+if (demoHandle.result.status !== 'accepted') throw new Error('scene smoke: v2 descriptor must be accepted')
+if (sceneRuntime.open('DEMO') !== true) throw new Error('scene smoke: open must accept')
+await sceneHost.runtime.whenIdle()
+if (sceneRuntime.active?.id !== 'demo') throw new Error('scene smoke: ids must normalize to lowercase on open')
 if (sceneNotifications !== 1) throw new Error('scene smoke: open must notify exactly once')
 sceneRuntime.open('demo')
+await sceneHost.runtime.whenIdle()
 if (sceneNotifications !== 1) throw new Error('scene smoke: re-opening the active scene must not notify')
+// A legacy React descriptor (no apiVersion, a component field) is rejected
+// with the structured unsupported-scene-api result, not a throw.
+const legacyHandle = sceneRuntime.register({ id: 'legacy', component: () => null } as never)
+if (legacyHandle.result.status !== 'rejected' || legacyHandle.result.code !== 'unsupported-scene-api') {
+  throw new Error('scene smoke: legacy React descriptor must be rejected as unsupported-scene-api')
+}
 sceneRuntime.close()
+await sceneHost.runtime.whenIdle()
 if (sceneRuntime.active !== undefined || sceneNotifications !== 2) {
   throw new Error('scene smoke: close must clear the active scene and notify')
 }
 sceneRuntime.open('demo')
-disposeDemo()
+await sceneHost.runtime.whenIdle()
+demoHandle.dispose()
+await sceneHost.runtime.whenIdle()
 if (sceneRuntime.active !== undefined || sceneNotifications !== 4) {
   throw new Error('scene smoke: disposing the open scene must close it')
 }
 let invalidIdThrew = false
 try {
-  sceneRuntime.register({ id: 'not a scene id', component: () => null })
+  sceneRuntime.register({ ...demoDescriptor, id: 'not a scene id' })
 } catch {
   invalidIdThrew = true
 }
 if (!invalidIdThrew) throw new Error('scene smoke: invalid ids must be rejected')
-const sceneDisposeDup = sceneRuntime.register({ id: 'dup', component: () => null })
-let sceneDuplicateThrew = false
-try {
-  sceneRuntime.register({ id: 'DUP', component: () => null })
-} catch {
-  sceneDuplicateThrew = true
+const sceneDupHandle = sceneRuntime.register({ ...demoDescriptor, id: 'dup' })
+const sceneDupRejected = sceneRuntime.register({ ...demoDescriptor, id: 'DUP' })
+if (sceneDupRejected.result.status !== 'rejected' || sceneDupRejected.result.code !== 'duplicate-scene') {
+  throw new Error('scene smoke: duplicate ids must be rejected')
 }
-if (!sceneDuplicateThrew) throw new Error('scene smoke: duplicate ids must be rejected')
-sceneDisposeDup()
+sceneDupHandle.dispose()
 unsubscribeScenes()
+await sceneHost.runtime.detach()
 await sceneActivation.fiber.dispose()
 await sceneCtx.fiber.dispose()
-
-// Host JSX runtime (./jsx-runtime subpath): elements it creates must carry
-// the React 19 transitional-element symbol — the only flavor this app's
-// reconciler accepts — so plugin JSX compiled with
-// `"jsxImportSource": "@deepseek-harness-tui/dsh-tui"` renders on first try.
-const jsxRuntimeModule = await import('../src/jsx-runtime.js')
-if (typeof jsxRuntimeModule.jsx !== 'function' || typeof jsxRuntimeModule.jsxs !== 'function') {
-  throw new Error('jsx-runtime smoke: jsx/jsxs factories missing')
-}
-const probe = jsxRuntimeModule.jsx('div', {}) as { $$typeof?: symbol }
-if (probe.$$typeof !== Symbol.for('react.transitional.element')) {
-  throw new Error('jsx-runtime smoke: element is not a React 19 transitional element')
-}
 
 // Generic workspace seam: prove the TUI works with only its local fallback,
 // and that an anonymous provider can add URI/path/shell behavior without the

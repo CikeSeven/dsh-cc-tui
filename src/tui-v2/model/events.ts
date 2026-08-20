@@ -18,6 +18,7 @@ import {
   type InputCommand,
   type OverlayState,
   type ResetReason,
+  type SceneViewModel,
   type SerializableError,
   type UiRowSnapshot,
 } from './schema.js'
@@ -34,6 +35,9 @@ export type AppEvent =
   | (EventMeta & { type: 'overlay/close'; overlayId: string })
   | (EventMeta & { type: 'terminal/suspended' | 'terminal/resumed' })
   | (EventMeta & { type: 'app/error'; error: SerializableError })
+  | (EventMeta & { type: 'scene/open'; scene: SceneViewModel })
+  | (EventMeta & { type: 'scene/close'; sceneId: string; reason: 'user' | 'teardown' | 'error' })
+  | (EventMeta & { type: 'scene/focus'; sceneId: string; target: 'scene' | 'overlay' })
 
 const RESET_REASONS: readonly ResetReason[] = ['new-session', 'resume', 'rewind', 'clear', 'snapshot-gap', 'adapter-reconnect']
 const APP_EVENT_TYPES = [
@@ -49,6 +53,9 @@ const APP_EVENT_TYPES = [
   'terminal/suspended',
   'terminal/resumed',
   'app/error',
+  'scene/open',
+  'scene/close',
+  'scene/focus',
 ] as const
 
 function fail(field: string): never {
@@ -113,6 +120,14 @@ function validateSerializableError(value: unknown, field: string): void {
   if (typeof err.message !== 'string') fail(`${field}.message must be a string`)
   if (typeof err.recoverable !== 'boolean') fail(`${field}.recoverable must be boolean`)
   if (err.details !== undefined && !isSerializableValue(err.details)) fail(`${field}.details must be a SerializableValue`)
+}
+
+function validateSceneViewModel(value: unknown, field: string): void {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) fail(`${field} must be an object`)
+  const v = value as Record<string, unknown>
+  if (typeof v.sceneId !== 'string' || v.sceneId === '') fail(`${field}.sceneId must be a non-empty string`)
+  if (!isNonNegativeInt(v.revision)) fail(`${field}.revision must be a non-negative integer`)
+  if (!isSerializableValue(v.data)) fail(`${field}.data must be a SerializableValue`)
 }
 
 function validateInputCommand(value: unknown): void {
@@ -198,6 +213,17 @@ export function validateAppEvent(value: unknown): AppEvent {
       break
     case 'app/error':
       validateSerializableError(e.error, 'error')
+      break
+    case 'scene/open':
+      validateSceneViewModel(e.scene, 'scene')
+      break
+    case 'scene/close':
+      if (typeof e.sceneId !== 'string' || e.sceneId === '') fail('sceneId must be a non-empty string')
+      if (!['user', 'teardown', 'error'].includes(e.reason as string)) fail('reason must be user|teardown|error')
+      break
+    case 'scene/focus':
+      if (typeof e.sceneId !== 'string' || e.sceneId === '') fail('sceneId must be a non-empty string')
+      if (!['scene', 'overlay'].includes(e.target as string)) fail('target must be scene|overlay')
       break
   }
   return e as unknown as AppEvent

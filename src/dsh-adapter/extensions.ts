@@ -10,6 +10,9 @@
  * - `ctx.tuiStatus`    — keyed status-line contributions
  * - `ctx.tuiShortcuts` — keyboard shortcut registry
  * - `ctx.tuiRenderers` — custom session-entry text renderers
+ * - `ctx.tuiScenes`    — SceneV2 registry (WP-08a; folded into this row when
+ *   the standalone `dsh-tui-scenes` row and the `./scenes` / `./jsx-runtime`
+ *   package exports were removed in the breaking v2 scene release)
  *
  * The decision-point events (`tui/input`, `tui/rewind-prompt`, …) need no
  * separate service — they are fired by the channel and answered through the
@@ -32,6 +35,7 @@ import TuiDialogRuntime from './dialogs.js'
 import TuiStatusRuntime from './status.js'
 import TuiShortcutRuntime from './shortcuts.js'
 import TuiRendererRuntime from './renderers.js'
+import TuiSceneRuntime from './scenes.js'
 import { installDecisionGuard } from './decision-guard.js'
 import { readGrantStore } from './grants.js'
 
@@ -43,4 +47,5 @@ export function apply(ctx: Context): void {
   ctx.plugin(TuiStatusRuntime)
   ctx.plugin(TuiShortcutRuntime)
   ctx.plugin(TuiRendererRuntime)
+  ctx.plugin(TuiSceneRuntime)
 }

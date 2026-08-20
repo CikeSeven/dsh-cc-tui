@@ -1,51 +1,66 @@
-/** Provider-neutral full-screen scene registry for terminal front doors. */
+/**
+ * Cordis facade over the tui-v2 plugin UI runtime (WP-08a, plan §7.4).
+ *
+ * BREAKING (v2 scene API): the React scene contract (`TuiSceneProps` /
+ * `TuiSceneDescriptor` with a `component`, the `./scenes` and `./jsx-runtime`
+ * package exports, the channel/Chat React render path) is removed. Scenes are
+ * now `SceneDescriptorV2` registrations handled by the Cordis-free runtime in
+ * `src/tui-v2/scenes/runtime.js`; this module only resolves the caller's
+ * activation, verified Component identity, grant gate and effect ledger, then
+ * delegates. Old React descriptors fail the `apiVersion` gate and come back
+ * as a structured `{ status: 'rejected', code: 'unsupported-scene-api' }`.
+ *
+ * Grant gate (§7.4 注册时 grant 校验): every `requiredGrants` entry is a
+ * permission name evaluated against the live GrantStore with the canonical
+ * enforceable scope for that permission kind — storage permissions bind to
+ * the plugin's own component id, intercept permissions to their event point,
+ * `messages.observe.read` to the `session:*` wildcard. Permissions without a
+ * derivable scope (e.g. `commands.invoke`, whose scope is a concrete command
+ * id a scene descriptor cannot name) can never satisfy the gate and reject
+ * the registration with `missing-grant` — fail closed, never guessed.
+ */
 
-import type React from 'react'
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { Channel } from './channel.js'
+import type { SceneDescriptorV2, SceneRegistrationHandle } from '../tui-v2/scenes/contract.js'
+import {
+  createPluginUIRuntime,
+  type PluginRowRenderer,
+  type PluginUIRuntime,
+} from '../tui-v2/scenes/runtime.js'
+import {
+  INTERCEPT_EVENT_SCOPE_BY_PERMISSION,
+  STORAGE_PERMISSIONS,
+} from '../plugin-spec/permission-scope.js'
 import { activationFiber, bindCallerEffect, compositionRoot, concreteService, requirePluginCaller } from './host-access.js'
 import { componentIdentityOf } from './component-identity.js'
+import type { TuiPluginHost } from './plugin-host.js'
 
-/**
- * Props every plugin scene receives. Both element creation and hooks must go
- * through the HOST's React, never the plugin's own copy:
- *
- * - Hooks: a component rendered by this TUI's reconciler but calling hooks
- *   imported from a second React copy (the plugin's own node_modules) dies
- *   with an invalid-hook-call on first render. Use the injected `React`.
- * - Elements: this app's reconciler (React 19) accepts only
- *   `Symbol.for('react.transitional.element')` elements. JSX compiled
- *   against a plugin-bundled older React emits `Symbol.for('react.element')`
- *   and throws on first render. Create elements with the injected `React`
- *   (`React.createElement`/`React.Fragment`), or compile JSX against the
- *   host runtime via tsconfig
- *   `"jsxImportSource": "@deepseek-harness-tui/dsh-tui"` (its `./jsx-runtime`
- *   subpath re-exports this app's own react/jsx-runtime). A plugin-owned
- *   React copy works ONLY if it is the same React 19 line — and its hooks
- *   remain off-limits regardless.
- */
-export interface TuiSceneProps {
-  /** The TUI's React instance — use THIS for every hook and element. */
-  React: typeof React
-  /** The TUI's ui kit (Box/Text/useInput/useTerminalSize/…). */
-  ui: typeof import('../ui.js')
-  /** Live session channel: rows, status, trace events, notifications. */
-  channel: Channel
-  /** Leave the scene and return to whatever screen was up before. */
-  close(): void
+export type {
+  PluginRowView,
+  SceneCapabilityContext,
+  SceneCommand,
+  SceneCommandDescriptor,
+  SceneComponentAdapter,
+  SceneDescriptorV2,
+  SceneRegistration,
+  SceneRegistrationHandle,
+  SceneV2,
+  ToolRowView,
+} from '../tui-v2/scenes/contract.js'
+export type { PluginRowRenderer } from '../tui-v2/scenes/runtime.js'
+
+/** Plugin-facing view of the currently open scene (legacy `active` parity:
+ *  the descriptor object is gone, the id/plugin identity remains). */
+export interface TuiActiveScene {
+  readonly id: string
+  readonly pluginId: string
 }
 
-export interface TuiSceneDescriptor {
-  /** Unique scene id (kebab-case); the plugin's own commands open it by id. */
-  id: string
-  /** Optional human label for logs/debugging; the scene renders its own header. */
-  title?: string
-  component: React.ComponentType<TuiSceneProps>
-}
-
-/** Host-only scene controls used by the channel; omitted from the plugin export. */
+/** Host-only scene controls; omitted from the plugin export surface. */
 export interface TuiSceneHost {
-  readonly active: TuiSceneDescriptor | undefined
+  /** The Cordis-free runtime, for the v2 coordinator's `attach(hooks)`. */
+  readonly runtime: PluginUIRuntime
+  readonly active: TuiActiveScene | undefined
   open(id: string): boolean
   close(): void
   subscribe(listener: () => void): () => void
@@ -57,55 +72,77 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-export const name = 'dsh-tui-scenes'
-
 /**
- * Small host-only registry; command execution remains owned by dsh-commands.
+ * `ctx.tuiScenes` — SceneV2 registration + row renderers (plan §7.4).
  *
- * A plugin registers a scene once (`ctx.tuiScenes.register(...)`, keep the
- * dispose) and opens it from anywhere host-side — typically its own
- * dsh-commands handler: `ctx.tuiScenes.open('my-scene')` plus a silent
- * `success` result, so the conversation stays untouched while the scene
- * takes the whole terminal the way the trajectory scene does.
+ * A plugin registers a scene once (`ctx.tuiScenes.register(descriptor)`,
+ * keep the handle's `dispose`) and opens it from anywhere host-side —
+ * typically its own dsh-commands handler: `ctx.tuiScenes.open('my-scene')`
+ * plus a silent `success` result, so the conversation stays untouched while
+ * the scene takes the whole terminal the way the trajectory scene does.
+ * Command execution remains owned by dsh-commands; the scene's own typed
+ * commands flow through its capability context (`SceneCommand`).
  */
 export class TuiSceneRuntime extends Service {
   constructor(ctx: Context) {
     super(ctx, 'tuiScenes')
     compositionRoot(ctx)
     const runtime = this
+    const pluginRuntime = createPluginUIRuntime({
+      hasGrant(pluginId, grant) {
+        if (pluginId === 'undeclared') return false
+        const store = ctx.get('tuiPluginHost')?.grants
+        if (store === undefined) return false
+        const scope = sceneGrantScope(grant, pluginId)
+        if (scope === undefined) return false
+        try {
+          return store.allows({ componentId: pluginId }, grant, scope)
+        } catch {
+          return false // a throwing grant store fails closed
+        }
+      },
+    })
     const state: SceneState = {
-      scenes: new Map(),
+      runtime: pluginRuntime,
       owners: new Map(),
       listeners: new Set(),
-      current: undefined,
+      lastActive: undefined,
       host: undefined,
       logger: ctx.logger,
     }
     state.host = Object.freeze({
+      runtime: pluginRuntime,
       get active() {
-        return sceneStateFor(runtime).current
+        return activeSceneOf(sceneStateFor(runtime))
       },
       open(id: string) {
-        return openScene(runtime, id)
+        return sceneStateFor(runtime).runtime.open(id)
       },
       close() {
-        closeScene(runtime)
+        void sceneStateFor(runtime).runtime.close()
       },
       subscribe(listener: () => void) {
-        return subscribeScenes(runtime, listener)
+        return sceneStateFor(runtime).runtime.subscribe(listener)
       },
     })
+    // Re-dispatch the runtime's transition feed to owner-scoped listeners
+    // (legacy subscribe parity: a plugin only hears about its own scenes).
+    pluginRuntime.subscribe(() => pumpScenes(sceneStateFor(runtime)))
     sceneStates.set(this, state)
   }
 
   /**
-   * Register a full-screen scene; returns the dispose function (caller
-   * scopes it with `ctx.effect`). The optional trailing `identity` (the
-   * plugin's own ctx) only feeds the effect ledger's pluginId — omitting it
-   * records `undeclared` (C-060).
+   * Register a SceneV2 descriptor (plan §7.4). Returns the registration
+   * handle — check `handle.result.status`: `accepted` carries the negotiated
+   * apiVersion, `rejected` carries a structured code
+   * (`unsupported-scene-api` for legacy React descriptors, `missing-grant`,
+   * `duplicate-scene`) and an inert dispose. Shape violations (bad id,
+   * malformed commands) are programmer errors and throw TypeError. Caller
+   * identity and activation rules are unchanged from the legacy seam. The
+   * optional trailing `identity` (the plugin's own ctx) only feeds the
+   * effect ledger's pluginId — omitting it records `undeclared` (C-060).
    */
-  register(descriptor: TuiSceneDescriptor, identity?: Context): () => void {
-    const state = sceneStateFor(this)
+  register(descriptor: SceneDescriptorV2, identity?: Context): SceneRegistrationHandle {
     const caller = requirePluginCaller(this.ctx, 'tuiScenes.register', this)
     const activationOwner = activationFiber(caller)
     if (activationOwner === undefined) throw new Error('dsh-tui: tuiScenes.register requires a live activation')
@@ -114,94 +151,179 @@ export class TuiSceneRuntime extends Service {
     if (identity !== undefined && callerIdentity !== undefined && suppliedIdentity !== callerIdentity) {
       throw new Error('dsh-tui: tuiScenes.register identity belongs to another activation')
     }
-    const id = descriptor.id.trim().toLowerCase()
-    if (!/^[a-z][a-z0-9_-]*$/u.test(id)) throw new TypeError(`invalid TUI scene id: ${descriptor.id}`)
-    if (state.scenes.has(id)) {
+    const state = sceneStateFor(this)
+    const handle = state.runtime.register(descriptor, {
+      ...(suppliedIdentity === undefined ? {} : { pluginId: suppliedIdentity.componentId }),
+    })
+    if (handle.result.status === 'rejected') {
       caller.get('tuiEffectLedger')?.record(
         {
           operation: 'create',
-          resource: { kind: 'scene', id },
+          // The descriptor may be a legacy React one (no usable id); keep the
+          // ledger row stable rather than echoing arbitrary input.
+          resource: { kind: 'scene', id: ledgerSceneId(descriptor) },
+          result: 'failed',
+          errorCode: SCENE_REJECTION_ERROR_CODES[handle.result.code],
+        },
+        identity,
+      )
+      return handle
+    }
+    const sceneId = handle.result.descriptorId
+    state.owners.set(sceneId, activationOwner)
+    caller.get('tuiEffectLedger')?.record(
+      { operation: 'create', resource: { kind: 'scene', id: sceneId }, result: 'applied' },
+      identity,
+    )
+    let disposed = false
+    const dispose = () => {
+      if (disposed) return
+      disposed = true
+      if (state.owners.get(sceneId) === activationOwner) state.owners.delete(sceneId)
+      handle.dispose()
+      caller.get('tuiEffectLedger')?.record(
+        { operation: 'release', resource: { kind: 'scene', id: sceneId }, result: 'applied' },
+        identity,
+      )
+    }
+    bindCallerEffect(caller, dispose)
+    return Object.freeze({ result: handle.result, dispose })
+  }
+
+  /**
+   * Register a v2 row renderer for the caller's plugin id (one per plugin;
+   * §7.4 ToolRowView/PluginRowView in, Component or mutable string[] out).
+   * Refusals follow the tuiRenderers convention: warn, inert dispose.
+   */
+  registerRowRenderer(renderer: PluginRowRenderer, identity?: Context): () => void {
+    let caller: Context
+    try {
+      caller = requirePluginCaller(this.ctx, 'tuiScenes.registerRowRenderer', this)
+    } catch {
+      this.ctx.logger.warn('dsh-tui: tuiScenes.registerRowRenderer requires a live non-root plugin activation')
+      return () => {}
+    }
+    const callerIdentity = componentIdentityOf(caller)
+    const suppliedIdentity = identity === undefined ? callerIdentity : componentIdentityOf(identity)
+    if (identity !== undefined && callerIdentity !== undefined && suppliedIdentity !== callerIdentity) {
+      this.ctx.logger.warn('dsh-tui: tuiScenes.registerRowRenderer identity belongs to another activation')
+      return () => {}
+    }
+    const state = sceneStateFor(this)
+    const pluginId = suppliedIdentity?.componentId ?? 'undeclared'
+    const dispose = state.runtime.registerRowRenderer(renderer, { pluginId })
+    if (state.runtime.rowRendererFor(pluginId) !== renderer) {
+      // Duplicate or invalid registration: the runtime returned an inert
+      // dispose; mirror the refusal in the ledger and the log.
+      this.ctx.logger.warn(`dsh-tui: tuiScenes.registerRowRenderer rejected a renderer for "${pluginId}"`)
+      caller.get('tuiEffectLedger')?.record(
+        {
+          operation: 'create',
+          resource: { kind: 'row-renderer', id: pluginId },
           result: 'failed',
           errorCode: 'DUPLICATE_CONTRIBUTION_ID',
         },
         identity,
       )
-      throw new Error(`TUI scene "${id}" is already registered`)
+      return dispose
     }
-    const normalized = Object.freeze({ ...descriptor, id })
-    state.scenes.set(id, normalized)
-    state.owners.set(id, activationOwner)
     caller.get('tuiEffectLedger')?.record(
-      { operation: 'create', resource: { kind: 'scene', id }, result: 'applied' },
+      { operation: 'create', resource: { kind: 'row-renderer', id: pluginId }, result: 'applied' },
       identity,
     )
-    const dispose = () => {
-      if (state.scenes.get(id) !== normalized) return
-      state.scenes.delete(id)
-      state.owners.delete(id)
+    const tracked = () => {
+      dispose()
       caller.get('tuiEffectLedger')?.record(
-        { operation: 'release', resource: { kind: 'scene', id }, result: 'applied' },
+        { operation: 'release', resource: { kind: 'row-renderer', id: pluginId }, result: 'applied' },
         identity,
       )
-      // Disposing the open scene must not strand the user on a dead screen.
-      if (state.current === normalized) {
-        state.current = undefined
-        notifyScenes(state, activationOwner)
-      }
     }
-    bindCallerEffect(caller, dispose)
-    return dispose
+    bindCallerEffect(caller, tracked)
+    return tracked
   }
 
   /**
    * Swap the conversation for the named scene. Returns false (and warns)
-   * when no plugin registered that id — a mistyped id must fail visibly in
-   * the log, not silently do nothing in the UI.
+   * when no plugin registered that id or the scene belongs to another
+   * activation — a mistyped id must fail visibly in the log, not silently
+   * do nothing in the UI.
    */
   open(id: string): boolean {
     const caller = requirePluginCaller(this.ctx, 'tuiScenes.open', this)
     const owner = activationFiber(caller)
-    return owner === undefined ? false : openScene(this, id, caller, owner)
+    if (owner === undefined) return false
+    const state = sceneStateFor(this)
+    const sceneId = String(id ?? '').trim().toLowerCase()
+    const registration = state.runtime.registrationOf(sceneId)
+    if (registration === undefined) {
+      caller.logger.warn(`dsh-tui: no TUI scene registered as "${sceneId}"`)
+      return false
+    }
+    if (state.owners.get(sceneId) !== owner) {
+      caller.logger.warn(`dsh-tui: scene "${sceneId}" belongs to another activation`)
+      return false
+    }
+    return state.runtime.open(sceneId)
   }
 
   close(): void {
     const caller = requirePluginCaller(this.ctx, 'tuiScenes.close', this)
     const owner = activationFiber(caller)
-    if (owner !== undefined) closeScene(this, caller, owner)
+    if (owner === undefined) return
+    const state = sceneStateFor(this)
+    const activeId = state.runtime.activeView()?.sceneId
+    if (activeId === undefined) return
+    if (state.owners.get(activeId) !== owner) {
+      caller.logger.warn(`dsh-tui: scene "${activeId}" belongs to another activation`)
+      return
+    }
+    void state.runtime.close()
   }
 
-  /** The scene currently replacing the conversation, if any. */
-  get active(): TuiSceneDescriptor | undefined {
+  /** The caller's own open scene, if any (legacy owner-scoped `active`). */
+  get active(): TuiActiveScene | undefined {
     const caller = requirePluginCaller(this.ctx, 'tuiScenes.active', this)
     const owner = activationFiber(caller)
+    if (owner === undefined) return undefined
     const state = sceneStateFor(this)
-    return owner !== undefined && state.current !== undefined && state.owners.get(state.current.id) === owner
-      ? state.current
-      : undefined
+    const current = activeSceneOf(state)
+    return current !== undefined && state.owners.get(current.id) === owner ? current : undefined
   }
 
-  /** UI-side change feed: fired after every open/close/dispose transition. */
+  /** UI-side change feed, owner-scoped: fired when a transition opens or
+   *  closes a scene owned by the caller's activation. */
   subscribe(listener: () => void): () => void {
     const caller = requirePluginCaller(this.ctx, 'tuiScenes.subscribe', this)
     const owner = activationFiber(caller)
     if (owner === undefined) return () => {}
-    const dispose = subscribeScenes(this, listener, owner)
+    const state = sceneStateFor(this)
+    const entry = { owner, listener }
+    state.listeners.add(entry)
+    const dispose = () => {
+      state.listeners.delete(entry)
+    }
     bindCallerEffect(caller, dispose)
     return dispose
   }
-
 }
 
 interface SceneState {
-  readonly scenes: Map<string, TuiSceneDescriptor>
+  readonly runtime: PluginUIRuntime
+  /** sceneId → owning activation fiber (set at register, cleared at dispose). */
   readonly owners: Map<string, object>
   readonly listeners: Set<{ owner: object | undefined; listener: () => void }>
-  current: TuiSceneDescriptor | undefined
+  lastActive: { readonly id: string; readonly owner: object | undefined } | undefined
   host: TuiSceneHost | undefined
   readonly logger: Context['logger']
 }
 
 const sceneStates = new WeakMap<TuiSceneRuntime, SceneState>()
+
+const SCENE_REJECTION_ERROR_CODES = {
+  'unsupported-scene-api': 'UNSUPPORTED_SCENE_API',
+  'missing-grant': 'PERMISSION_NOT_GRANTED',
+  'duplicate-scene': 'DUPLICATE_CONTRIBUTION_ID',
+} as const
 
 function sceneStateFor(runtime: TuiSceneRuntime): SceneState {
   const state = sceneStates.get(concreteService(runtime))
@@ -209,50 +331,49 @@ function sceneStateFor(runtime: TuiSceneRuntime): SceneState {
   return state
 }
 
-function openScene(runtime: TuiSceneRuntime, id: string, caller?: Context, owner?: object): boolean {
-  const state = sceneStateFor(runtime)
-  const scene = state.scenes.get(id.trim().toLowerCase())
-  if (scene === undefined) {
-    ;(caller?.logger ?? state.logger).warn(`dsh-tui: no TUI scene registered as "${id}"`)
-    return false
-  }
-  if (owner !== undefined && state.owners.get(scene.id) !== owner) {
-    caller?.logger.warn(`dsh-tui: scene "${scene.id}" belongs to another activation`)
-    return false
-  }
-  if (scene === state.current) return true
-  const previousOwner = state.current === undefined ? undefined : state.owners.get(state.current.id)
-  state.current = scene
-  notifyScenes(state, previousOwner)
-  return true
+/**
+ * Canonical enforceable scope for a scene grant (see the module header).
+ * Returns undefined when the permission kind has no derivable scope — the
+ * grant gate then fails closed.
+ */
+function sceneGrantScope(permission: string, componentId: string): string | undefined {
+  if (STORAGE_PERMISSIONS.has(permission)) return componentId
+  const eventScope = INTERCEPT_EVENT_SCOPE_BY_PERMISSION[permission]
+  if (eventScope !== undefined) return eventScope
+  if (permission === 'messages.observe.read') return 'session:*'
+  return undefined
 }
 
-function closeScene(runtime: TuiSceneRuntime, caller?: Context, owner?: object): void {
-  const state = sceneStateFor(runtime)
-  if (state.current === undefined) return
-  if (owner !== undefined && state.owners.get(state.current.id) !== owner) {
-    caller?.logger.warn(`dsh-tui: scene "${state.current.id}" belongs to another activation`)
-    return
-  }
-  const previousOwner = state.owners.get(state.current.id)
-  state.current = undefined
-  notifyScenes(state, previousOwner)
+/** Stable ledger id even for legacy/garbage descriptors. */
+function ledgerSceneId(descriptor: unknown): string {
+  const id = (descriptor as { id?: unknown } | null | undefined)?.id
+  return typeof id === 'string' && /^[a-z][a-z0-9_-]*$/u.test(id.trim().toLowerCase())
+    ? id.trim().toLowerCase()
+    : 'unregistered'
 }
 
-function subscribeScenes(runtime: TuiSceneRuntime, listener: () => void, owner?: object): () => void {
-  const state = sceneStateFor(runtime)
-  const entry = { owner, listener }
-  state.listeners.add(entry)
-  return () => {
-    state.listeners.delete(entry)
-  }
+function activeSceneOf(state: SceneState): TuiActiveScene | undefined {
+  const view = state.runtime.activeView()
+  if (view === null) return undefined
+  const registration = state.runtime.registrationOf(view.sceneId)
+  if (registration === undefined) return undefined
+  return Object.freeze({ id: view.sceneId, pluginId: registration.pluginId })
 }
 
-function notifyScenes(state: SceneState, previousOwner?: object): void {
-  const currentOwner = state.current === undefined ? undefined : state.owners.get(state.current.id)
-  for (const entry of state.listeners) {
+/** Owner-filtered fan-out of the runtime's transition feed (legacy parity:
+ *  a listener scoped to activation A fires only when A's scene came or went). */
+function pumpScenes(state: SceneState): void {
+  const activeId = state.runtime.activeView()?.sceneId
+  const currentOwner = activeId === undefined ? undefined : state.owners.get(activeId)
+  const previousOwner = state.lastActive?.owner
+  state.lastActive = activeId === undefined ? undefined : { id: activeId, owner: currentOwner }
+  for (const entry of [...state.listeners]) {
     if (entry.owner !== undefined && entry.owner !== currentOwner && entry.owner !== previousOwner) continue
-    entry.listener()
+    try {
+      entry.listener()
+    } catch (error) {
+      state.logger.warn('dsh-tui: tuiScenes subscriber threw: %o', error)
+    }
   }
 }
 

@@ -44,9 +44,9 @@
       "types": "./lib/types/settings-sections.d.ts",
       "import": "./lib/types/settings-sections.js"
     },
-    "./scenes": {
-      "types": "./lib/types/scenes.d.ts",
-      "import": "./lib/types/scenes.js"
+    "./tui-v2": {
+      "types": "./lib/types/tui-v2/index.d.ts",
+      "import": "./lib/types/tui-v2/index.js"
     },
     "./extensions": {
       "types": "./lib/types/extensions.d.ts",
@@ -55,10 +55,6 @@
     "./plugin-host": {
       "types": "./lib/types/plugin-host.d.ts",
       "import": "./lib/types/plugin-host.js"
-    },
-    "./jsx-runtime": {
-      "types": "./lib/types/jsx-runtime.d.ts",
-      "import": "./lib/types/jsx-runtime.js"
     },
     "./invariant": {
       "types": "./lib/types/dsh-adapter/invariant.d.ts",

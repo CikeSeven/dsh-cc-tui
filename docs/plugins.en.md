@@ -290,7 +290,7 @@ runtime generation and the registry self-check.
 | 5 · System prompt sections | cordis service | Inject stable prompt sections |
 | 6 · Settings sections | `ctx.tuiSettingsSections` | Declarative `/settings` editing cards |
 | 7 · Profile composition | cordis.patch.yml | Install/config rows |
-| 8 · Full-screen scenes | `ctx.tuiScenes` | Whole-terminal React pages (the `/trace` shape) |
+| 8 · Full-screen scenes | `ctx.tuiScenes` | Whole-terminal SceneV2 pages (the `/trace` shape) |
 | 9 · Decision events | cordis serial/parallel events | Intercept/rewrite input, rewind, session switches, compaction |
 | 10 · Managed dialogs | `ctx.tuiDialogs` | select / confirm / input modals |
 | 11 · Status line | `ctx.tuiStatus` | Keyed status-line contributions above the prompt |
@@ -310,8 +310,10 @@ import type {
 } from '@deepseek-harness-tui/dsh-tui/extensions'
 ```
 
-The four services are mounted by the main package's `dsh-tui-extensions` row
-(already in cordis.patch.yml) — plugins must not mount their own copy. Always
+The four services plus the scene runtime `tuiScenes` are mounted by the main
+package's `dsh-tui-extensions` row (already in cordis.patch.yml; the
+standalone `dsh-tui-scenes` row was folded into it with the SceneV2
+migration) — plugins must not mount their own copy. Always
 consume through `ctx.get('tuiDialogs', false)`-style soft probes: an older
 profile may lack the row, and a missing optional service must degrade
 silently, never block startup (the #183 principle).
@@ -545,11 +547,30 @@ Rules (same as the core `cordis.patch.yml`):
   If your plugin is meant to be composed by other bundles, provide the same
   explicit subpath export.
 
-## Seam 8: Plugin Full-Screen Scenes (tuiScenes)
+## Seam 8: Plugin Full-Screen Scenes (tuiScenes, SceneV2)
 
-A plugin can register a **full-screen React scene** with the TUI and open it
-from its own slash command — the same "takes the whole terminal, hands it
-back untouched" shape as `/trace` (the trajectory timeline) and `/settings`.
+> **Breaking change (the SceneV2 migration)**: the legacy React scene
+> contract (`TuiSceneProps`/`TuiSceneDescriptor` with a `component` field,
+> the `./scenes` and `./jsx-runtime` package exports, the `jsxImportSource`
+> host-React arrangement) is removed wholesale, with no legacy adapter. An
+> old descriptor now gets a structured rejection at registration —
+> `{ status: 'rejected', code: 'unsupported-scene-api' }` — instead of
+> throwing or taking effect. The new contract types come from
+> `@deepseek-harness-tui/dsh-tui/extensions` (the service and descriptor
+> types) and `@deepseek-harness-tui/dsh-tui/tui-v2` (the versioned
+> capability export: `Component`, `SceneViewModel`, `SceneDescriptorV2`,
+> `SerializableValue`, the row-view types and the `SCENE_API_VERSION`
+> anchor).
+>
+> **Transition status**: SceneV2 renders through the tui-v2 pipeline. In the
+> transition releases before the v2 entry is enabled by default, `open()`
+> refuses with `false` (plus a diagnostic log) because the host is not wired
+> yet. Upgrade to the new contract and keep soft-probing as usual; do not
+> hard-code assumptions about the transition.
+
+A plugin can register a **full-screen scene** with the TUI and open it from
+its own slash command — the same "takes the whole terminal, hands it back
+untouched" shape as `/trace` (the trajectory timeline) and `/settings`.
 Command execution stays with dsh-commands (the `command/run`/`command/done`
 pair is logged as usual); the TUI only provides the rendering surface and
 keyboard ownership. Opening/closing a scene never touches the conversation
@@ -557,21 +578,31 @@ and appends no session events.
 
 ### Three steps
 
-**1. Register the scene** (`id` is globally unique, kebab-case; duplicate or
-invalid ids throw at registration):
+**1. Register the scene descriptor** (`apiVersion: '2'`; `id` is globally
+unique, kebab-case):
 
 ```ts
-import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
+import type { SceneDescriptorV2 } from '@deepseek-harness-tui/dsh-tui/extensions'
 
 ctx.inject(['tuiScenes'], (sceneCtx) => {
-  const dispose = sceneCtx.tuiScenes.register({
-    id: 'my-dashboard',
-    title: 'My dashboard',        // optional, for logs/debugging; the scene draws its own header
-    component: MyDashboard,
-  })
-  ctx.effect(() => () => dispose())   // disposing the OPEN scene closes it
+  const handle = sceneCtx.tuiScenes.register(descriptor)
+  if (handle.result.status === 'rejected') {
+    // 'unsupported-scene-api' | 'missing-grant' | 'duplicate-scene' —
+    // structured refusal, no throw; handle.dispose is a no-op.
+    ctx.logger.warn(`scene rejected: ${handle.result.code}`)
+    return
+  }
+  ctx.effect(() => () => handle.dispose())  // disposing the OPEN scene closes it
 })
 ```
+
+Registration runs four checks: the apiVersion gate (legacy React descriptors
+land here), the `requiredGrants` grant gate (fail closed — a throwing grant
+store counts as denial), command declaration invariants (`commandId` dedupe,
+non-negative integer `schemaVersion`, function `validate` — shape violations
+throw `TypeError`, same convention as event validation), and the duplicate
+check. Runtime dispositions of a well-formed descriptor always come back as
+the structured `SceneRegistration`, never as throws.
 
 **2. Register the command that opens it** (execution and logging stay with
 dsh-commands; the handler returns a silent `success`, leaving just the
@@ -593,97 +624,113 @@ ctx.inject(['commands'], (commandCtx) => {
 })
 ```
 
-**3. Write the scene component** — the props inject the host's `React` and
-`ui` kit, and that is a **hard contract** (see the next section):
+**3. Implement the scene** — `create(context)` returns a plain object whose
+render produces a **mutable `string[]` of logical lines**. No React, no JSX,
+no host component kit:
 
-```tsx
-// tsconfig: "jsx": "react-jsx",
-//           "jsxImportSource": "@deepseek-harness-tui/dsh-tui"
-import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
+```ts
+import type {
+  SceneDescriptorV2, SceneV2, SceneCapabilityContext,
+} from '@deepseek-harness-tui/dsh-tui/extensions'
 
-export function MyDashboard({ React, ui, channel, close }: TuiSceneProps) {
-  // Hooks MUST come from the injected React; JSX goes through the host
-  // jsx-runtime via jsxImportSource.
-  const { Box, Text, useInput, useTerminalSize } = ui
-  const { columns, rows } = useTerminalSize()
-  // channel is reactive: subscribe to version like Chat does and the data
-  // follows the session live.
-  React.useSyncExternalStore(channel.subscribe, () => channel.version)
-  // The scene owns the keyboard while open — conventions like Esc/q to
-  // close are the scene's own job.
-  useInput((input, key) => {
-    if (key.escape || input === 'q') close()
-  })
-  return (
-    <Box flexDirection="column" width="100%" paddingX={1}>
-      <Text bold>My dashboard</Text>
-      <Text>{channel.rows.length} rows · {columns}×{rows}</Text>
-    </Box>
-  )
+const descriptor: SceneDescriptorV2 = {
+  apiVersion: '2',
+  id: 'my-dashboard',
+  title: 'My dashboard',          // optional, for logs/debugging
+  requiredGrants: [],             // permission names the gate requires; fail closed
+  commands: [{                    // the full set of typed commands the scene accepts
+    commandId: 'refresh',
+    schemaVersion: 1,
+    validate(payload) {           // throwing rejects (into the error boundary)
+      if (typeof payload !== 'object' || payload === null) throw new TypeError('object expected')
+    },
+  }],
+  create(context: SceneCapabilityContext): SceneV2 {
+    return {
+      apiVersion: '2',
+      sceneId: 'my-dashboard',
+      focused: false,             // driven by the host, frame by frame
+      render(view, width, ctx) {
+        // view = the host-owned immutable SceneViewModel; a validated typed
+        // command payload becomes the next view.data (revision +1).
+        return [
+          `My dashboard (${width} cols, rev ${view.revision})`,
+          `data: ${JSON.stringify(view.data)}`,
+        ]
+      },
+      handleInput(event) {        // optional; owns every key/paste/mouse while focused
+        if (event === 'q') void context.close()
+      },
+      invalidate() {},            // ask the host to schedule the next frame
+      async onClose(reason) {},   // optional; 'user' | 'teardown' | 'error'
+    }
+  },
 }
 ```
 
-No JSX? `React.createElement(ui.Box, …)` is equally valid (`React` IS the
-host instance, so `createElement`/`Fragment` are always safe).
+The `SceneCapabilityContext` is a capability token minted at
+registration/open time, containing only `pluginId` / `instanceId` /
+`sceneId` / `takeover` (an opaque host-issued lease token — the scene cannot
+restore the screen with it) / `dispatch(command)` / `close(reason?)`. The
+scene gets NO React, Channel, Cordis context, writer or stdout — session
+data flows in through typed commands:
 
-### The React contract (read this — violations crash on first render)
+```ts
+context.dispatch({ type: 'dispatch', commandId: 'refresh', payload: { rows: 3 } })
+context.dispatch({ type: 'focus', target: 'scene' })     // or 'overlay'
+context.dispatch({ type: 'close', reason: 'user' })
+```
 
-The TUI's reconciler is **React 19**, and scene components run on the host's
-React instance:
-
-- **Hooks must come from the props-injected `React`.** A plugin importing its
-  own React copy from node_modules and calling its hooks hits a dispatcher
-  mismatch — invalid hook call on the very first render.
-- **Elements must be created through the host runtime.** React 19's JSX
-  factory emits `Symbol.for('react.transitional.element')` elements; JSX
-  compiled against a plugin-bundled older React (18 and below) emits
-  `Symbol.for('react.element')`, which the host reconciler rejects outright.
-  So JSX authors must point tsconfig's `jsxImportSource` at
-  `@deepseek-harness-tui/dsh-tui` (its `./jsx-runtime` subpath re-exports the
-  host's own `react/jsx-runtime` verbatim), or stick to the injected
-  `React`'s `createElement`. A plugin-owned React copy only produces legal
-  elements when it is the SAME 19.x line — and its hooks remain off-limits
-  regardless.
+The `dispatch` gate: `commandId` must be declared in the descriptor, the
+payload must be a `SerializableValue`, and it must pass the command's own
+`validate` — any failure goes to the error boundary and never takes effect
+silently.
 
 ### Runtime semantics
 
-- **Screen stack**: a plugin scene sits at the TOP of Chat's early-return
-  chain — above `/settings`, the `/resume` browser, and the trajectory
-  scene. Those screens stay mounted but yield the screen and the keyboard
-  while a scene is open; `close()` lands back on whatever was up before.
-- **Inline and fullscreen alike**: in inline mode the TUI wraps the scene in
-  `<AlternateScreen>` for you (DEC 1049 enter/exit, frame churn never reaches
-  scrollback); in fullscreen mode the host's alt screen is reused. Scene
-  components must NOT nest another `<AlternateScreen>` themselves.
-- **Async opens are safe**: handlers may be async and call `open()` after the
-  command settles — the open rides the channel's version bump into a
-  re-render, independent of the command's return timing.
+- **Screen stack**: while open, the scene owns the whole screen (above the
+  conversation layer); the overlay stack still composites on top of the
+  scene. `close()` lands back on the previous layer. The scene SURVIVES
+  transcript resets from `/new`, `/resume` and rewind (legacy pluginScene
+  parity).
+- **View model**: the host owns `SceneViewModel { sceneId, revision, data }`;
+  a validated typed-command payload replaces `data` wholesale with
+  `revision +1`, then a re-render follows. Scenes never mutate the view —
+  typed commands are the only mutation path.
+- **Row renderers**: a plugin may also register a v2 row renderer via
+  `ctx.tuiScenes.registerRowRenderer(renderer)` (serialized
+  `ToolRowView`/`PluginRowView` in, `Component` or mutable `string[]` out;
+  one per plugin). A throwing or malformed renderer falls back to the host's
+  default row rendering and never breaks the main frame.
+- **Error boundary**: exceptions from the factory, `render`, `handleInput`,
+  `dispatch` and `onClose` become a `PLUGIN_SCENE_ERROR` error event
+  carrying `{ pluginId, instanceId, sceneId, phase }`: the scene's
+  capability is revoked first (further dispatch/close calls are inert), then
+  the previous layer is restored — nothing ever propagates into the host's
+  render loop. A revoked scene CANNOT be re-opened; the recovery path is
+  disposing the old registration and registering again.
+- **Close semantics**: close/teardown callbacks run at most once per open
+  instance; repeated `close()` calls return the same settled promise.
 - **Graceful degradation without the service**: probe with
-  `ctx.get('tuiScenes')`; on an older patch without the `dsh-tui-scenes` row,
-  `open()` warns and returns `false` and the TUI never opens a scene — a
-  missing seam must never break startup (the #183 rule).
-- **Lifecycle**: registration and open state do NOT reset on agent swaps
-  (`/new`, `/resume`, rewind); `channel` always points at the live agent.
-  Unmounting (closing) destroys the component's hook state — reopening is a
-  fresh mount.
+  `ctx.get('tuiScenes', false)`; plugin code must not break when the service
+  is unmounted (the #183 rule).
 
 ### Scene red lines
 
-- The scene owns the WHOLE terminal while open: lay out with
-  `flexGrow`/`useTerminalSize()` instead of assuming fixed dimensions, and
-  never write to stdout (debug through `DSH_TUI_DEBUG`'s stderr).
-- A scene is an OBSERVER of the session: read from `channel` (rows, tokens,
-  working, traceEvents, …); writes (submit/steer/cancel) are available too,
-  but opening/closing itself produces no session events — never append
-  events from a scene; if you must emit, follow seam 1's log-only rules.
-- Per-frame render cost is the scene's own budget: use
-  `ui.useAnimationFrame` for motion, and keep synchronous I/O out of the
-  render path.
-- **Render-time exceptions are bounded**: an error thrown from the scene
-  component's render/lifecycle is caught by `PluginSceneBoundary` — the
-  transcript gets an error line, the scene closes itself, and the TUI keeps
-  running. Errors inside effects and async callbacks are beyond the
-  boundary's reach and remain the scene's own responsibility.
+- The scene owns the WHOLE terminal while open: `render(view, width)`
+  produces lines for the given width instead of assuming fixed dimensions,
+  and it must NEVER write to stdout/stderr (debug through the logger).
+- A scene is an OBSERVER of the session: session data arrives through typed
+  commands from the host/command path; opening/closing itself produces no
+  session events — never try to append events from a scene; if you must
+  emit, follow seam 1's log-only rules.
+- Per-frame render cost is the scene's own budget: `render` must be a pure
+  producer; keep synchronous I/O out of the render path and call
+  `invalidate()` when a repaint is needed.
+- The error boundary covers the five synchronous throw points; exceptions in
+  async callbacks remain the scene's own responsibility (catch them and turn
+  them into `dispatch({ type: 'close', reason: 'error' })` or a controlled
+  degradation).
 
 ## Seam 9: Decision Events (tui/input · rewind · session-switch · compact)
 

@@ -238,7 +238,7 @@ identity 时，activation-scoped grant 按 fail-closed 诊断。manifest 是
 | 五 · system prompt 段 | cordis 服务 | 注入稳定提示词段 |
 | 六 · 设置区块 | `ctx.tuiSettingsSections` | `/settings` 声明式编辑区块 |
 | 七 · profile 组合 | cordis.patch.yml | 安装/配置行 |
-| 八 · 全屏场景 | `ctx.tuiScenes` | 整屏 React 页面（`/trace` 形态） |
+| 八 · 全屏场景 | `ctx.tuiScenes` | 整屏 SceneV2 页面（`/trace` 形态） |
 | 九 · 决策事件 | cordis serial/parallel 事件 | 拦截/改写输入、rewind、会话切换、压缩 |
 | 十 · 托管对话框 | `ctx.tuiDialogs` | select / confirm / input 弹窗 |
 | 十一 · 状态行 | `ctx.tuiStatus` | 提示框上方的键控状态行 |
@@ -257,8 +257,9 @@ import type {
 } from '@deepseek-harness-tui/dsh-tui/extensions'
 ```
 
-四个服务由主包的 `dsh-tui-extensions` 行挂载（cordis.patch.yml 已带），插件
-无需也不应自己再挂。消费一律走 `ctx.get('tuiDialogs', false)` 软探测——旧版
+四个服务加上场景运行时 `tuiScenes` 都由主包的 `dsh-tui-extensions` 行挂载
+（cordis.patch.yml 已带；独立 `dsh-tui-scenes` 行自 SceneV2 迁移起并入此行），
+插件无需也不应自己再挂。消费一律走 `ctx.get('tuiDialogs', false)` 软探测——旧版
 profile 可能还没有这一行，探测不到就静默降级（#183 原则），绝不要让可选服务
 缺席拖垮启动。
 
@@ -459,9 +460,23 @@ ctx.inject(['tuiSettingsSections'], (settingsCtx) => {
   `@deepseek-harness-tui/dsh-tui/working-activity` 子路径再导出后挂载。你的插件
   如果也要被别的 bundle 组合，提供同样的显式子路径导出。
 
-## 接缝八：插件全屏场景（tuiScenes）
+## 接缝八：插件全屏场景（tuiScenes，SceneV2）
 
-插件可以把一个**整屏 React 场景**注册给 TUI，再从自己的 slash 命令里打开它——
+> **Breaking change（SceneV2 迁移）**：旧 React 场景契约（`TuiSceneProps`/
+> `TuiSceneDescriptor` 的 `component` 字段、`./scenes` 与 `./jsx-runtime`
+> 包导出、`jsxImportSource` 宿主 React 约定）已整体删除，不提供 legacy
+> adapter。旧描述符注册时返回结构化拒绝
+> `{ status: 'rejected', code: 'unsupported-scene-api' }`，不再抛错也不再
+> 生效。新契约类型从 `@deepseek-harness-tui/dsh-tui/extensions`（服务与
+> descriptor 类型）与 `@deepseek-harness-tui/dsh-tui/tui-v2`（版本化
+> capability 导出：`Component`、`SceneViewModel`、`SceneDescriptorV2`、
+> `SerializableValue`、行视图类型与 `SCENE_API_VERSION` 锚）获得。
+>
+> **过渡期状态**：SceneV2 的渲染面走 tui-v2 渲染管线；在 v2 入口默认
+> 启用前的过渡版本里，`open()` 会因宿主未接线而返回 `false`（并有
+> 诊断日志）。插件应先升级契约并照常做软探测，不要为过渡期写死假设。
+
+插件可以把一个**整屏场景**注册给 TUI，再从自己的 slash 命令里打开它——
 就是 `/trace`（轨迹时间线）和 `/settings` 那种"接管整个终端、退出后原样归还"
 的页面形态。命令执行权仍在 dsh-commands（`command/run`/`command/done` 日志对
 照记），TUI 只提供渲染面与键盘所有权；场景的打开/关闭不碰会话流，不落任何
@@ -469,20 +484,28 @@ session 事件。
 
 ### 三步接入
 
-**1. 注册场景**（`id` 全局唯一，kebab-case；重复或非法 id 注册即抛错）：
+**1. 注册场景描述符**（`apiVersion: '2'`；`id` 全局唯一 kebab-case）：
 
 ```ts
-import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
+import type { SceneDescriptorV2 } from '@deepseek-harness-tui/dsh-tui/extensions'
 
 ctx.inject(['tuiScenes'], (sceneCtx) => {
-  const dispose = sceneCtx.tuiScenes.register({
-    id: 'my-dashboard',
-    title: 'My dashboard',        // 可选，调试/日志用；标题栏由场景自绘
-    component: MyDashboard,
-  })
-  ctx.effect(() => () => dispose())   // dispose 当前打开的场景会自动关屏
+  const handle = sceneCtx.tuiScenes.register(descriptor)
+  if (handle.result.status === 'rejected') {
+    // 'unsupported-scene-api' | 'missing-grant' | 'duplicate-scene' ——
+    // 结构化拒绝，不抛错；handle.dispose 是空操作。
+    ctx.logger.warn(`scene rejected: ${handle.result.code}`)
+    return
+  }
+  ctx.effect(() => () => handle.dispose())  // dispose 当前打开的场景会自动关屏
 })
 ```
+
+注册时完成四道校验：apiVersion 门禁（旧 React 描述符落在这里）、
+`requiredGrants` 授权（fail closed，授权存储异常也算拒绝）、命令声明
+（`commandId` 去重、`schemaVersion` 非负整数、`validate` 必须是函数——形状
+违例抛 `TypeError`，与事件校验同一约定）、duplicate 检查。形状合法的
+运行时处置一律走结构化 `SceneRegistration`，不抛错。
 
 **2. 注册打开它的命令**（执行与日志仍归 dsh-commands；handler 返回静默
 `success`，转录里只留下命令本身的一行）：
@@ -503,81 +526,99 @@ ctx.inject(['commands'], (commandCtx) => {
 })
 ```
 
-**3. 写场景组件**——props 注入宿主的 `React` 与 `ui` kit，**这是硬契约**
-（原因见下节）：
+**3. 实现场景**——`create(context)` 返回一个普通对象，渲染产出**可变
+`string[]` 逻辑行**，没有 React、没有 JSX、没有宿主组件库：
 
-```tsx
-// tsconfig: "jsx": "react-jsx",
-//           "jsxImportSource": "@deepseek-harness-tui/dsh-tui"
-import type { TuiSceneProps } from '@deepseek-harness-tui/dsh-tui/scenes'
+```ts
+import type {
+  SceneDescriptorV2, SceneV2, SceneCapabilityContext,
+} from '@deepseek-harness-tui/dsh-tui/extensions'
 
-export function MyDashboard({ React, ui, channel, close }: TuiSceneProps) {
-  // hook 必须用注入的 React；JSX 经 jsxImportSource 走宿主 jsx-runtime
-  const { Box, Text, useInput, useTerminalSize } = ui
-  const { columns, rows } = useTerminalSize()
-  // channel 是响应式的：照 Chat 的用法订阅 version，数据随会话实时刷新
-  React.useSyncExternalStore(channel.subscribe, () => channel.version)
-  // 场景打开期间独占键盘——Esc/q 关闭这类约定由场景自己实现
-  useInput((input, key) => {
-    if (key.escape || input === 'q') close()
-  })
-  return (
-    <Box flexDirection="column" width="100%" paddingX={1}>
-      <Text bold>My dashboard</Text>
-      <Text>{channel.rows.length} rows · {columns}×{rows}</Text>
-    </Box>
-  )
+const descriptor: SceneDescriptorV2 = {
+  apiVersion: '2',
+  id: 'my-dashboard',
+  title: 'My dashboard',          // 可选，调试/日志用
+  requiredGrants: [],             // 需要授权的权限名；门槛 fail closed
+  commands: [{                    // 场景可接收的 typed command 全集
+    commandId: 'refresh',
+    schemaVersion: 1,
+    validate(payload) {           // 抛错即拒绝（进 error boundary）
+      if (typeof payload !== 'object' || payload === null) throw new TypeError('object expected')
+    },
+  }],
+  create(context: SceneCapabilityContext): SceneV2 {
+    return {
+      apiVersion: '2',
+      sceneId: 'my-dashboard',
+      focused: false,             // 由宿主逐帧驱动
+      render(view, width, ctx) {
+        // view = 宿主持有的不可变 SceneViewModel；typed command 的 payload
+        // 校验通过后成为下一个 view.data（revision +1）。
+        return [
+          `My dashboard (${width} cols, rev ${view.revision})`,
+          `data: ${JSON.stringify(view.data)}`,
+        ]
+      },
+      handleInput(event) {        // 可选；focus 在场景时全部按键/粘贴/鼠标归它
+        if (event === 'q') void context.close()
+      },
+      invalidate() {},            // 请求宿主调度下一帧
+      async onClose(reason) {},   // 可选；'user' | 'teardown' | 'error'
+    }
+  },
 }
 ```
 
-不用 JSX 也可以：`React.createElement(ui.Box, …)` 完全合法（`React` 就是宿主
-实例，`createElement`/`Fragment` 都安全）。
+`SceneCapabilityContext` 是注册/打开时铸造的 capability token，只含
+`pluginId` / `instanceId` / `sceneId` / `takeover`（宿主签发的 opaque
+lease token，场景不能据此自行恢复屏幕）/ `dispatch(command)` /
+`close(reason?)`。场景**拿不到** React、Channel、Cordis context、writer
+或 stdout——数据要进来就走 typed command：
 
-### React 契约（必读，违反即首渲染崩溃）
+```ts
+context.dispatch({ type: 'dispatch', commandId: 'refresh', payload: { rows: 3 } })
+context.dispatch({ type: 'focus', target: 'scene' })     // 或 'overlay'
+context.dispatch({ type: 'close', reason: 'user' })
+```
 
-TUI 的 reconciler 是 **React 19**，场景组件运行在宿主的 React 实例上：
-
-- **hook 必须用 props 注入的 `React`**。插件从自己 node_modules 里 import 一个
-  React 副本调 hook，dispatcher 对不上，第一次渲染就是 invalid hook call。
-- **元素必须过宿主 runtime**。React 19 的 JSX 工厂产出
-  `Symbol.for('react.transitional.element')` 元素；插件自带的旧版 React（18 及
-  更早）编译出的 JSX 是 `Symbol.for('react.element')`，宿主 reconciler 直接拒绝。
-  所以 JSX 作者必须把 tsconfig 的 `jsxImportSource` 指向
-  `@deepseek-harness-tui/dsh-tui`（它的 `./jsx-runtime` 子路径原样 re-export 宿主
-  的 `react/jsx-runtime`），或者干脆只用注入 `React` 的 `createElement`。
-  插件自带的 React 副本**仅当同为 19.x 时**产出的元素才合法，且 hook 依然禁用。
+`dispatch` 门禁：`commandId` 必须在 descriptor 里声明、payload 必须是
+`SerializableValue`、且通过该命令自己的 `validate`——任何一步失败都进
+error boundary，不会静默生效。
 
 ### 运行时语义
 
-- **屏幕栈**：插件场景位于 Chat early-return 链的最顶端——在 `/settings`、
-  `/resume` 浏览器、轨迹场景之上。场景打开期间这些屏幕保持挂载但让出屏幕与
-  键盘；`close()` 后落回之前所在的屏幕。
-- **inline / fullscreen 通吃**：inline 模式下 TUI 自动为场景包
-  `<AlternateScreen>`（DEC 1049 进出、帧 churn 不进 scrollback）；fullscreen
-  模式直接复用宿主已有的 alt screen，场景组件**不要**自己再包一层。
-- **命令异步打开也安全**：handler 是 async 的，命令结束后才 `open()` 也没问题——
-  打开动作经 channel 的 version bump 驱动重渲染，不依赖命令的返回时机。
-- **服务缺失时静默降级**：`ctx.get('tuiScenes')` 探测；旧版 patch 未挂
-  `dsh-tui-scenes` 行时 `open()` 打 warn 并返回 `false`，TUI 侧永不打开，
-  绝不拖垮启动（#183 原则）。
-- **生命周期**：场景注册与打开状态不随 `/new`、`/resume`、rewind 的 agent
-  切换重置；`channel` 始终指向当前 live agent。场景组件卸载（关屏）时 hook
-  状态随之销毁，重开是全新挂载。
+- **屏幕栈**：场景打开期间整屏归场景（覆盖会话层），overlay 栈仍合成在
+  场景之上；`close()` 后落回之前的层。场景在 `/new`、`/resume`、rewind
+  的 transcript reset 后**存活**（与旧 pluginScene 语义一致）。
+- **视图模型**：`SceneViewModel { sceneId, revision, data }` 由宿主持有；
+  typed command 的合法 payload 整体替换 `data` 并 `revision +1`，随后触发
+  重渲染。场景自身不改 view——mutation 只有 typed command 一条路。
+- **行渲染器**：插件还可以用 `ctx.tuiScenes.registerRowRenderer(renderer)`
+  注册 v2 行渲染器（输入序列化的 `ToolRowView`/`PluginRowView`，输出
+  `Component` 或可变 `string[]`；每插件一个）。渲染器抛错/返回畸形输出
+  时回退宿主默认行渲染，绝不破坏主 frame。
+- **错误边界**：factory、`render`、`handleInput`、`dispatch`、`onClose`
+  五个抛错点的异常统一转成带 `{ pluginId, instanceId, sceneId, phase }`
+  的 `PLUGIN_SCENE_ERROR` 错误事件：先撤销该场景的 capability（之后的
+  dispatch/close 全部惰性无效），再恢复前一层，绝不穿透进宿主渲染循环。
+  被撤销的场景**不能重开**——恢复路径是 dispose 旧注册后重新 register。
+- **关闭语义**：close/teardown 回调每次打开实例最多执行一次；重复
+  `close()` 返回同一个已完成 Promise。
+- **服务缺失时静默降级**：`ctx.get('tuiScenes', false)` 探测；服务未挂时
+  插件侧代码不应崩溃（#183 原则）。
 
 ### 场景的红线
 
-- 场景打开期间**独占整个终端**：布局用 `flexGrow`/`useTerminalSize()` 自适应，
-  别假设固定行列数；也别往 stdout 写任何东西（调试走 `DSH_TUI_DEBUG` 的
-  stderr）。
-- 场景是会话的**观察者**：数据从 `channel` 读（rows、tokens、working、
-  traceEvents……），写操作（submit/steer/cancel）也能用，但打开/关闭本身
-  不产生任何 session 事件——别在场景里 append 事件，要发就走接缝一的
-  log-only 铁律。
-- 每一帧的重渲染成本由场景自己兜着：高频动画用 `ui.useAnimationFrame`，
-  别在渲染路径里做同步 I/O。
-- **渲染期异常有边界兜底**：场景组件 render/生命周期里抛错会被
-  `PluginSceneBoundary` 接住——转录里报一条错误、场景自动关闭，不会拖垮整个
-  TUI。但 boundary 管不到 effect 与异步回调里的异常，那些仍是场景自己的责任。
+- 场景打开期间**独占整个终端**：`render(view, width)` 按给定宽度产出行，
+  别假设固定行列数；**绝不往 stdout/stderr 写**（调试走日志）。
+- 场景是会话的**观察者**：与会话有关的数据经 typed command 由宿主/命令
+  路径送入；打开/关闭本身不产生任何 session 事件——别试图绕过去 append
+  事件，要发就走接缝一的 log-only 铁律。
+- 每一帧的渲染成本由场景自己兜着：`render` 必须是纯函数式产出，别在
+  渲染路径里做同步 I/O；需要重绘就调 `invalidate()`。
+- error boundary 管的是五个同步抛错点；异步回调里的异常仍是场景自己的
+  责任（抓住并转成 `dispatch({ type: 'close', reason: 'error' })` 或
+  受控降级）。
 
 ## 接缝九：决策事件（tui/input · rewind · session-switch · compact）
 

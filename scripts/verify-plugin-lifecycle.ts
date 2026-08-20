@@ -14,6 +14,24 @@ import TuiSceneRuntime, { getHostSceneRuntime } from '../src/dsh-adapter/scenes.
 import TuiSettingsSectionsRuntime, { getHostSettingsSections } from '../src/dsh-adapter/settings-sections.js'
 import TuiWorkspaceRuntime, { getHostWorkspaceRuntime } from '../src/dsh-adapter/workspaces.js'
 import TuiCommandTreeRuntime, { getHostCommandTrees } from '../src/dsh-adapter/command-trees.js'
+import type { SceneDescriptorV2 } from '../src/dsh-adapter/scenes.js'
+import type { AppEvent } from '../src/tui-v2/model/events.js'
+import type { TakeoverLease } from '../src/tui-v2/terminal/lifecycle.js'
+
+/** Minimal SceneV2 descriptor for lifecycle probes (WP-08a contract). */
+const sceneDescriptor = (id: string): SceneDescriptorV2 => ({
+  apiVersion: '2',
+  id,
+  requiredGrants: [],
+  commands: [],
+  create: () => ({
+    apiVersion: '2',
+    sceneId: id,
+    focused: false,
+    render: () => [`scene ${id}`],
+    invalidate: () => {},
+  }),
+})
 
 let failures = 0
 let checks = 0
@@ -44,6 +62,38 @@ const commandTrees = getHostCommandTrees(root.get('tuiCommandTrees'))
 if (dialogs === undefined || status === undefined || shortcuts === undefined || renderers === undefined || scenes === undefined || sections === undefined || workspaces === undefined || commandTrees === undefined) {
   throw new Error('lifecycle battery could not resolve host accessors')
 }
+
+// WP-08a: mounting a SceneV2 needs the coordinator hooks the v2 host attaches
+// at startup. The battery supplies an in-memory stand-in: events are
+// collected, the takeover lease is forged opaque, renders are dropped.
+const sceneEvents: AppEvent[] = []
+let sceneEventSeq = 0
+scenes.runtime.attach({
+  dispatch: (event) => { sceneEvents.push(event) },
+  nextMeta: (sourceSeq) => ({
+    schemaVersion: 1,
+    adapterInstanceId: 'lifecycle-battery',
+    durableSessionId: 'lifecycle-battery',
+    uiSessionGeneration: 'gen-1',
+    resetEpoch: 0,
+    sessionEpoch: 'gen-1:0',
+    source: 'plugin',
+    sourceSeq,
+    seq: ++sceneEventSeq,
+    at: 0,
+  }),
+  takeover: {
+    request: async (ownerKind) => ({
+      token: { id: `takeover-${sceneEventSeq}`, ownerKind, generation: 0 },
+      generation: 0,
+      modeBeforeTakeover: {},
+      barrier: { generation: 0, committedPatchSeq: 0 },
+    }) as unknown as TakeoverLease,
+    restore: async () => {},
+    current: () => null,
+  },
+  requestRender: () => {},
+})
 
 // A plugin can read ctx.root, but cannot use it to attach an effect to the
 // host fiber. Mutating entries reject or return their documented inert result.
@@ -89,7 +139,7 @@ const rootProbe = root.inject(
       rootRegistryRejected = true
     }
     try {
-      rootCtx.get('tuiScenes')?.register({ id: 'root-leak', component: () => null })
+      rootCtx.get('tuiScenes')?.register(sceneDescriptor('root-leak'))
     } catch {
       rootSceneRejected = true
     }
@@ -153,7 +203,7 @@ const foreignFiber = foreignRoot.plugin({
     trace('tuiRenderers')?.register('foreign/leak', () => ({ lines: ['must not persist'] }))
     foreignDialog = trace('tuiDialogs')?.confirm({ title: 'must not queue' })
     try {
-      trace('tuiScenes')?.register({ id: 'foreign-leak', component: () => null })
+      trace('tuiScenes')?.register(sceneDescriptor('foreign-leak'))
     } catch {
       foreignSceneRejected = true
     }
@@ -203,7 +253,7 @@ const pluginFiber = root.inject(
     pluginCtx.tuiStatus.set('lifecycle', 'active')
     pluginCtx.tuiShortcuts.register('alt+x', { description: 'lifecycle', handler: () => {} })
     pluginCtx.tuiRenderers.register('lifecycle/note', () => ({ lines: ['active'] }))
-    pluginCtx.tuiScenes.register({ id: 'lifecycle', component: () => null })
+    pluginCtx.tuiScenes.register(sceneDescriptor('lifecycle'))
     pluginCtx.tuiScenes.open('lifecycle')
     pluginCtx.tuiSettingsSections.register({ ns: 'lifecycle', title: 'Lifecycle', fields: [] })
     pluginCtx.tuiWorkspaces.register({
@@ -218,6 +268,9 @@ const pluginFiber = root.inject(
   },
 )
 await pluginFiber
+// Scene mounts are async (takeover lease → factory): wait for the runtime to
+// settle before asserting the host-visible active scene.
+await scenes.runtime.whenIdle()
 check('live plugin effects are visible before dispose',
   status.getSnapshot().some(entry => entry.key === 'lifecycle')
   && scenes.active?.id === 'lifecycle'
@@ -272,6 +325,9 @@ await foreignStatusFiber.dispose()
 
 await pluginFiber.dispose()
 check('plugin dialog is cancelled on its fiber dispose', (await pluginDialog) === false)
+// The disposed registration closes its open scene as a teardown; let the
+// close (scene/close → onClose → takeover restore) settle before asserting.
+await scenes.runtime.whenIdle()
 retainedStatus?.set('retained-after-dispose', 'must not persist')
 check('fiber dispose releases every registered extension effect',
   status.getSnapshot().length === 0
@@ -317,7 +373,7 @@ const forgedFiber = root.inject(
     forged.get('tuiRenderers')?.register('forged/leak', () => ({ lines: ['must not persist'] }))
     forgedDialog = forged.get('tuiDialogs')?.confirm({ title: 'must not queue' })
     try {
-      forged.get('tuiScenes')?.register({ id: 'forged-leak', component: () => null })
+      forged.get('tuiScenes')?.register(sceneDescriptor('forged-leak'))
     } catch {
       forgedSceneRejected = true
     }
@@ -410,6 +466,7 @@ await effectFiber
 await effectFiber.dispose()
 check('overwritten fiber.effect cannot retain a contribution', !status.getSnapshot().some(entry => entry.key === 'effect-overwrite'))
 
+await scenes.runtime.detach()
 await root.fiber.dispose()
 if (failures > 0) {
   console.error(`plugin lifecycle battery FAILED (${failures}/${checks})`)

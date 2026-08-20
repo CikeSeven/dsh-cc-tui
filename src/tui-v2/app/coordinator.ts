@@ -82,7 +82,7 @@ import {
   type StatusLineView,
 } from '../model/selectors.js';
 import { initialUiState, type UiState } from '../model/state.js';
-import { createBaseRenderer, type BaseRenderer } from '../renderer/base-renderer.js';
+import { createBaseRenderer, fallbackRowComponent, type BaseRenderer } from '../renderer/base-renderer.js';
 import { compositeFrame } from '../renderer/compositor.js';
 import type { Frame, ScreenBackend } from '../renderer/frame.js';
 import {
@@ -116,7 +116,10 @@ import {
   type TerminalLifecycle,
 } from '../terminal/lifecycle.js';
 import type { TerminalProfile } from '../terminal/profile.js';
+import { createScreenTakeover } from '../terminal/takeover.js';
 import { createTerminalWriter } from '../terminal/writer.js';
+import { createPluginRowComponent } from '../scenes/row-component.js';
+import type { PluginUIRuntime, PluginUIRuntimeDiagnostics } from '../scenes/runtime.js';
 import type { Channel } from '../../dsh-adapter/channel.js';
 import {
   createChannelUiAdapter,
@@ -192,6 +195,13 @@ export interface TuiV2CoordinatorOptions {
   readonly approvalStore?: ApprovalStoreLike;
   readonly questionStore?: QuestionStoreLike;
   readonly pluginDialogStore?: PluginDialogStoreLike;
+  /**
+   * WP-08a plugin UI runtime (scenes + row renderers, plan §7.4). When
+   * present, the coordinator attaches it at start (it then owns scene
+   * takeover leases, the `focus.target === 'scene'` input route and the
+   * scene frame path) and detaches it at stop.
+   */
+  readonly scenes?: PluginUIRuntime;
   readonly onDiagnostic?: (diagnostic: CoordinatorDiagnostic) => void;
 }
 
@@ -216,6 +226,8 @@ export interface CoordinatorDiagnostics {
   readonly scrolling: ReturnType<ScrollingController['diagnostics']>;
   readonly commands: ReturnType<CommandsController['diagnostics']>;
   readonly dialogs: ReturnType<DialogsController['diagnostics']>;
+  /** WP-08a plugin scene runtime counters (absent when no runtime is wired). */
+  readonly scenes?: PluginUIRuntimeDiagnostics;
 }
 
 /** WP-05 controller handles (tests/verify introspection). */
@@ -267,6 +279,9 @@ function priorityFor(event: AppEvent): RenderPriority | null {
     case 'session/row-complete':
     case 'session/rows-reset':
       return 'sync';
+    case 'scene/open':
+    case 'scene/close':
+      return 'sync';
     case 'terminal/suspended':
     case 'terminal/resumed':
       return 'resize';
@@ -283,6 +298,8 @@ const MAX_GAP_RECOVERIES = 8;
 
 export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2Coordinator {
   const { channel, profile, clock } = options;
+  /** WP-08a plugin scene runtime (null = no scene support wired). */
+  const pluginRuntime: PluginUIRuntime | null = options.scenes ?? null;
   const diagnostic = (code: string, message: string, details?: Record<string, unknown>): void => {
     try {
       options.onDiagnostic?.({ code, message, ...(details !== undefined ? { details } : {}) });
@@ -399,7 +416,11 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           case 'tool':
             return (row, streaming) => createToolRow(rowViewOf(row, streaming), profile);
           default:
-            return undefined; // base-renderer fallback row component
+            // WP-08a plugin rows (§7.4): a row with source 'plugin' whose
+            // sourceId has a registered row renderer renders through it;
+            // every other unknown kind keeps the base-renderer fallback.
+            if (pluginRuntime === null) return undefined;
+            return (row) => createPluginRowComponent(row, profile, pluginRuntime);
         }
       },
     },
@@ -634,6 +655,11 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           lifecycleController.handleResize(payload.columns, payload.rows);
         } else if (event.kind === 'mouse') {
           const payload = event.payload as MousePayload;
+          // A plugin scene owns the pointer while it holds focus (§7.4).
+          if (state.focus.target === 'scene') {
+            pluginRuntime?.handleInput(event);
+            return;
+          }
           // Wheel events scroll the transcript; other mouse events are
           // counted-and-dropped (WP-05b surface).
           if (payload.action === 'wheel' && (payload.wheel === 'up' || payload.wheel === 'down')) {
@@ -651,6 +677,13 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
             dialogsController.handleInput(event);
             return;
           }
+          // While a plugin scene holds focus it owns the keyboard entirely
+          // (WP-08a §7.4; legacy: Chat's early-return handed every key to the
+          // scene, Esc/Ctrl+C included).
+          if (state.focus.target === 'scene') {
+            pluginRuntime?.handleInput(event);
+            return;
+          }
           // Scroll keys are transcript-bound and preempt the editor (the
           // vendored editor's pageScroll yields); ctrl+c/escape stay with
           // the input controller.
@@ -660,6 +693,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           // Only text-bearing dialogs (plugin input / optionless question)
           // consume pastes; other dialogs count-and-drop them.
           dialogsController.handleInput(event);
+        } else if (event.kind === 'paste' && state.focus.target === 'scene') {
+          pluginRuntime?.handleInput(event);
         } else {
           inputController.handleEvent(event);
         }
@@ -708,6 +743,22 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     onRequestStop: (reason) => lifecycleController.handleStopRequest(reason),
     onResume: () => lifecycleController.handleResume(),
     onProcessError: (error, origin) => lifecycleController.handleProcessError(error, origin),
+  });
+
+  // WP-08a (§6.6/§7.4): the scene runtime's ScreenTakeover. In-band scenes
+  // keep rendering through the writer (the lease barrier is a settled
+  // watermark, not a held quiesce); restore bumps the generation and marks
+  // the next frame a 'resume' full redraw.
+  const sceneTakeover = createScreenTakeover({
+    lifecycle,
+    writer,
+    onRestore: () => {
+      pendingFullRedraw = true;
+      fullRedrawReason = 'resume';
+      previousFrame = null;
+      prevFollowEnd = false;
+    },
+    onDiagnostic: (code, message, details) => diagnostic(code, message, details),
   });
 
   const scheduler: RenderScheduler<ScheduledFrame> = createRenderScheduler<ScheduledFrame>({
@@ -770,46 +821,82 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     // pump (and reject an unhandled promise), so this callback never throws.
     try {
       const startedAt = clock.now();
-      const dock = mergedDockView();
-      const status = mergedStatusLine();
-      const transcript = selectTranscriptView(state);
-      const output = baseRenderer.render({
-        transcript,
-        dock,
-        editor: editorView(),
-        status,
-        width: state.viewport.width,
-        height: state.viewport.height,
-        sessionEpoch: state.session.sessionEpoch,
-        sticky: state.viewport.sticky,
-      });
+      // WP-08a scene frame path (§7.4): while the model holds an open plugin
+      // scene, the whole viewport comes from the scene's adapter instead of
+      // the base renderer (whole-terminal takeover; the overlay stack still
+      // composites above it). The adapter never throws (error boundary).
+      const sceneAdapter = (() => {
+        if (state.scene === null || pluginRuntime === null) return null;
+        const adapter = pluginRuntime.activeAdapter();
+        return adapter !== null && adapter.scene.sceneId === state.scene.view.sceneId ? adapter : null;
+      })();
+      let lines: string[];
+      let cursor: { readonly x: number; readonly y: number; readonly visible: boolean } | undefined;
+      let baseFullRedraw = false;
+      let baseDiagnostics: { transcriptHeight: number; scrollTopLine: number } | null = null;
+      if (sceneAdapter !== null) {
+        sceneAdapter.focused = state.focus.target === 'scene';
+        // Frame-builder blank-fills missing rows and drops extras (§5.5), so
+        // the scene's logical lines pass through unpadded.
+        lines = sceneAdapter.render(state.viewport.width);
+        const sceneCursor = sceneAdapter.cursor;
+        cursor =
+          sceneAdapter.focused && sceneCursor !== undefined && sceneCursor.visible
+            ? { x: sceneCursor.x, y: sceneCursor.y, visible: true }
+            : undefined;
+      } else {
+        const dock = mergedDockView();
+        const status = mergedStatusLine();
+        const transcript = selectTranscriptView(state);
+        const output = baseRenderer.render({
+          transcript,
+          dock,
+          editor: editorView(),
+          status,
+          width: state.viewport.width,
+          height: state.viewport.height,
+          sessionEpoch: state.session.sessionEpoch,
+          sticky: state.viewport.sticky,
+        });
+        lines = [...output.lines];
+        cursor = output.cursor;
+        baseFullRedraw = output.diagnostics.fullRedraw;
+        baseDiagnostics = {
+          transcriptHeight: output.diagnostics.transcriptHeight,
+          scrollTopLine: output.diagnostics.scrollTopLine,
+        };
+      }
       framesRendered += 1;
-      const fullRedraw = pendingFullRedraw || output.diagnostics.fullRedraw;
+      const fullRedraw = pendingFullRedraw || baseFullRedraw;
       // WP-07: the inline live-region hint (append-only boundary) is computed
-      // from THIS render's own layout diagnostics and row mutability.
-      const inlineHint = backend.capabilities.supportsInlineLiveRegion
-        ? computeInlineLiveRegion({
-            transcriptHeight: output.diagnostics.transcriptHeight,
-            scrollTopLine: output.diagnostics.scrollTopLine,
-            heightIndex: baseRenderer.heightIndex,
-            isMutableRow: (rowId) => {
-              if (transcript.streamingRowId === rowId) return true;
-              const row = transcript.visibleRows.find((candidate) => candidate.rowId === rowId);
-              return row === undefined ? true : !row.settled; // unknown id: conservatively mutable
-            },
-            showUnseenIndicator: transcript.showUnseenIndicator,
-            followEnd: (state.viewport.sticky || baseRenderer.anchor === null) && prevFollowEnd,
-          })
-        : undefined;
+      // from THIS render's own layout diagnostics and row mutability. A scene
+      // frame has no append-only region: the hint stays undefined and the
+      // inline backend takes the whole-frame diff path (capability-driven).
+      const inlineHint =
+        backend.capabilities.supportsInlineLiveRegion && sceneAdapter === null && baseDiagnostics !== null
+          ? computeInlineLiveRegion({
+              transcriptHeight: baseDiagnostics.transcriptHeight,
+              scrollTopLine: baseDiagnostics.scrollTopLine,
+              heightIndex: baseRenderer.heightIndex,
+              isMutableRow: (rowId) => {
+                const transcript = selectTranscriptView(state);
+                if (transcript.streamingRowId === rowId) return true;
+                const row = transcript.visibleRows.find((candidate) => candidate.rowId === rowId);
+                return row === undefined ? true : !row.settled; // unknown id: conservatively mutable
+              },
+              showUnseenIndicator: selectTranscriptView(state).showUnseenIndicator,
+              followEnd: (state.viewport.sticky || baseRenderer.anchor === null) && prevFollowEnd,
+            })
+          : undefined;
       const baseFrame = buildFrame({
         frameId: `frame-${++frameSeq}`,
         stateRevision,
         width: state.viewport.width,
         height: state.viewport.height,
-        lines: output.lines,
+        lines,
         profile,
         modes: lifecycle.currentModeSnapshot(),
-        cursor: output.cursor,
+        cursor,
         generation: lifecycle.generation(),
         fullRedraw,
         fullRedrawReason: fullRedraw ? fullRedrawReason : undefined,
@@ -914,6 +1001,17 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       scheduler.start();
       adapter.start();
       dialogsController.start();
+      // WP-08a: bind the plugin scene runtime (registration lives on the
+      // Cordis facade; this coordinator session owns open/close/takeover).
+      pluginRuntime?.attach({
+        dispatch: applyEvent,
+        nextMeta: (sourceSeq) => meta.next('plugin', sourceSeq),
+        takeover: sceneTakeover,
+        requestRender: () => {
+          if (phase === 'active') scheduler.requestRender('notify', getScheduledState);
+        },
+        onDiagnostic: (code, message, details) => diagnostic(`scene/${code}`, message, details),
+      });
       phase = 'active';
       scheduler.requestRender('sync', getScheduledState);
     } catch (error) {
@@ -934,6 +1032,15 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       // Unsubscribe the dialog stores first: a teardown settleAll must not
       // dispatch overlay/close into a streaming controller that is stopping.
       dialogsController.dispose();
+      // WP-08a: tear down the open plugin scene (reason 'teardown') before
+      // the terminal stack stops; close/teardown run at most once (§7.4).
+      if (pluginRuntime?.attached === true) {
+        try {
+          await pluginRuntime.detach();
+        } catch (error) {
+          diagnostic('scene/detach-error', error instanceof Error ? error.message : String(error));
+        }
+      }
       scheduler.stop();
       // WP-07: park the cursor below the frame so the returning shell prompt
       // lands under the dock instead of overwriting it (best-effort, inline
@@ -1013,6 +1120,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       scrolling: scrollingController.diagnostics(),
       commands: commandsController.diagnostics(),
       dialogs: dialogsController.diagnostics(),
+      ...(pluginRuntime !== null ? { scenes: pluginRuntime.diagnostics() } : {}),
     }),
   };
 }

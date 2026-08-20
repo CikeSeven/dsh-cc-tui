@@ -580,8 +580,12 @@ export function createBaseRenderer(options: BaseRendererOptions): BaseRenderer {
  * Last-resort row rendering when the registry has no component for a kind:
  * sanitized plain text, dimmed, piped through the width pipeline like every
  * other line (untrusted block text must never bypass sanitizeText).
+ *
+ * Exported for the coordinator's plugin-row factory (WP-08a): a plugin row
+ * without a registered renderer — or a renderer that threw — renders exactly
+ * this fallback.
  */
-function fallbackRowComponent(row: UiRowSnapshot, profile: TerminalProfile): Component {
+export function fallbackRowComponent(row: UiRowSnapshot, profile: TerminalProfile): Component {
   const style = lineStyle({ dim: true })
   return {
     render(width: number): string[] {

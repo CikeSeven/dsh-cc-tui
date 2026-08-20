@@ -44,6 +44,7 @@ import {
   type Clock,
   type OverlayState,
   type RandomSource,
+  type SceneViewModel,
   type UiRowSnapshot,
 } from './schema.js'
 import {
@@ -310,6 +311,12 @@ function applyEvent(state: UiState, event: AppEvent): UiState {
       }
     case 'app/error':
       return withLastError(state, event.error.code, event.error.message, event.seq)
+    case 'scene/open':
+      return applySceneOpen(state, event.scene)
+    case 'scene/close':
+      return applySceneClose(state, event.sceneId)
+    case 'scene/focus':
+      return applySceneFocus(state, event.sceneId, event.target)
   }
 }
 
@@ -463,7 +470,10 @@ function applyRowsReset(state: UiState, event: RowsResetEvent): UiState {
   return {
     ...state,
     session,
-    focus: { target: 'editor', overlayId: null },
+    // A plugin scene survives session resets (§7.4 parity: the legacy
+    // channel.pluginScene was never cleared by /new, /resume or rewind), so
+    // focus falls back to it instead of the editor when one is open.
+    focus: focusAfterRelease([], state.scene),
     // Follow-end after any reset (rewind truncation, snapshot-gap heal, …):
     // pinned sticky at the tail window, scrollTop = maxScroll so the first
     // wheel-up starts from the visible window rather than the document top.
@@ -720,10 +730,74 @@ function applyOverlayClose(state: UiState, overlayId: string): UiState {
   const nextStack = stack.filter((o) => o.overlayId !== overlayId)
   let focus = state.focus
   if (state.focus.overlayId === overlayId) {
-    const topCapturing = [...nextStack].reverse().find((o) => o.captureInput)
-    focus = topCapturing
-      ? { target: 'overlay', overlayId: topCapturing.overlayId }
-      : { target: 'editor', overlayId: null }
+    focus = focusAfterRelease(nextStack, state.scene)
   }
   return { ...state, overlays: { stack: nextStack }, focus }
+}
+
+// ---------------------------------------------------------------------------
+// plugin scenes (WP-08a, plan §7.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Focus fallback chain when an input owner releases the keyboard: topmost
+ * capturing overlay → open plugin scene → editor (§15.1 WP-08a; the legacy
+ * Chat early-return stack had the same shape).
+ */
+function focusAfterRelease(
+  stack: readonly OverlayState[],
+  scene: UiState['scene'],
+): UiState['focus'] {
+  const topCapturing = [...stack].reverse().find((o) => o.captureInput)
+  if (topCapturing !== undefined) return { target: 'overlay', overlayId: topCapturing.overlayId }
+  if (scene !== null) return { target: 'scene', overlayId: null }
+  return { target: 'editor', overlayId: null }
+}
+
+/**
+ * scene/open carries the immutable SceneViewModel; a re-open of the same
+ * sceneId with a strictly higher revision is the view-update path (typed
+ * command dispatch bumps it). Equal-revision identical payloads are
+ * idempotent redeliveries; equal-revision divergent payloads are conflicts
+ * (same rule as rows, §5.3).
+ */
+function applySceneOpen(state: UiState, scene: SceneViewModel): UiState {
+  const existing = state.scene
+  if (existing !== null && existing.view.sceneId === scene.sceneId) {
+    if (scene.revision < existing.view.revision) return bump(state, 'droppedStaleRevision')
+    if (scene.revision === existing.view.revision) {
+      if (canonicalJson(scene) !== canonicalJson(existing.view)) return bump(state, 'conflict')
+      return state
+    }
+    const frozen = deepFreeze({ ...scene }) as SceneViewModel
+    return { ...state, scene: { view: frozen } }
+  }
+  const frozen = deepFreeze({ ...scene }) as SceneViewModel
+  return {
+    ...state,
+    scene: { view: frozen },
+    focus: { target: 'scene', overlayId: null },
+  }
+}
+
+function applySceneClose(state: UiState, sceneId: string): UiState {
+  if (state.scene === null || state.scene.view.sceneId !== sceneId) return state
+  return {
+    ...state,
+    scene: null,
+    focus: focusAfterRelease(state.overlays.stack, null),
+  }
+}
+
+function applySceneFocus(state: UiState, sceneId: string, target: 'scene' | 'overlay'): UiState {
+  if (state.scene === null || state.scene.view.sceneId !== sceneId) return state
+  if (target === 'scene') {
+    // A capturing overlay (managed dialog) owns the keyboard until it
+    // closes; the scene falls back into focus via the close path instead.
+    if (state.overlays.stack.some((o) => o.captureInput)) return state
+    return { ...state, focus: { target: 'scene', overlayId: null } }
+  }
+  const topCapturing = [...state.overlays.stack].reverse().find((o) => o.captureInput)
+  if (topCapturing === undefined) return state
+  return { ...state, focus: { target: 'overlay', overlayId: topCapturing.overlayId } }
 }

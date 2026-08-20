@@ -241,23 +241,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     )
   }
   const workspaceService = mountedWorkspaceService ?? createLocalWorkspaceRuntime()
-  // Same skew guard for the plugin-scene registry (dsh-tui-scenes row): the
-  // channel degrades to never opening scenes when the service is absent, so
-  // say why on profile launches — a plugin's open() otherwise fails with only
-  // its own warn to go on.
-  if (ctx.get('tuiScenes') === undefined && resolveDshProfileName() !== undefined) {
-    ctx.logger.warn(
-      'dsh-tui: tuiScenes service is not mounted; plugin scenes will never open. ' +
-      'The bundle patch is older than the installed dsh-tui package — update the globally installed dsh-tui launcher to match the profile (issue #183).',
-    )
-  }
-  // Same skew guard for the plugin-UI services (dsh-tui-extensions row):
-  // managed dialogs park unanswered, status contributions never render,
-  // shortcuts never match, and custom-entry renderers stay invisible when
-  // the row is absent — say why on profile launches.
+  // Same skew guard for the plugin-UI services (dsh-tui-extensions row,
+  // which also mounts the SceneV2 registry since WP-08a folded the
+  // dsh-tui-scenes row into it): managed dialogs park unanswered, status
+  // contributions never render, shortcuts never match, custom-entry
+  // renderers stay invisible and plugin scenes never open when the row is
+  // absent — say why on profile launches.
   if (ctx.get('tuiDialogs') === undefined && resolveDshProfileName() !== undefined) {
     ctx.logger.warn(
-      'dsh-tui: tuiDialogs/tuiStatus/tuiShortcuts/tuiRenderers services are not mounted; plugin dialogs, status contributions, shortcuts and custom-entry renderers are off. ' +
+      'dsh-tui: tuiDialogs/tuiStatus/tuiShortcuts/tuiRenderers/tuiScenes services are not mounted; plugin dialogs, status contributions, shortcuts, custom-entry renderers and scenes are off. ' +
       'The bundle patch is older than the installed dsh-tui package — update the globally installed dsh-tui launcher to match the profile (issue #183).',
     )
   }

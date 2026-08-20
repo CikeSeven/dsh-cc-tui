@@ -319,9 +319,22 @@ const check1 = (name: string, ok: boolean, detail?: string) => {
     check1('tuiShortcuts.register without identity returns a disposer', typeof disposeShortcut === 'function')
     disposeShortcut()
 
-    const disposeScene = pluginCtx.tuiScenes.register({ id: 'demo-scene', component: () => null })
-    check1('tuiScenes.register without identity returns a disposer', typeof disposeScene === 'function')
-    disposeScene()
+    const sceneHandle = pluginCtx.tuiScenes.register({
+      apiVersion: '2',
+      id: 'demo-scene',
+      requiredGrants: [],
+      commands: [],
+      create: () => ({
+        apiVersion: '2',
+        sceneId: 'demo-scene',
+        focused: false,
+        render: () => ['demo'],
+        invalidate: () => {},
+      }),
+    })
+    check1('tuiScenes.register without identity returns an accepted handle',
+      sceneHandle.result.status === 'accepted' && typeof sceneHandle.dispose === 'function')
+    sceneHandle.dispose()
 
     const disposeStatus = pluginCtx.tuiStatus.set('demo-key', 'text')
     check1('tuiStatus.set without identity returns a disposer', typeof disposeStatus === 'function')

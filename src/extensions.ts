@@ -51,6 +51,21 @@ export { matchShortcut, parseShortcutCombo, TuiShortcutRuntime } from './dsh-ada
 export type { TuiShortcutKey, TuiShortcutOptions } from './dsh-adapter/shortcuts.js'
 export { TuiRendererRuntime } from './dsh-adapter/renderers.js'
 export type { TuiEntryRenderer, TuiEntryRenderResult } from './dsh-adapter/renderers.js'
+export { TuiSceneRuntime } from './dsh-adapter/scenes.js'
+export type {
+  PluginRowRenderer,
+  PluginRowView,
+  SceneCapabilityContext,
+  SceneCommand,
+  SceneCommandDescriptor,
+  SceneComponentAdapter,
+  SceneDescriptorV2,
+  SceneRegistration,
+  SceneRegistrationHandle,
+  SceneV2,
+  ToolRowView,
+  TuiActiveScene,
+} from './dsh-adapter/scenes.js'
 // The D-7 permission vocabulary (which grant each decision event needs) is
 // part of the plugin-facing contract too.
 export { DECISION_EVENT_PERMISSIONS } from './dsh-adapter/decision-guard.js'

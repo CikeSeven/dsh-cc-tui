@@ -430,27 +430,37 @@ traces['notification-status'] = {
 }
 
 // --- scene open/close/error and plugin contribution ---------------------------
-// Scenes surface as overlay payloads carrying a SceneViewModel-shaped value;
-// plugin rows use source 'plugin'.
+// WP-08a: scenes are first-class model events (scene/open carries the
+// immutable SceneViewModel; typed commands re-open with revision+1);
+// plugin rows use source 'plugin'; boundary failures surface as app/error
+// with the PLUGIN_SCENE_ERROR code and the plugin/scene identity.
 traces['scene'] = {
   terminalProfile: 'unicode-ambiguous-narrow',
   build: (fx) => [
     resetEvent(fx, 'new-session', [], 'reset-scene-1'),
-    event(fx, 'overlay', {
-      type: 'overlay/open',
-      overlay: makeOverlay({
-        overlayId: 'scene-settings-1',
-        payload: { sceneId: 'settings', revision: 0, data: '[placeholder] scene data' },
-      }),
+    event(fx, 'plugin', {
+      type: 'scene/open',
+      scene: { sceneId: 'settings', revision: 0, data: '[placeholder] scene data' },
     }),
-    event(fx, 'overlay', { type: 'overlay/close', overlayId: 'scene-settings-1' }),
+    // A validated typed command makes its payload the next view (revision+1).
+    event(fx, 'plugin', {
+      type: 'scene/open',
+      scene: { sceneId: 'settings', revision: 1, data: '[placeholder] scene data updated' },
+    }),
+    event(fx, 'plugin', { type: 'scene/focus', sceneId: 'settings', target: 'scene' }),
+    event(fx, 'plugin', { type: 'scene/close', sceneId: 'settings', reason: 'user' }),
     event(fx, 'plugin', {
       type: 'session/row-upsert',
       row: makeRow(fx, { source: 'plugin', sourceId: 'plugin-1', kind: 'plugin-contribution', blocks: ['[placeholder] plugin row'] }),
     }),
     event(fx, 'app', {
       type: 'app/error',
-      error: { code: 'SCENE_LOAD_FAILED', message: '[placeholder] scene error', recoverable: true },
+      error: {
+        code: 'PLUGIN_SCENE_ERROR',
+        message: '[placeholder] scene error',
+        recoverable: true,
+        details: { pluginId: 'demo-plugin', instanceId: 'scene-ins-1', sceneId: 'settings', phase: 'render' },
+      },
     }),
   ],
 }

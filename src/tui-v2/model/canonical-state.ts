@@ -7,7 +7,8 @@
  * business fields:
  *
  *   session identity + row id/revision/settled/kind, focus, viewport,
- *   overlays, terminal generation/mode/profile, pending commands.
+ *   overlays, the open plugin scene's view model, terminal
+ *   generation/mode/profile, pending commands.
  *
  * It drops everything volatile or diagnostic: event `at` values, clocks,
  * diagnostics counters, gap buffer, lastAppliedSeq, adapterInstanceId and
@@ -46,6 +47,9 @@ export function serializeCanonicalUiState(state: DeepReadonly<UiState>): string 
   const canonical = {
     focus: { target: state.focus.target, overlayId: state.focus.overlayId },
     overlays: state.overlays.stack.map((overlay) => stripUndefined(overlay)),
+    // The open plugin scene's identity + immutable view model (the SceneV2
+    // instance is runtime state, never canonical).
+    scene: state.scene === null ? null : stripUndefined(state.scene.view),
     pendingCommands: state.pendingCommands.map((pending) => ({
       seq: pending.seq,
       command: stripUndefined(pending.command as SerializableValue),
