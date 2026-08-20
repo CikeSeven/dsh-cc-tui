@@ -169,6 +169,7 @@ test('controller streaming: dock mirror tracks pending + notifications, deduped'
   const initial = rig.dock();
   assert.ok(initial !== null, 'published at start');
   assert.equal(initial.status.model, 'fake-model');
+  assert.equal(initial.status.effort, 'high', 'dock reflects the Channel actual effort');
   assert.equal(initial.pending.length, 0);
   const revision = initial.revision;
 

@@ -16,14 +16,16 @@
  *  - scriptable async session ops: newSession/resumeTo/rewindTo/promptRewind
  *    all await a microtask first so the adapter's async withReset path is
  *    genuinely exercised; results/rows are scriptable,
- *  - scriptable command surfaces: commandList/runExternalCommand/
- *    workspaceCommands/runWorkspaceCommand/switchWorkspace.
+ *  - scriptable command surfaces: commandList/runExternalCommand, workspace,
+ *    model/preset/effort and settings capability seams.
  */
 import type {
   Channel,
   ChatRow,
+  EffortOption,
   NotificationItem,
   PendingMessage,
+  PresetOption,
   ResumeResult,
   TokenUsage,
 } from '../../src/dsh-adapter/channel.js';
@@ -80,6 +82,13 @@ export interface FakeChannel extends CoordinatorChannel {
   sessionSummaries: SessionSummary[];
   sessionPreviews: Map<string, readonly PreviewEntry[]>;
   workspaceTargets: TuiWorkspaceTarget[];
+  modelOptions: Array<{ provider: string; id: string; name: string; description?: string; inputModalities?: readonly ('text' | 'image')[] }>;
+  presetOptions: PresetOption[];
+  effortOptions: EffortOption[];
+  defaultEffort: string | undefined;
+  modelSwitches: Array<[string, string]>;
+  presetSwitches: string[];
+  effortSwitches: string[];
   commandList: LocalCommand[];
   runExternalCommand: (name: string, rawInput: string) => Promise<string | undefined>;
   workspaceCommands(): readonly Pick<TuiWorkspaceCommand, 'name' | 'aliases' | 'description'>[];
@@ -97,7 +106,12 @@ export function createFakeChannel(): FakeChannel {
   let nextPendingId = 1;
   let notifications: NotificationItem[] = [];
   let pending: PendingMessage[] = [];
+  let currentProvider = 'fake-provider';
+  let currentModel = 'fake-model';
+  let currentPreset: string | undefined = 'standard';
+  let currentEffort: string | undefined = 'high';
   const listeners = new Set<() => void>();
+  const settingsSectionListeners = new Set<() => void>();
   const submitted: string[] = [];
   let cancelCount = 0;
   let interruptCount = 0;
@@ -130,8 +144,17 @@ export function createFakeChannel(): FakeChannel {
     get working() {
       return working;
     },
+    get provider() {
+      return currentProvider;
+    },
     get model() {
-      return 'fake-model';
+      return currentModel;
+    },
+    get reasoningEffort() {
+      return currentEffort;
+    },
+    get agentPreset() {
+      return currentPreset;
     },
     get tokens(): TokenUsage {
       return { input: 0, output: 0 };
@@ -331,6 +354,23 @@ export function createFakeChannel(): FakeChannel {
     sessionSummaries: [],
     sessionPreviews: new Map(),
     workspaceTargets: [],
+    modelOptions: [
+      { provider: 'fake-provider', id: 'fake-model', name: 'Fake Model', inputModalities: ['text'] },
+      { provider: 'fake-provider', id: 'fake-model-pro', name: 'Fake Model Pro', description: 'Larger fake model', inputModalities: ['text', 'image'] },
+    ],
+    presetOptions: [
+      { id: 'standard', name: 'Standard', isDefault: true },
+      { id: 'minimal', name: 'Minimal', description: 'Minimal tool set', isDefault: false },
+    ],
+    effortOptions: [
+      { id: 'off', name: 'Off' },
+      { id: 'high', name: 'High' },
+      { id: 'max', name: 'Max' },
+    ],
+    defaultEffort: 'high',
+    modelSwitches: [],
+    presetSwitches: [],
+    effortSwitches: [],
     commandList: [],
     async runExternalCommand() {
       return undefined;
@@ -374,6 +414,47 @@ export function createFakeChannel(): FakeChannel {
     },
     async switchWorkspace() {
       return true;
+    },
+    async listModels() {
+      return channel.modelOptions.map((model) => ({ ...model }));
+    },
+    async switchModel(provider, model) {
+      channel.modelSwitches.push([provider, model]);
+      currentProvider = provider;
+      currentModel = model;
+      bump();
+      return true;
+    },
+    async listPresets() {
+      return channel.presetOptions.map((preset) => ({ ...preset }));
+    },
+    async switchPreset(id) {
+      channel.presetSwitches.push(id);
+      const preset = channel.presetOptions.find((candidate) => candidate.id === id);
+      if (preset === undefined || preset.broken !== undefined) return false;
+      currentPreset = id;
+      bump();
+      return true;
+    },
+    async listEfforts() {
+      return { efforts: channel.effortOptions.map((effort) => ({ ...effort })), defaultEffort: channel.defaultEffort };
+    },
+    async setEffort(id) {
+      channel.effortSwitches.push(id);
+      if (!channel.effortOptions.some((effort) => effort.id === id)) return false;
+      currentEffort = id;
+      bump();
+      return true;
+    },
+    settingsHost() {
+      return undefined;
+    },
+    settingsSections() {
+      return [];
+    },
+    subscribeSettingsSections(listener) {
+      settingsSectionListeners.add(listener);
+      return () => settingsSectionListeners.delete(listener);
     },
   };
 

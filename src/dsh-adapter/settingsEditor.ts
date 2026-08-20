@@ -160,6 +160,8 @@ export class SettingsForm {
   private readonly edits = new Map<string, StagedEdit>()
   saving = false
   failed = false
+  /** True when this save observed a stale revision and retried on a fresh one. */
+  lastSaveHadConflict = false
 
   constructor(
     private readonly host: SettingsHost,
@@ -222,18 +224,21 @@ export class SettingsForm {
   edit(field: TuiSettingsField, text: string): void {
     this.edits.set(fieldKey(field), { text, clear: false })
     this.failed = false
+    this.lastSaveHadConflict = false
   }
 
   /** Stage a clear, so saving lets the field re-inherit the composition layer. */
   resetField(field: TuiSettingsField): void {
     this.edits.set(fieldKey(field), { text: '', clear: true })
     this.failed = false
+    this.lastSaveHadConflict = false
   }
 
   /** Drop every staged edit. */
   discard(): void {
     this.edits.clear()
     this.failed = false
+    this.lastSaveHadConflict = false
   }
 
   /** Whether any staged draft is invalid, which blocks the save. */
@@ -254,6 +259,7 @@ export class SettingsForm {
    */
   async save(): Promise<boolean> {
     if (this.view === undefined || this.invalid || this.saving) return false
+    this.lastSaveHadConflict = false
     const ns = this.view.ns
     const snapshot = new Map(this.edits)
     const ops: SettingsPathOp[] = []
@@ -281,6 +287,7 @@ export class SettingsForm {
           // One retry on a stale-revision conflict (a concurrent write landed
           // between seed and save); anything else propagates.
           if ((error as { code?: unknown })?.code !== 'SETTINGS_CONFLICT') throw error
+          this.lastSaveHadConflict = true
           const fresh = this.host.listNamespaces().find(entry => entry.ns === ns)
           await this.host.write(ns, ops, fresh?.revision)
         }

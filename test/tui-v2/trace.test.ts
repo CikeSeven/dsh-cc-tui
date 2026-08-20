@@ -30,6 +30,7 @@ import {
 } from '../../src/tui-v2/model/events.js'
 import { parseCatalogOverlayPayload } from '../../src/tui-v2/model/catalog-overlay-payloads.js'
 import { parseInteractiveOverlayPayload } from '../../src/tui-v2/model/interactive-overlay-payloads.js'
+import { parseSettingsRoutingOverlayPayload } from '../../src/tui-v2/model/settings-routing-overlay-payloads.js'
 import type { Frame, TerminalModeSnapshot } from '../../src/tui-v2/renderer/frame.js'
 import {
   canonicalJson,
@@ -601,6 +602,7 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
       'scroll.jsonl',
       'selection.jsonl',
       'session-workspace.jsonl',
+      'settings-routing.jsonl',
       'sigcont.jsonl',
       'startup.jsonl',
       'tool-lifecycle.jsonl',
@@ -729,5 +731,68 @@ test('trace fixtures: WP-08d1 session/workspace payloads preserve bounded flow o
   const raw = JSON.stringify(trace)
   assert.ok(raw.includes('[placeholder] tool/call preview'))
   assert.ok(raw.includes('[placeholder] local-only fallback'))
+  assert.ok(!raw.includes('\u001b]'))
+})
+
+
+test('trace fixtures: WP-08d2 settings/model/preset/effort projections and atomic route marker remain replayable', async () => {
+  const trace = await readTrace(path.join(fixturesDir, 'settings-routing.jsonl'))
+  const events = trace.lines
+    .filter((line) => line.kind === 'event')
+    .map((line) => (line as { event: AppEvent }).event)
+  const views = events
+    .filter((event): event is Extract<AppEvent, { type: 'overlay/open' }> => event.type === 'overlay/open')
+    .map((event) => parseSettingsRoutingOverlayPayload(event.overlay.payload))
+  assert.ok(views.every((view) => view !== null), 'every d2 projection passes its strict parser after redaction')
+
+  const settings = views.flatMap((view) => view?.kind === 'settings-dialog' ? [view] : [])
+  assert.deepEqual(settings.map((view) => view.phase), [
+    'loading', 'ready', 'ready', 'ready', 'pending', 'ready', 'loading', 'ready',
+  ])
+  assert.ok(settings.some((view) => view.fields.some((field) => field.invalid)))
+  assert.ok(settings.some((view) => view.sections.some((section) => section.conflicted)))
+  assert.equal(settings.at(-1)?.notice?.tone, 'success')
+
+  const models = views.flatMap((view) => view?.kind === 'routing-picker-dialog' && view.route === 'model' ? [view] : [])
+  assert.deepEqual(models.map((view) => view.phase), ['loading', 'ready', 'pending'])
+  assert.equal(models[1]?.list.items[0]?.current, true)
+  assert.equal(models[2]?.pendingId, models[2]?.list.items[1]?.id)
+
+  const resets = events.filter((event): event is Extract<AppEvent, { type: 'session/rows-reset' }> => event.type === 'session/rows-reset')
+  assert.equal(resets.length, 1, 'the atomic model route wakeup adds no rows-reset/startup copy')
+  assert.deepEqual(resets[0]?.rows.map((row) => row.sourceId), [
+    'settings-routing-welcome',
+    'settings-routing-conversation',
+  ])
+  const routeMarker = trace.lines.find((line) =>
+    line.kind === 'expectedState'
+    && line.value !== null
+    && typeof line.value === 'object'
+    && !Array.isArray(line.value)
+    && 'modelRouteEffect' in line.value)
+  assert.ok(routeMarker?.kind === 'expectedState')
+  if (routeMarker?.kind !== 'expectedState') assert.fail('missing model route side-effect marker')
+  assert.deepEqual(routeMarker.value, {
+    modelRouteEffect: {
+      provider: '[placeholder] provider-b',
+      model: '[placeholder] vision-model',
+      atomicCalls: 1,
+      startupRows: 1,
+      additionalRowsReset: 0,
+    },
+  })
+
+  const presets = views.flatMap((view) => view?.kind === 'routing-picker-dialog' && view.route === 'preset' ? [view] : [])
+  assert.equal(presets[0]?.list.items[0]?.current, true)
+  assert.deepEqual(presets[0]?.list.items.map((item) => item.disabled === true), [false, false, true])
+  assert.equal(presets[1]?.phase, 'pending')
+
+  const efforts = views.flatMap((view) => view?.kind === 'effort-dialog' ? [view] : [])
+  assert.deepEqual(efforts.map((view) => view.phase), ['loading', 'ready', 'pending', 'ready'])
+  assert.equal(efforts[1]?.options[1]?.current, true)
+  assert.equal(efforts.at(-1)?.options[2]?.current, true)
+
+  const raw = JSON.stringify(trace)
+  assert.ok(!raw.includes('sk-'))
   assert.ok(!raw.includes('\u001b]'))
 })

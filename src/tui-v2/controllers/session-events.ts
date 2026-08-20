@@ -179,7 +179,9 @@ export type ChannelUiChannel = Pick<
   | 'rows'
   | 'status'
   | 'working'
+  | 'provider'
   | 'model'
+  | 'reasoningEffort'
   | 'tokens'
   | 'cwd'
   | 'gitBranch'
@@ -245,6 +247,7 @@ export interface DockStatusView {
   readonly status: string
   readonly working: boolean
   readonly model: string
+  readonly effort: string | null
   readonly tokens: { readonly input: number; readonly output: number }
   readonly cwd: string
   readonly branch: string | null
@@ -805,6 +808,7 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
       status: String(channel.status),
       working: channel.working === true,
       model: String(channel.model ?? ''),
+      effort: channel.reasoningEffort === undefined ? null : String(channel.reasoningEffort),
       tokens: { input: channel.tokens?.input ?? 0, output: channel.tokens?.output ?? 0 },
       cwd: String(channel.cwd ?? ''),
       branch: channel.gitBranch === undefined ? null : String(channel.gitBranch),

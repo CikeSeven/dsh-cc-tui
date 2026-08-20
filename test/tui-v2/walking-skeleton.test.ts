@@ -328,6 +328,75 @@ test('walking skeleton WP-08c/d1: help/history/search and real session catalog o
   assertTeardown(rig);
 });
 
+test('walking skeleton WP-08d2 fullscreen: settings/model/preset/effort owners and actual status', async () => {
+  const rig = buildRig('kitty-sync');
+  await rig.coordinator.start();
+  await waitForReal(() => screenText(rig.vt).includes('welcome-to-skeleton'));
+  const welcomeBefore = screenText(rig.vt).split('welcome-to-skeleton').length - 1;
+
+  rig.coordinator.controllers.commands.handleSubmittedText('/settings');
+  await waitForReal(() => rig.coordinator.controllers.settingsFlow.activeOverlayId() === 'utility/settings');
+  await waitForReal(() => screenText(rig.vt).includes('Settings'));
+
+  rig.coordinator.controllers.commands.handleSubmittedText('/model');
+  await waitForReal(() => rig.coordinator.controllers.settingsFlow.activeOverlayId() === null);
+  await waitForReal(() => rig.coordinator.controllers.channelOptions.activeOverlayId() === 'utility/model');
+  await waitForReal(() => screenText(rig.vt).includes('Choose model'));
+  rig.stdin.write('\x1b[B');
+  rig.stdin.write('\r');
+  await waitForReal(() => rig.channel.modelSwitches.length === 1);
+  await waitForReal(() => rig.coordinator.controllers.channelOptions.activeOverlayId() === null);
+  assert.deepEqual(rig.channel.modelSwitches, [['fake-provider', 'fake-model-pro']]);
+  assert.equal(screenText(rig.vt).split('welcome-to-skeleton').length - 1, welcomeBefore, 'model route action does not add another startup row');
+
+  rig.coordinator.controllers.commands.handleSubmittedText('/preset');
+  await waitForReal(() => rig.coordinator.controllers.channelOptions.activeOverlayId() === 'utility/preset');
+  await waitForReal(() => screenText(rig.vt).includes('Choose preset'));
+  rig.stdin.write('\x1b[B');
+  rig.stdin.write('\r');
+  await waitForReal(() => rig.channel.presetSwitches.length === 1);
+  assert.deepEqual(rig.channel.presetSwitches, ['minimal']);
+
+  rig.coordinator.controllers.commands.handleSubmittedText('/effort');
+  await waitForReal(() => rig.coordinator.controllers.channelOptions.activeOverlayId() === 'utility/effort');
+  await waitForReal(() => screenText(rig.vt).includes('Reasoning effort'));
+  rig.stdin.write('\x1b[C');
+  await waitForReal(() => rig.channel.effortSwitches.includes('max'));
+  await waitForReal(() => screenText(rig.vt).includes('effort max'));
+  assert.equal(rig.channel.reasoningEffort, 'max');
+  rig.stdin.write('\x1b');
+  await waitForReal(() => rig.coordinator.controllers.channelOptions.activeOverlayId() === null);
+
+  await rig.coordinator.stop('user-exit');
+  await rig.coordinator.awaitStop();
+  assertTeardown(rig);
+});
+
+test('walking skeleton WP-08d2 inline: all four overlays warn, stay key-owned, and Esc closes', async () => {
+  const rig = buildRig('unknown-conservative');
+  await rig.coordinator.start();
+
+  const cases = [
+    { command: '/settings', active: () => rig.coordinator.controllers.settingsFlow.activeOverlayId(), title: 'Settings' },
+    { command: '/model', active: () => rig.coordinator.controllers.channelOptions.activeOverlayId(), title: 'Choose model' },
+    { command: '/preset', active: () => rig.coordinator.controllers.channelOptions.activeOverlayId(), title: 'Choose preset' },
+    { command: '/effort', active: () => rig.coordinator.controllers.channelOptions.activeOverlayId(), title: 'Reasoning effort' },
+  ];
+  for (const entry of cases) {
+    const warningsBefore = rig.channel.notifyLog.filter((notice) => /Inline mode cannot render overlay/.test(notice.text)).length;
+    rig.coordinator.controllers.commands.handleSubmittedText(entry.command);
+    await waitForReal(() => entry.active() !== null);
+    await waitForReal(() => rig.channel.notifyLog.filter((notice) => /Inline mode cannot render overlay/.test(notice.text)).length > warningsBefore);
+    assert.ok(!screenText(rig.vt).includes(entry.title), `${entry.command} content is explicitly hidden inline`);
+    rig.stdin.write('\x1b');
+    await waitForReal(() => entry.active() === null);
+  }
+
+  await rig.coordinator.stop('user-exit');
+  await rig.coordinator.awaitStop();
+  assertTeardown(rig);
+});
+
 // ---------------------------------------------------------------------------
 // child-process scenarios (normal exit / SIGTERM / injected fault)
 // ---------------------------------------------------------------------------

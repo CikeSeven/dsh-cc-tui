@@ -10,16 +10,19 @@
  */
 import { parseCatalogOverlayPayload } from '../../model/catalog-overlay-payloads.js'
 import { parseInteractiveOverlayPayload } from '../../model/interactive-overlay-payloads.js'
+import { parseSettingsRoutingOverlayPayload } from '../../model/settings-routing-overlay-payloads.js'
 import { parseDialogOverlayPayload } from '../../model/overlay-payloads.js'
 import type { TerminalProfile } from '../../terminal/profile.js'
 import type { ComponentTheme } from '../theme.js'
 import { createApprovalDialog } from './approval-dialog.js'
+import { createEffortDialog, createRoutingPickerDialog } from './channel-options-dialog.js'
 import { createHelpDialog } from './help-dialog.js'
 import { createHistorySearchDialog } from './history-search-dialog.js'
 import { createPickerDialog } from './picker-dialog.js'
 import { createPluginDialog } from './plugin-dialog.js'
 import { createQuestionDialog } from './question-dialog.js'
 import { createSessionBrowserDialog } from './session-browser-dialog.js'
+import { createSettingsDialog } from './settings-dialog.js'
 import { createTranscriptSearchDialog } from './transcript-search-dialog.js'
 import { createWorkspaceDialog } from './workspace-dialog.js'
 
@@ -54,6 +57,18 @@ export function renderDialogOverlayLines(
         return createSessionBrowserDialog(catalog, options).render(width)
       case 'workspace-dialog':
         return createWorkspaceDialog(catalog, options).render(width)
+    }
+  }
+
+  const settingsRouting = parseSettingsRoutingOverlayPayload(payload)
+  if (settingsRouting !== null) {
+    switch (settingsRouting.kind) {
+      case 'settings-dialog':
+        return createSettingsDialog(settingsRouting, options).render(width)
+      case 'routing-picker-dialog':
+        return createRoutingPickerDialog(settingsRouting, options).render(width)
+      case 'effort-dialog':
+        return createEffortDialog(settingsRouting, options).render(width)
     }
   }
 

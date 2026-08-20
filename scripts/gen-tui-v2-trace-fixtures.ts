@@ -22,10 +22,16 @@ import type {
   WorkspaceDialogPayload,
 } from '../src/tui-v2/model/catalog-overlay-payloads.js'
 import type {
+  EffortDialogPayload,
+  RoutingPickerPayload,
+  SettingsDialogPayload,
+} from '../src/tui-v2/model/settings-routing-overlay-payloads.js'
+import type {
   EventSource,
   EventMeta,
   InputCommand,
   OverlayState,
+  ResetReason,
   SerializableError,
   SerializableValue,
   UiRowSnapshot,
@@ -221,11 +227,48 @@ const CATALOG_TRACE_REDACTION: RedactionPolicy = {
   redactOsc: DEFAULT_REDACTION_POLICY.redactOsc,
 }
 
+const SETTINGS_ROUTING_TRACE_LITERALS = new Set([
+  'settings-dialog',
+  'routing-picker-dialog',
+  'effort-dialog',
+  'loading',
+  'ready',
+  'pending',
+  'error',
+  'sections',
+  'fields',
+  'list',
+  'edit',
+  'confirm-close',
+  'confirm-reload',
+  'section',
+  'namespace',
+  'live',
+  'restart',
+  'text',
+  'number',
+  'boolean',
+  'select',
+  'model',
+  'preset',
+  'info',
+  'success',
+  'warning',
+])
+const SETTINGS_ROUTING_TRACE_REDACTION: RedactionPolicy = {
+  redactPayload: (text) =>
+    text === '' || text.startsWith('[placeholder]') || SETTINGS_ROUTING_TRACE_LITERALS.has(text)
+      ? undefined
+      : DEFAULT_REDACTION_POLICY.redactPayload?.(text),
+  redactCredential: DEFAULT_REDACTION_POLICY.redactCredential,
+  redactOsc: DEFAULT_REDACTION_POLICY.redactOsc,
+}
+
 function event(fx: EventFactory, source: EventSource, body: Omit<AppEvent, keyof EventMeta>): TraceBodyLine {
   return { kind: 'event', event: fx.stamp({ ...fx.meta(source), ...body } as AppEvent) }
 }
 
-function resetEvent(fx: EventFactory, reason: 'new-session' | 'resume' | 'rewind', rows: readonly UiRowSnapshot[], resetId: string): TraceBodyLine {
+function resetEvent(fx: EventFactory, reason: ResetReason, rows: readonly UiRowSnapshot[], resetId: string): TraceBodyLine {
   return event(fx, 'session', {
     type: 'session/rows-reset',
     resetId,
@@ -912,6 +955,292 @@ traces['session-workspace'] = {
       event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/workspace' }),
       event(fx, 'overlay', { type: 'overlay/open', overlay: workspaceOverlay(1, degradedLocal) }),
       event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/workspace' }),
+    )
+    return lines
+  },
+}
+
+// --- WP-08d2 settings + model/preset/effort capability routing --------------
+traces['settings-routing'] = {
+  terminalProfile: 'unicode-ambiguous-narrow',
+  redactionPolicy: SETTINGS_ROUTING_TRACE_REDACTION,
+  build: (fx) => {
+    const settingsSection: SettingsDialogPayload['sections'][number] = {
+      id: '[placeholder] settings-section-demo',
+      ns: '[placeholder] demo-settings',
+      title: '[placeholder] Demo settings 你好😀',
+      source: 'section',
+      available: true,
+      applies: 'restart',
+      dirty: false,
+      invalid: false,
+      saving: false,
+      failed: false,
+      conflicted: false,
+      fieldsCount: 3,
+    }
+    const settingsFields: SettingsDialogPayload['fields'] = [
+      {
+        id: '[placeholder] enabled-field',
+        label: '[placeholder] Enabled',
+        kind: 'boolean',
+        text: '[placeholder] true',
+        staged: false,
+        overridden: true,
+        invalid: false,
+        secret: false,
+      },
+      {
+        id: '[placeholder] limit-field',
+        label: '[placeholder] Retry limit',
+        hint: '[placeholder] Attempts before giving up',
+        kind: 'number',
+        text: '[placeholder] 3',
+        staged: false,
+        overridden: false,
+        invalid: false,
+        secret: false,
+      },
+      {
+        id: '[placeholder] token-field',
+        label: '[placeholder] API token',
+        kind: 'text',
+        text: '[placeholder] ••••',
+        staged: false,
+        overridden: false,
+        invalid: false,
+        secret: true,
+        configured: true,
+      },
+    ]
+    const settingsView = (
+      phase: SettingsDialogPayload['phase'],
+      revision: number,
+      override: Partial<SettingsDialogPayload> = {},
+    ): SettingsDialogPayload => ({
+      kind: 'settings-dialog',
+      key: '[placeholder] settings-key',
+      title: '[placeholder] Settings',
+      phase,
+      pane: 'fields',
+      mode: 'list',
+      sections: [{
+        ...settingsSection,
+        dirty: revision >= 3 && revision <= 5,
+        invalid: revision === 4,
+        saving: phase === 'pending',
+        conflicted: revision === 6,
+      }],
+      sectionWindowStart: 0,
+      sectionWindowEnd: 1,
+      selectedSectionId: settingsSection.id,
+      fields: settingsFields.map((field, index) => ({
+        ...field,
+        ...(revision >= 3 && index === 1 ? { staged: true, text: revision === 4 ? '[placeholder] invalid-number' : '[placeholder] 10' } : {}),
+        ...(revision === 4 && index === 1 ? { invalid: true } : {}),
+      })),
+      fieldWindowStart: 0,
+      fieldWindowEnd: settingsFields.length,
+      selectedFieldId: settingsFields[1]!.id,
+      hint: '[placeholder] settings keys',
+      ...override,
+    })
+    const settingsOverlay = (revision: number, payload: SettingsDialogPayload): OverlayState => makeOverlay({
+      overlayId: 'utility/settings',
+      revision,
+      width: '96%',
+      maxHeight: '94%',
+      margin: 1,
+      payload: payload as unknown as SerializableValue,
+    })
+
+    const modelItems: RoutingPickerPayload['list']['items'] = [
+      {
+        id: '[placeholder] model-current',
+        label: '[placeholder] provider-a / Current model',
+        provider: '[placeholder] provider-a',
+        description: '[placeholder] text model',
+        metadata: [{ label: '[placeholder] input', value: '[placeholder] text' }],
+        current: true,
+      },
+      {
+        id: '[placeholder] model-target',
+        label: '[placeholder] provider-b / Vision model 你好😀',
+        provider: '[placeholder] provider-b',
+        description: '[placeholder] image input model',
+        metadata: [
+          { label: '[placeholder] input', value: '[placeholder] text' },
+          { label: '[placeholder] input', value: '[placeholder] image' },
+        ],
+      },
+    ]
+    const routingView = (
+      route: RoutingPickerPayload['route'],
+      phase: RoutingPickerPayload['phase'],
+      items: RoutingPickerPayload['list']['items'],
+      activeIndex: number,
+      pendingId?: string,
+    ): RoutingPickerPayload => ({
+      kind: 'routing-picker-dialog',
+      key: `[placeholder] ${route}-key`,
+      title: `[placeholder] Choose ${route}`,
+      route,
+      phase,
+      list: {
+        query: '',
+        cursor: 0,
+        activeIndex,
+        windowStart: 0,
+        windowEnd: items.length,
+        items,
+        sourceCount: items.length,
+        emptyMessage: '[placeholder] no options',
+        noResultsMessage: '[placeholder] no matching options',
+      },
+      ...(pendingId === undefined ? {} : { pendingId }),
+      hint: '[placeholder] picker keys',
+    })
+    const routingOverlay = (kind: 'model' | 'preset', revision: number, payload: RoutingPickerPayload): OverlayState => makeOverlay({
+      overlayId: `utility/${kind}`,
+      revision,
+      width: '92%',
+      maxHeight: '86%',
+      margin: 1,
+      payload: payload as unknown as SerializableValue,
+    })
+
+    const presetItems: RoutingPickerPayload['list']['items'] = [
+      {
+        id: '[placeholder] preset-current',
+        label: '[placeholder] Standard',
+        description: '[placeholder] Full tool set',
+        badges: ['[placeholder] default'],
+        current: true,
+      },
+      {
+        id: '[placeholder] preset-minimal',
+        label: '[placeholder] Minimal',
+        description: '[placeholder] Minimal two-tool roster',
+        badges: ['[placeholder] minimal'],
+      },
+      {
+        id: '[placeholder] preset-broken',
+        label: '[placeholder] Broken preset',
+        description: '[placeholder] manifest missing',
+        badges: ['[placeholder] unavailable'],
+        disabled: true,
+        disabledReason: '[placeholder] manifest missing',
+      },
+    ]
+
+    const effortOptions: EffortDialogPayload['options'] = [
+      { id: '[placeholder] effort-off', name: '[placeholder] Off' },
+      { id: '[placeholder] effort-high', name: '[placeholder] High', current: true, default: true },
+      { id: '[placeholder] effort-max', name: '[placeholder] Max' },
+    ]
+    const effortView = (
+      phase: EffortDialogPayload['phase'],
+      current: number,
+      pendingId?: string,
+    ): EffortDialogPayload => ({
+      kind: 'effort-dialog',
+      key: '[placeholder] effort-key',
+      title: '[placeholder] Reasoning effort',
+      phase,
+      options: effortOptions.map((option, index) => ({ ...option, current: index === current })),
+      activeIndex: current,
+      currentId: current === 1 ? '[placeholder] high' : '[placeholder] max',
+      defaultId: '[placeholder] high',
+      ...(pendingId === undefined ? {} : { pendingId }),
+      hint: '[placeholder] effort keys',
+    })
+    const effortOverlay = (revision: number, payload: EffortDialogPayload): OverlayState => makeOverlay({
+      overlayId: 'utility/effort',
+      revision,
+      width: '90%',
+      maxHeight: '86%',
+      margin: 1,
+      payload: payload as unknown as SerializableValue,
+    })
+    const loadingSettings: SettingsDialogPayload = {
+      kind: 'settings-dialog',
+      key: '[placeholder] settings-key',
+      title: '[placeholder] Settings',
+      phase: 'loading',
+      pane: 'sections',
+      mode: 'list',
+      sections: [],
+      sectionWindowStart: 0,
+      sectionWindowEnd: 0,
+      fields: [],
+      fieldWindowStart: 0,
+      fieldWindowEnd: 0,
+      hint: '[placeholder] settings keys',
+    }
+
+    const welcomeRow = makeRow(fx, {
+      source: 'local',
+      sourceId: 'settings-routing-welcome',
+      kind: 'welcome',
+      blocks: ['[placeholder] single startup welcome'],
+    })
+    const conversationRow = makeRow(fx, {
+      source: 'session',
+      sourceId: 'settings-routing-conversation',
+      kind: 'assistant',
+      blocks: ['[placeholder] existing conversation before model switch'],
+    })
+    const lines: TraceBodyLine[] = [
+      resetEvent(fx, 'new-session', [welcomeRow, conversationRow], 'reset-settings-routing-1'),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: settingsOverlay(1, loadingSettings) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: settingsOverlay(2, settingsView('ready', 2)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: settingsOverlay(3, settingsView('ready', 3, {
+        mode: 'edit',
+        editing: { fieldId: settingsFields[1]!.id, text: '[placeholder] 10', cursor: 16 },
+      })) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: settingsOverlay(4, settingsView('ready', 4, {
+        error: '[placeholder] Fix invalid fields before saving.',
+      })) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: settingsOverlay(5, settingsView('pending', 5)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: settingsOverlay(6, settingsView('ready', 6, {
+        notice: { text: '[placeholder] Concurrent revision detected; saved against latest revision.', tone: 'warning' },
+      })) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: settingsOverlay(7, settingsView('loading', 7)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: settingsOverlay(8, settingsView('ready', 8, {
+        notice: { text: '[placeholder] Settings reloaded.', tone: 'success' },
+      })) }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/settings' }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: routingOverlay('model', 1, routingView('model', 'loading', [], 0)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: routingOverlay('model', 2, routingView('model', 'ready', modelItems, 0)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: routingOverlay('model', 3, routingView('model', 'pending', modelItems, 1, modelItems[1]!.id)) }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/model' }),
+    ]
+
+    // switchModel is the sole route side effect. The adapter's durable row
+    // identities remain compatible, so the wakeup needs no second rows-reset
+    // and cannot append a second startup/welcome row. The process-local call is
+    // recorded as a sanitized trace marker; controller tests prove its exact API.
+    lines.push(
+      {
+        kind: 'expectedState',
+        value: {
+          modelRouteEffect: {
+            provider: '[placeholder] provider-b',
+            model: '[placeholder] vision-model',
+            atomicCalls: 1,
+            startupRows: 1,
+            additionalRowsReset: 0,
+          },
+        },
+      },
+      event(fx, 'overlay', { type: 'overlay/open', overlay: routingOverlay('preset', 1, routingView('preset', 'ready', presetItems, 0)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: routingOverlay('preset', 2, routingView('preset', 'pending', presetItems, 1, presetItems[1]!.id)) }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/preset' }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: effortOverlay(1, effortView('loading', 1)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: effortOverlay(2, effortView('ready', 1)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: effortOverlay(3, effortView('pending', 2, effortOptions[2]!.id)) }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: effortOverlay(4, effortView('ready', 2, undefined)) }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/effort' }),
     )
     return lines
   },

@@ -20,6 +20,14 @@ import { createControllerRig, addUserRows, ManualClock, type ControllerRig } fro
 interface OverlayHarness {
   sessionOpens: number;
   workspaceInputs: string[];
+  settingsOpens: number;
+  modelQueries: string[];
+  presetQueries: string[];
+  effortOpens: number;
+  directPresets: string[];
+  directEfforts: string[];
+  presetStatuses: number;
+  effortStatuses: number;
   helpQueries: string[];
   historyQueries: string[];
   searchQueries: string[];
@@ -47,6 +55,14 @@ function commandsFor(rig: ControllerRig): CommandsRig {
   const overlays: OverlayHarness = {
     sessionOpens: 0,
     workspaceInputs: [],
+    settingsOpens: 0,
+    modelQueries: [],
+    presetQueries: [],
+    effortOpens: 0,
+    directPresets: [],
+    directEfforts: [],
+    presetStatuses: 0,
+    effortStatuses: 0,
     helpQueries: [],
     historyQueries: [],
     searchQueries: [],
@@ -73,6 +89,26 @@ function commandsFor(rig: ControllerRig): CommandsRig {
         overlays.workspaceInputs.push(rawInput);
         return true;
       },
+      openSettings: () => {
+        overlays.settingsOpens += 1;
+        return true;
+      },
+      openModel: (query) => {
+        overlays.modelQueries.push(query);
+        return true;
+      },
+      openPreset: (query) => {
+        overlays.presetQueries.push(query);
+        return true;
+      },
+      openEffort: () => {
+        overlays.effortOpens += 1;
+        return true;
+      },
+      switchPreset: (id) => { overlays.directPresets.push(id); },
+      setEffort: (id) => { overlays.directEfforts.push(id); },
+      showPresetStatus: () => { overlays.presetStatuses += 1; },
+      showEffortStatus: () => { overlays.effortStatuses += 1; },
       openHelp: (query) => {
         overlays.helpQueries.push(query);
         return true;
@@ -186,6 +222,28 @@ test('controller commands: /workspace delegates every form to the workspace owne
   assert.equal(commands.diagnostics().workspaceCommands, 4);
   assert.equal(commands.diagnostics().overlaysOpened, 4);
   replayEquivalence(rig);
+});
+
+test('controller commands: settings/model/preset/effort keep picker and direct command shapes', () => {
+  const { commands, overlays } = commandsFor(createControllerRig({ height: 5 }));
+
+  assert.equal(commands.handleSubmittedText('/settings'), 'command');
+  assert.equal(commands.handleSubmittedText('/model vision'), 'command');
+  assert.equal(commands.handleSubmittedText('/preset'), 'command');
+  assert.equal(commands.handleSubmittedText('/preset minimal'), 'command');
+  assert.equal(commands.handleSubmittedText('/preset status'), 'command');
+  assert.equal(commands.handleSubmittedText('/effort'), 'command');
+  assert.equal(commands.handleSubmittedText('/effort max'), 'command');
+  assert.equal(commands.handleSubmittedText('/effort status'), 'command');
+
+  assert.equal(overlays.settingsOpens, 1);
+  assert.deepEqual(overlays.modelQueries, ['vision']);
+  assert.deepEqual(overlays.presetQueries, ['']);
+  assert.deepEqual(overlays.directPresets, ['minimal']);
+  assert.equal(overlays.presetStatuses, 1);
+  assert.equal(overlays.effortOpens, 1);
+  assert.deepEqual(overlays.directEfforts, ['max']);
+  assert.equal(overlays.effortStatuses, 1);
 });
 
 test('controller commands: external command registry truth (undefined/empty/text)', async () => {

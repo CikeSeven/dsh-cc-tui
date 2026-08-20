@@ -1,10 +1,11 @@
 /**
- * Slash-command controller (WP-08c/WP-08d1).
+ * Slash-command controller (WP-08c/WP-08d1/WP-08d2).
  *
  * Session mutations stay in ReplayController. Interactive commands delegate to
  * narrow utility-overlay actions, so this controller never publishes ad-hoc
- * payloads or owns catalog/provider callbacks. Bare `/resume` opens the real
- * catalog; direct `/resume <id>` keeps the replay boundary.
+ * payloads or owns catalog/provider/settings callbacks. Bare `/resume` opens
+ * the real catalog; `/settings` and bare model/preset/effort route to their
+ * dedicated owners; direct command forms keep existing domain capabilities.
  */
 import type { LocalCommand } from '../../commands.js'
 import type { AppEvent } from '../model/events.js'
@@ -20,6 +21,14 @@ export interface CommandChannel {
 export interface CommandOverlayActions {
   readonly openSessionBrowser: () => boolean
   readonly openWorkspace: (rawInput: string) => boolean
+  readonly openSettings: () => boolean
+  readonly openModel: (query: string) => boolean
+  readonly openPreset: (query: string) => boolean
+  readonly openEffort: () => boolean
+  readonly switchPreset: (id: string) => void
+  readonly setEffort: (id: string) => void
+  readonly showPresetStatus: () => void
+  readonly showEffortStatus: () => void
   readonly openHelp: (query: string) => boolean
   readonly openHistorySearch: (query: string) => boolean
   readonly openTranscriptSearch: (query: string) => boolean
@@ -161,6 +170,31 @@ export function createCommandsController(options: CommandsControllerOptions): Co
       noteOverlay(options.overlays.openWorkspace(rawInput))
       return 'command'
     }
+    if (name === 'settings') {
+      counts.commands += 1
+      if (rawInput !== '') options.notify('Usage: /settings', { color: 'warning' })
+      else noteOverlay(options.overlays.openSettings())
+      return 'command'
+    }
+    if (name === 'model') {
+      counts.commands += 1
+      noteOverlay(options.overlays.openModel(rawInput))
+      return 'command'
+    }
+    if (name === 'preset') {
+      counts.commands += 1
+      if (rawInput === '') noteOverlay(options.overlays.openPreset(''))
+      else if (rawInput === 'status') options.overlays.showPresetStatus()
+      else options.overlays.switchPreset(rawInput.split(/\s+/u)[0] as string)
+      return 'command'
+    }
+    if (name === 'effort') {
+      counts.commands += 1
+      if (rawInput === '') noteOverlay(options.overlays.openEffort())
+      else if (rawInput === 'status') options.overlays.showEffortStatus()
+      else options.overlays.setEffort(rawInput.split(/\s+/u)[0] as string)
+      return 'command'
+    }
     const entry = findCommand(options.channel.commandList, name)
     if (entry !== undefined && entry.external === true) {
       counts.commands += 1
@@ -193,7 +227,13 @@ export function createCommandsController(options: CommandsControllerOptions): Co
       if (options.channel.working) {
         const parsed = trimmed.startsWith('/') ? parseSlashName(trimmed) : undefined
         if (parsed !== undefined && (
-          parsed.name === 'help' || parsed.name === 'history' || parsed.name === 'search'
+          parsed.name === 'help'
+          || parsed.name === 'history'
+          || parsed.name === 'search'
+          || parsed.name === 'settings'
+          || parsed.name === 'model'
+          || parsed.name === 'preset'
+          || parsed.name === 'effort'
         )) return handleSlash(trimmed, parsed)
         if (parsed?.name === 'btw') {
           const entry = findCommand(options.channel.commandList, 'btw')

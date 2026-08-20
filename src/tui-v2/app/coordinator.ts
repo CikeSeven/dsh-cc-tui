@@ -53,7 +53,8 @@
  *  - WP-05 controllers: replay (session navigation/rewind/update-restart),
  *    commands (slash routing), scrolling (wheel/keys/loadOlder anchor),
  *    dialogs (WP-05b: approval/question/plugin-dialog overlay priority +
- *    capture), plus WP-08 utility/session/workspace owners. Input routing:
+ *    capture), plus WP-08 utility/session/workspace/settings/route owners.
+ *    Input routing:
  *    resize → lifecycle; mouse wheel → scrolling; WHILE
  *    `focus.target === 'overlay'` every key/paste goes only to the controller
  *    whose managed overlayId is focused (the overlay owns the keyboard);
@@ -152,6 +153,10 @@ import {
   type InteractiveOverlaysController,
 } from '../controllers/interactive-overlays.js';
 import {
+  createChannelOptionsController,
+  type ChannelOptionsController,
+} from '../controllers/channel-options.js';
+import {
   createSessionCatalogController,
   type SessionCatalogController,
 } from '../controllers/session-catalog.js';
@@ -160,6 +165,10 @@ import {
   type WorkspaceFlowController,
   type WorkspaceHostCapability,
 } from '../controllers/workspace-flow.js';
+import {
+  createSettingsFlowController,
+  type SettingsFlowController,
+} from '../controllers/settings-flow.js';
 import { buildFrame } from '../renderer/frame-builder.js';
 import { buildSearchHighlightRegions } from '../renderer/search-highlights.js';
 import { computeInlineLiveRegion } from './inline-live-region.js';
@@ -196,6 +205,16 @@ export type CoordinatorChannel = ChannelUiChannel &
     | 'renameWorkspace'
     | 'workspaceCommands'
     | 'runWorkspaceCommand'
+    | 'listModels'
+    | 'switchModel'
+    | 'agentPreset'
+    | 'listPresets'
+    | 'switchPreset'
+    | 'listEfforts'
+    | 'setEffort'
+    | 'settingsHost'
+    | 'settingsSections'
+    | 'subscribeSettingsSections'
   >;
 
 export interface TuiV2CoordinatorOptions {
@@ -261,6 +280,8 @@ export interface CoordinatorDiagnostics {
   readonly interactiveOverlays: ReturnType<InteractiveOverlaysController['diagnostics']>;
   readonly sessionCatalog: ReturnType<SessionCatalogController['diagnostics']>;
   readonly workspaceFlow: ReturnType<WorkspaceFlowController['diagnostics']>;
+  readonly settingsFlow: ReturnType<SettingsFlowController['diagnostics']>;
+  readonly channelOptions: ReturnType<ChannelOptionsController['diagnostics']>;
   /** WP-08a plugin scene runtime counters (absent when no runtime is wired). */
   readonly scenes?: PluginUIRuntimeDiagnostics;
 }
@@ -277,6 +298,8 @@ export interface CoordinatorControllers {
   readonly interactiveOverlays: InteractiveOverlaysController;
   readonly sessionCatalog: SessionCatalogController;
   readonly workspaceFlow: WorkspaceFlowController;
+  readonly settingsFlow: SettingsFlowController;
+  readonly channelOptions: ChannelOptionsController;
 }
 
 export interface TuiV2Coordinator {
@@ -608,6 +631,17 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   let interactiveOverlaysController: InteractiveOverlaysController;
   let sessionCatalogController: SessionCatalogController;
   let workspaceFlowController: WorkspaceFlowController;
+  let settingsFlowController: SettingsFlowController;
+  let channelOptionsController: ChannelOptionsController;
+
+  type UtilityOwner = 'interactive' | 'session' | 'workspace' | 'settings' | 'channel-options';
+  const closeUtilitiesExcept = (owner: UtilityOwner): void => {
+    if (owner !== 'interactive') interactiveOverlaysController.close();
+    if (owner !== 'session') sessionCatalogController.close();
+    if (owner !== 'workspace') workspaceFlowController.close();
+    if (owner !== 'settings') settingsFlowController.close();
+    if (owner !== 'channel-options') channelOptionsController.close();
+  };
 
   const commandsController = createCommandsController({
     dispatch: (event) => streamingController.ingest(event),
@@ -616,16 +650,50 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     replay: replayController,
     overlays: {
       openSessionBrowser: () => {
-        interactiveOverlaysController.close();
-        workspaceFlowController.close();
+        closeUtilitiesExcept('session');
         return sessionCatalogController.open();
       },
       openWorkspace: (rawInput) => {
-        interactiveOverlaysController.close();
-        sessionCatalogController.close();
+        closeUtilitiesExcept('workspace');
         return workspaceFlowController.handleCommand(rawInput);
       },
-      openHelp: (query) => interactiveOverlaysController.openHelp({
+      openSettings: () => {
+        closeUtilitiesExcept('settings');
+        return settingsFlowController.open();
+      },
+      openModel: (query) => {
+        closeUtilitiesExcept('channel-options');
+        return channelOptionsController.openModel(query);
+      },
+      openPreset: (query) => {
+        closeUtilitiesExcept('channel-options');
+        return channelOptionsController.openPreset(query);
+      },
+      openEffort: () => {
+        closeUtilitiesExcept('channel-options');
+        return channelOptionsController.openEffort();
+      },
+      switchPreset: (id) => {
+        void channel.switchPreset(id).catch((error: unknown) => {
+          diagnostic('preset/switch-error', error instanceof Error ? error.message : String(error));
+        });
+      },
+      setEffort: (id) => {
+        void channel.setEffort(id).catch((error: unknown) => {
+          diagnostic('effort/set-error', error instanceof Error ? error.message : String(error));
+        });
+      },
+      showPresetStatus: () => channel.pushLocal('/preset', [
+        `Current preset: ${channel.agentPreset ?? 'roster unavailable'}`,
+        'Use /preset <id> to switch directly, or bare /preset to browse.',
+      ]),
+      showEffortStatus: () => channel.pushLocal('/effort', [
+        `Current effort: ${channel.reasoningEffort ?? '—'}`,
+        'Use /effort <id> to set directly, or bare /effort for the slider.',
+      ]),
+      openHelp: (query) => {
+        closeUtilitiesExcept('interactive');
+        return interactiveOverlaysController.openHelp({
         key: 'help',
         title: 'Help',
         query,
@@ -641,10 +709,12 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           keywords: [command.name],
         })),
         emptyMessage: 'No commands are registered.',
-        noResultsMessage: 'No commands match this search.',
-        onSelect: (name) => editorBinding.setDraft?.(`/${name} `),
-      }),
+          noResultsMessage: 'No commands match this search.',
+          onSelect: (name) => editorBinding.setDraft?.(`/${name} `),
+        });
+      },
       openHistorySearch: (query) => {
+        closeUtilitiesExcept('interactive');
         const history = inputController.history();
         const values = new Map<string, string>();
         const items = history.map((text, index) => {
@@ -666,19 +736,22 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           },
         });
       },
-      openTranscriptSearch: (query) => interactiveOverlaysController.openTranscriptSearch({
-        key: 'transcript',
-        title: 'Search visible transcript',
-        query,
-        findMatches: (needle) => {
-          const folded = needle.toLocaleLowerCase('en-US');
-          if (folded === '') return [];
-          return selectTranscriptView(state).visibleRows
-            .filter((row) => asRowBlocks(row.blocks).some((block) =>
-              'text' in block && block.text.toLocaleLowerCase('en-US').includes(folded)))
-            .map((row) => row.rowId);
-        },
-      }),
+      openTranscriptSearch: (query) => {
+        closeUtilitiesExcept('interactive');
+        return interactiveOverlaysController.openTranscriptSearch({
+          key: 'transcript',
+          title: 'Search visible transcript',
+          query,
+          findMatches: (needle) => {
+            const folded = needle.toLocaleLowerCase('en-US');
+            if (folded === '') return [];
+            return selectTranscriptView(state).visibleRows
+              .filter((row) => asRowBlocks(row.blocks).some((block) =>
+                'text' in block && block.text.toLocaleLowerCase('en-US').includes(folded)))
+              .map((row) => row.rowId);
+          },
+        });
+      },
     },
     submitToModel: (text) => adapter.commands.submit(text),
     steerToModel: (text) => adapter.commands.steer(text),
@@ -769,6 +842,42 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     onDiagnostic: (code, message) => diagnostic(`workspace-flow/${code}`, message),
   });
 
+  const settingsHost = channel.settingsHost();
+  settingsFlowController = createSettingsFlowController({
+    dispatch: (event) => streamingController.ingest(event),
+    nextMeta: (sourceSeq) => meta.next('overlay', sourceSeq),
+    getState: () => state,
+    ...(settingsHost !== undefined ? { host: settingsHost } : {}),
+    sections: {
+      list: () => channel.settingsSections(),
+      subscribe: (listener) => channel.subscribeSettingsSections(listener),
+    },
+    isBusinessDialogActive: () => dialogsController.activeOverlayId() !== null,
+    language: options.language ?? 'en',
+    onDiagnostic: (code, message) => diagnostic(`settings-flow/${code}`, message),
+  });
+
+  channelOptionsController = createChannelOptionsController({
+    dispatch: (event) => streamingController.ingest(event),
+    nextMeta: (sourceSeq) => meta.next('overlay', sourceSeq),
+    getState: () => state,
+    capability: {
+      listModels: (_signal) => channel.listModels(),
+      switchModel: (provider, model) => channel.switchModel(provider, model),
+      listPresets: (_signal) => channel.listPresets(),
+      switchPreset: (id) => channel.switchPreset(id),
+      listEfforts: (_signal) => channel.listEfforts(),
+      setEffort: (id) => channel.setEffort(id),
+      currentModel: () => ({ provider: channel.provider, model: channel.model }),
+      currentPreset: () => channel.agentPreset,
+      currentEffort: () => channel.reasoningEffort,
+      working: () => channel.working,
+      subscribe: (listener) => channel.subscribe(listener),
+    },
+    isBusinessDialogActive: () => dialogsController.activeOverlayId() !== null,
+    onDiagnostic: (code, message) => diagnostic(`channel-options/${code}`, message),
+  });
+
   const inputController = createInputController({
     clock,
     dispatch: (event) => streamingController.ingest(event),
@@ -853,6 +962,10 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
               sessionCatalogController.handleInput(event);
             } else if (workspaceFlowController.isManagedOverlay(overlayId)) {
               workspaceFlowController.handleInput(event);
+            } else if (settingsFlowController.isManagedOverlay(overlayId)) {
+              settingsFlowController.handleInput(event);
+            } else if (channelOptionsController.isManagedOverlay(overlayId)) {
+              channelOptionsController.handleInput(event);
             } else if (interactiveOverlaysController.isManagedOverlay(overlayId)) {
               interactiveOverlaysController.handleInput(event);
             } else {
@@ -880,6 +993,10 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
             sessionCatalogController.handleInput(event);
           } else if (workspaceFlowController.isManagedOverlay(overlayId)) {
             workspaceFlowController.handleInput(event);
+          } else if (settingsFlowController.isManagedOverlay(overlayId)) {
+            settingsFlowController.handleInput(event);
+          } else if (channelOptionsController.isManagedOverlay(overlayId)) {
+            channelOptionsController.handleInput(event);
           } else if (interactiveOverlaysController.isManagedOverlay(overlayId)) {
             interactiveOverlaysController.handleInput(event);
           } else {
@@ -987,6 +1104,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         ...base.extras,
         status: dockMirror.status.status,
         working: dockMirror.status.working,
+        effort: dockMirror.status.effort,
       },
     };
   };
@@ -1001,7 +1119,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         tokens: dockMirror.status.tokens,
         cwd: dockMirror.status.cwd === '' ? undefined : dockMirror.status.cwd,
         ...(dockMirror.status.branch !== null ? { branch: dockMirror.status.branch } : {}),
-        extras: { status: dockMirror.status.status, working: dockMirror.status.working },
+        extras: { status: dockMirror.status.status, working: dockMirror.status.working, effort: dockMirror.status.effort },
       },
       pendingMessages: dockMirror.pending.map((message) => message.text),
       notifications: dockMirror.notifications,
@@ -1231,6 +1349,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       // unsubscribe business stores before teardown can emit again.
       sessionCatalogController.dispose();
       workspaceFlowController.dispose();
+      settingsFlowController.dispose();
+      channelOptionsController.dispose();
       interactiveOverlaysController.dispose();
       dialogsController.dispose();
       // WP-08a: tear down the open plugin scene (reason 'teardown') before
@@ -1304,6 +1424,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       interactiveOverlays: interactiveOverlaysController,
       sessionCatalog: sessionCatalogController,
       workspaceFlow: workspaceFlowController,
+      settingsFlow: settingsFlowController,
+      channelOptions: channelOptionsController,
     },
     diagnostics: () => ({
       phase,
@@ -1327,6 +1449,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       interactiveOverlays: interactiveOverlaysController.diagnostics(),
       sessionCatalog: sessionCatalogController.diagnostics(),
       workspaceFlow: workspaceFlowController.diagnostics(),
+      settingsFlow: settingsFlowController.diagnostics(),
+      channelOptions: channelOptionsController.diagnostics(),
       ...(pluginRuntime !== null ? { scenes: pluginRuntime.diagnostics() } : {}),
     }),
   };
