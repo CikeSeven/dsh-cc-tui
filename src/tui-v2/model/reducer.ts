@@ -296,6 +296,8 @@ function applyEvent(state: UiState, event: AppEvent): UiState {
       return applyOverlayClose(state, event.overlayId)
     case 'search/update':
       return { ...state, search: deepFreeze({ ...event.search, matches: [...event.search.matches] }) }
+    case 'surface/update':
+      return applySurfaceUpdate(state, event.surface)
     case 'terminal/suspended':
       return {
         ...state,
@@ -320,6 +322,24 @@ function applyEvent(state: UiState, event: AppEvent): UiState {
     case 'scene/focus':
       return applySceneFocus(state, event.sceneId, event.target)
   }
+}
+
+// ---------------------------------------------------------------------------
+// serialized Channel surfaces (WP-08e1)
+// ---------------------------------------------------------------------------
+
+function applySurfaceUpdate(
+  state: UiState,
+  surface: Extract<AppEvent, { type: 'surface/update' }>['surface'],
+): UiState {
+  const current = state.surface
+  if (surface.sessionEpoch !== state.session.sessionEpoch) return bump(state, 'droppedOldEpoch')
+  if (surface.revision < current.revision) return bump(state, 'droppedStaleRevision')
+  if (surface.revision === current.revision) {
+    if (canonicalJson(surface) !== canonicalJson(current)) return bump(state, 'conflict')
+    return state
+  }
+  return { ...state, surface: deepFreeze({ ...surface }) }
 }
 
 // ---------------------------------------------------------------------------

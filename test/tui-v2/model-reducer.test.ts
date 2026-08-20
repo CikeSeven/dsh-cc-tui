@@ -2,7 +2,7 @@
  * tui-v2 WP-04a model reducer tests: §5.2 ordering (duplicate / gap buffer /
  * snapshot-gap / drain), atomic rows-reset validation, epoch discipline,
  * sourceSeq conflicts, revision rules, streaming, overlays, resize, terminal
- * lifecycle, rowId encoding, immutability, and the 24-trace replay corpus
+ * lifecycle, rowId encoding, immutability, and the 25-trace replay corpus
  * with canonical-state equivalence (test names carry 'replay' for WP-05
  * pattern reuse).
  */
@@ -636,7 +636,7 @@ function traceEvents(trace: Trace): AppEvent[] {
 
 test('model replay: all 24 corpus traces reduce deterministically (replay)', async () => {
   const traces = await loadTraces()
-  assert.equal(traces.length, 24)
+  assert.equal(traces.length, 25)
   for (const { file, trace } of traces) {
     const events = traceEvents(trace)
     const finalA = reduceAll(events, initialStateForTrace(trace))

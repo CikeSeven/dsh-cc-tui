@@ -36,6 +36,7 @@ export interface TuiV2AppOptions {
   readonly theme?: string;
   readonly language?: string;
   readonly welcomeText?: string;
+  readonly trajectory?: boolean;
   readonly onDiagnostic?: (diagnostic: CoordinatorDiagnostic) => void;
 }
 
@@ -73,6 +74,7 @@ export function createTuiV2App(options: TuiV2AppOptions): TuiV2App {
     ...(options.theme !== undefined ? { theme: options.theme } : {}),
     ...(options.language !== undefined ? { language: options.language } : {}),
     ...(options.welcomeText !== undefined ? { welcomeText: options.welcomeText } : {}),
+    ...(options.trajectory !== undefined ? { trajectory: options.trajectory } : {}),
     ...(options.onDiagnostic !== undefined ? { onDiagnostic: options.onDiagnostic } : {}),
   });
   return {

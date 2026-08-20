@@ -19,7 +19,7 @@
 - disposition：`rewrite-v2`（旧入口删除，v2 fixture 替代）/ `remove` / `offline-baseline` /
   `unaffected`（不触及被迁移的渲染/插件面，原样保留并由 CI 持续证明；扩展原因见计划文档 15.1）。
 - status：`rewrite-v2` 行从 `open` 起步；`unaffected` 行当前 CI 已通过，记 `verified`。
-- 当前分布：severity {"P2":53,"P1":43,"P0":7}；disposition {"unaffected":53,"rewrite-v2":50}。
+- 当前分布：severity {"P2":53,"P1":44,"P0":7}；disposition {"unaffected":53,"rewrite-v2":51}。
 
 ## 机器可读矩阵
 
@@ -362,13 +362,13 @@
       "id": "REG-026",
       "severity": "P1",
       "owner": "tui-v2",
-      "status": "open",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
-      "traceId": "askpanel-layout-resize@v1",
-      "assertion": "canonical grid: 短/长高录布局、activity tick 差分与 resize 风暴后无残影",
-      "ciCommand": "node --import tsx/esm scripts/verify-askpanel-layout.tsx",
-      "blockDefault": true,
-      "deleteCondition": "v2 等价 fixture/trace（askpanel-layout-resize@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
+      "status": "verified",
+      "updatedAt": "2026-08-20T17:55:50.000Z",
+      "traceId": "trajectory-goal-activity-context@v1",
+      "assertion": "v2 activity line uses controller-owned deterministic frames/stall state, goal/todo dock remains bounded across resize and all physical rows stay within width",
+      "ciCommand": "node --import tsx/esm scripts/verify-askpanel-layout.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'surface|activity controller|width|resize'",
+      "blockDefault": false,
+      "deleteCondition": "v2 等价覆盖已由 controllers-surfaces.test.ts、components-surfaces.test.ts 与 trajectory-goal-activity-context@v1 落地；WP-09 删除旧 renderer 时旧入口一并删除，本行转 retired",
       "disposition": "rewrite-v2"
     },
     {
@@ -492,13 +492,13 @@
       "id": "REG-036",
       "severity": "P1",
       "owner": "tui-v2",
-      "status": "open",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
-      "traceId": "ctrl-t-scope@v1",
-      "assertion": "input: Ctrl+T 归属启动面板或轨迹场景，两者永不同屏",
-      "ciCommand": "node --import tsx/esm scripts/verify-ctrl-t-scope.tsx",
-      "blockDefault": true,
-      "deleteCondition": "v2 等价 fixture/trace（ctrl-t-scope@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
+      "status": "verified",
+      "updatedAt": "2026-08-20T17:55:50.000Z",
+      "traceId": "trajectory-goal-activity-context@v1",
+      "assertion": "Ctrl+T and /trace route to the internal full-screen SceneV2 trajectory owner; empty-transcript context panel and scene never capture the same key simultaneously",
+      "ciCommand": "node --import tsx/esm scripts/verify-ctrl-t-scope.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'scene|trajectory|surface'",
+      "blockDefault": false,
+      "deleteCondition": "v2 等价覆盖已由 scenes-coordinator.test.ts、components-trajectory.test.ts、controllers-surfaces.test.ts 与 trajectory-goal-activity-context@v1 落地；WP-09 删除旧 renderer 时旧入口一并删除，本行转 retired",
       "disposition": "rewrite-v2"
     },
     {
@@ -674,13 +674,13 @@
       "id": "REG-050",
       "severity": "P1",
       "owner": "tui-v2",
-      "status": "open",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
-      "traceId": "loaded-context-width@v1",
-      "assertion": "width: 启动上下文摘要与 Ctrl+T 提示作为一条可截断文本布局",
-      "ciCommand": "node --import tsx/esm scripts/verify-loaded-context-width.tsx",
-      "blockDefault": true,
-      "deleteCondition": "v2 等价 fixture/trace（loaded-context-width@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
+      "status": "verified",
+      "updatedAt": "2026-08-20T17:55:50.000Z",
+      "traceId": "trajectory-goal-activity-context@v1",
+      "assertion": "v2 context bar/panel uses grouped bounded projections, preserves empty-transcript Ctrl+P and /context semantics, and remains cell-safe at narrow widths",
+      "ciCommand": "node --import tsx/esm scripts/verify-loaded-context-width.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'surface|context|width'",
+      "blockDefault": false,
+      "deleteCondition": "v2 等价覆盖已由 components-surfaces.test.ts、model-surfaces.test.ts 与 trajectory-goal-activity-context@v1 落地；WP-09 删除旧 renderer 时旧入口一并删除，本行转 retired",
       "disposition": "rewrite-v2"
     },
     {
@@ -1233,13 +1233,13 @@
       "id": "REG-093",
       "severity": "P1",
       "owner": "tui-v2",
-      "status": "open",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
-      "traceId": "trace-scene-grid@v1",
-      "assertion": "canonical grid: 轨迹场景账本行/光标/滚动/检视窗及备用屏进出逐字节还原",
-      "ciCommand": "node --import tsx/esm scripts/verify-trace-scene.tsx",
-      "blockDefault": true,
-      "deleteCondition": "v2 等价 fixture/trace（trace-scene-grid@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
+      "status": "verified",
+      "updatedAt": "2026-08-20T17:55:50.000Z",
+      "traceId": "trajectory-goal-activity-context@v1",
+      "assertion": "v2 trajectory SceneV2 renders bounded ledger/wave/hotspot/inspector, supports filter/sort/navigation/close restore and explicit inline degradation without width violations",
+      "ciCommand": "node --import tsx/esm scripts/verify-trace-scene.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'trajectory|scene|fullscreen|width'",
+      "blockDefault": false,
+      "deleteCondition": "v2 等价覆盖已由 scenes-trajectory.test.ts、components-trajectory.test.ts、controllers-surfaces.test.ts 与 trajectory-goal-activity-context@v1 落地；WP-09 删除旧 renderer 时旧入口一并删除，本行转 retired",
       "disposition": "rewrite-v2"
     },
     {
@@ -1358,6 +1358,19 @@
       "blockDefault": false,
       "deleteCondition": "该回归不触及被迁移的渲染/插件面，原样保留；最终 gate 要求 ciCommand 在最终树仍通过；仅在入口本身被移除时删除本行",
       "disposition": "unaffected"
+    },
+    {
+      "id": "REG-104",
+      "severity": "P1",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-20T17:55:50.000Z",
+      "traceId": "trajectory-goal-activity-context@v1",
+      "assertion": "v2 serialized surface/update replay covers goal phase/todo replacement, activity done/stall, context bar/panel grouping, bounded trajectory summaries and CJK/control-safe line contracts",
+      "ciCommand": "node scripts/test-tui-v2.mjs -- --test-name-pattern 'surface|trajectory|replay|width' && pnpm verify:tui-v2 -- --check trace",
+      "blockDefault": false,
+      "deleteCondition": "WP-09 removes the old React surfaces only after this trace and the v2 component/controller tests remain green; then this row becomes retired",
+      "disposition": "rewrite-v2"
     },
     {
       "id": "REG-103",

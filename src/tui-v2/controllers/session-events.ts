@@ -100,6 +100,8 @@ import {
   type UiSnapshot,
 } from '../model/schema.js'
 import type { Channel, ChatRow, ResumeResult, ToolRow } from '../../dsh-adapter/channel.js'
+import { createChannelSurfaceAdapter, type ChannelSurfaceAdapter } from '../../dsh-adapter/ui-surfaces.js'
+import type { UiSurfaceView } from '../model/surfaces.js'
 
 // ---------------------------------------------------------------------------
 // EventMetaFactory — the single seq space shared by every event producer
@@ -187,6 +189,19 @@ export type ChannelUiChannel = Pick<
   | 'gitBranch'
   | 'notifications'
   | 'pending'
+  | 'activityEnabled'
+  | 'activityFrames'
+  | 'contextBarEnabled'
+  | 'contextSegments'
+  | 'contextWindow'
+  | 'lastUsage'
+  | 'workingActivity'
+  | 'goal'
+  | 'todos'
+  | 'loadedContext'
+  | 'traceEvents'
+  | 'agentId'
+  | 'setActivityFrames'
   | 'subscribe'
   | 'submit'
   | 'steer'
@@ -271,6 +286,8 @@ export interface DockStoreView {
   readonly status: DockStatusView
   readonly notifications: readonly DockNotificationView[]
   readonly pending: readonly DockPendingView[]
+  /** Bounded goal/activity/context projection, published through AppEvent too. */
+  readonly surface: UiSurfaceView
 }
 
 export interface ChannelUiAdapterOptions {
@@ -289,6 +306,10 @@ export interface ChannelUiAdapterOptions {
   readonly welcomeText?: string
   /** Dock mirror sink (WP-05); called at flush end when the dock diff changed. */
   readonly onDockChange?: (dock: DockStoreView) => void
+  /** Surface event sink; kept separate so legacy adapter unit traces stay stable. */
+  readonly onSurfaceChange?: (surface: UiSurfaceView) => void
+  /** Optional injected surface adapter for deterministic tests. */
+  readonly surfaceAdapter?: ChannelSurfaceAdapter
   readonly onDiagnostic?: (diagnostic: { code: string; message: string }) => void
 }
 
@@ -298,6 +319,8 @@ export interface ChannelUiAdapter {
   /** Unsubscribe; later wakeups do nothing. */
   stop(): void
   readonly commands: ChannelCommands
+  /** Bounded business projection and trajectory index boundary. */
+  readonly surfaces: ChannelSurfaceAdapter
   /** Channel wakeup handler (subscribe listener; exposed for tests). */
   handleWakeup(): void
   /** Force a full re-snapshot + rows-reset with `reason` (synchronous). */
@@ -427,6 +450,7 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
   const channel = options.channel
   const meta = options.meta
   const revisions: RevisionAllocator = options.revisions ?? createRevisionAllocator()
+  const surfaces = options.surfaceAdapter ?? createChannelSurfaceAdapter(channel)
 
   /** Ordinal counters per (source, sourceId) partition, per reset epoch (§5.3). */
   let ordinalCounters = new Map<string, number>()
@@ -800,10 +824,15 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
 
   let dockRevision = 0
   let lastDockSignature: string | null = null
+  let lastSurfaceRevision = 0
 
-  /** Publish the dock view when its signature changed since the last flush. */
+  /** Publish the dock mirror and the bounded surface projection. */
   const publishDock = (): void => {
-    if (options.onDockChange === undefined) return
+    const surface = surfaces.snapshot(meta.sessionEpoch)
+    if (surface.revision !== lastSurfaceRevision) {
+      lastSurfaceRevision = surface.revision
+      options.onSurfaceChange?.(surface)
+    }
     const status: DockStatusView = {
       status: String(channel.status),
       working: channel.working === true,
@@ -823,11 +852,11 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
       text: String(message.text),
       placement: message.placement,
     }))
-    const signature = canonicalJson({ status, notifications, pending })
+    const signature = canonicalJson({ status, notifications, pending, surface })
     if (signature === lastDockSignature) return
     lastDockSignature = signature
     dockRevision += 1
-    options.onDockChange(deepFreeze({ revision: dockRevision, status, notifications, pending }) as DockStoreView)
+    options.onDockChange?.(deepFreeze({ revision: dockRevision, status, notifications, pending, surface }) as DockStoreView)
   }
 
   // --------------------------------------------------------------- driver
@@ -936,8 +965,10 @@ export function createChannelUiAdapter(options: ChannelUiAdapterOptions): Channe
       started = false
       unsubscribe?.()
       unsubscribe = null
+      surfaces.dispose()
     },
 
+    surfaces,
     handleWakeup,
 
     chatRowForRowId(rowId) {

@@ -606,6 +606,7 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
       'sigcont.jsonl',
       'startup.jsonl',
       'tool-lifecycle.jsonl',
+      'trajectory-goal-activity-context@v1.jsonl',
       'user-submit.jsonl',
       'welcome.jsonl',
     ],

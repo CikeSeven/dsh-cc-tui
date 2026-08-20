@@ -14,6 +14,8 @@ import { parseSettingsRoutingOverlayPayload } from '../../model/settings-routing
 import { parseDialogOverlayPayload } from '../../model/overlay-payloads.js'
 import type { TerminalProfile } from '../../terminal/profile.js'
 import type { ComponentTheme } from '../theme.js'
+import { createContextPanel } from '../panes/context-panel.js'
+import type { LoadedContextView } from '../../model/surfaces.js'
 import { createApprovalDialog } from './approval-dialog.js'
 import { createEffortDialog, createRoutingPickerDialog } from './channel-options-dialog.js'
 import { createHelpDialog } from './help-dialog.js'
@@ -29,6 +31,19 @@ import { createWorkspaceDialog } from './workspace-dialog.js'
 export interface DialogOverlayRenderOptions {
   readonly profile: TerminalProfile
   readonly theme: ComponentTheme
+}
+
+function isLoadedContextView(value: unknown): value is LoadedContextView {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
+  const raw = value as Record<string, unknown>
+  return typeof raw.available === 'boolean'
+    && typeof raw.loading === 'boolean'
+    && typeof raw.summary === 'string'
+    && Array.isArray(raw.sections)
+    && Array.isArray(raw.contexts)
+    && Array.isArray(raw.files)
+    && Array.isArray(raw.skills)
+    && Array.isArray(raw.tools)
 }
 
 /** Trusted logical lines for any managed interactive overlay at `width`. */
@@ -69,6 +84,13 @@ export function renderDialogOverlayLines(
         return createRoutingPickerDialog(settingsRouting, options).render(width)
       case 'effort-dialog':
         return createEffortDialog(settingsRouting, options).render(width)
+    }
+  }
+
+  if (payload !== null && typeof payload === 'object' && !Array.isArray(payload)) {
+    const raw = payload as Record<string, unknown>
+    if (raw.kind === 'context-panel' && isLoadedContextView(raw.context)) {
+      return createContextPanel(raw.context, options.profile, raw.open === true).render(width)
     }
   }
 

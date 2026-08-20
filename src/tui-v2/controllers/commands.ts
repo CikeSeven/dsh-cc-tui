@@ -20,6 +20,9 @@ export interface CommandChannel {
 
 export interface CommandOverlayActions {
   readonly openSessionBrowser: () => boolean
+  readonly openTrajectory?: () => boolean
+  readonly openContext?: () => boolean
+  readonly openActivity?: (rawInput: string) => boolean
   readonly openWorkspace: (rawInput: string) => boolean
   readonly openSettings: () => boolean
   readonly openModel: (query: string) => boolean
@@ -147,6 +150,21 @@ export function createCommandsController(options: CommandsControllerOptions): Co
       counts.commands += 1
       if (rawInput === '') noteOverlay(options.overlays.openSessionBrowser())
       else void options.replay.resume(rawInput)
+      return 'command'
+    }
+    if (name === 'trace' || name === 'trajectory') {
+      counts.commands += 1
+      noteOverlay(options.overlays.openTrajectory?.() === true)
+      return 'command'
+    }
+    if (name === 'context') {
+      counts.commands += 1
+      noteOverlay(options.overlays.openContext?.() === true)
+      return 'command'
+    }
+    if (name === 'activity') {
+      counts.commands += 1
+      noteOverlay(options.overlays.openActivity?.(rawInput) === true)
       return 'command'
     }
     if (name === 'help') {

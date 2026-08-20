@@ -165,6 +165,24 @@ export function createFakeChannel(): FakeChannel {
     get agentId() {
       return 'fake-current-session';
     },
+    get activityEnabled() {
+      return true;
+    },
+    get activityFrames() {
+      return 'claude';
+    },
+    get contextBarEnabled() {
+      return true;
+    },
+    contextSegments: { system: 0, prompt: 0, assistant: 0, thinking: 0, tools: 0 },
+    contextWindow: undefined,
+    lastUsage: undefined,
+    workingActivity: undefined,
+    goal: undefined,
+    todos: [],
+    loadedContext: undefined,
+    traceEvents: () => [],
+    setActivityFrames: () => true,
     get gitBranch() {
       return 'main';
     },

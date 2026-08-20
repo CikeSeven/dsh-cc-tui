@@ -71,6 +71,7 @@ import {
   deepFreeze,
   type Clock,
   type ResetReason,
+  type SerializableValue,
   type TerminalMode,
 } from '../model/schema.js';
 import {
@@ -93,6 +94,10 @@ import {
   type ScheduledFrame,
 } from '../renderer/scheduler.js';
 import { createStatusLine } from '../components/chrome/status-line.js';
+import { createActivityLine } from '../components/chrome/activity-line.js';
+import { createContextBar } from '../components/chrome/context-bar.js';
+import { createGoalTodoComponent } from '../components/panes/goal-todo.js';
+import { createContextPanel } from '../components/panes/context-panel.js';
 import { createPromptEditor, type PromptEditor } from '../components/editor/prompt-editor.js';
 import { DEFAULT_COMPONENT_THEME } from '../components/theme.js';
 import { createAssistantMessage } from '../components/transcript/assistant-message.js';
@@ -120,7 +125,9 @@ import type { TerminalProfile } from '../terminal/profile.js';
 import { createScreenTakeover } from '../terminal/takeover.js';
 import { createTerminalWriter } from '../terminal/writer.js';
 import { createPluginRowComponent } from '../scenes/row-component.js';
-import type { PluginUIRuntime, PluginUIRuntimeDiagnostics } from '../scenes/runtime.js';
+import { createPluginUIRuntime, type PluginUIRuntime, type PluginUIRuntimeDiagnostics } from '../scenes/runtime.js';
+import { createTrajectoryController, type TrajectoryController } from '../controllers/trajectory.js';
+import { createTrajectorySceneDescriptor } from '../scenes/trajectory.js';
 import { sessionCwdMatches, type Channel } from '../../dsh-adapter/channel.js';
 import { createLocalWorkspaceRuntime } from '../../dsh-adapter/workspaces.js';
 import {
@@ -136,6 +143,7 @@ import { createStreamingController } from '../controllers/streaming.js';
 import { createTerminalLifecycleController } from '../controllers/terminal-lifecycle.js';
 import { createReplayController, type ReplayController } from '../controllers/replay.js';
 import { createScrollingController, type ScrollingController } from '../controllers/scrolling.js';
+import { createSurfaceController, type SurfaceController } from '../controllers/surfaces.js';
 import {
   createCommandsController,
   type CommandChannel,
@@ -253,6 +261,8 @@ export interface TuiV2CoordinatorOptions {
    * scene frame path) and detaches it at stop.
    */
   readonly scenes?: PluginUIRuntime;
+  /** Enable the built-in trajectory SceneV2 registration. */
+  readonly trajectory?: boolean;
   readonly onDiagnostic?: (diagnostic: CoordinatorDiagnostic) => void;
 }
 
@@ -282,6 +292,7 @@ export interface CoordinatorDiagnostics {
   readonly workspaceFlow: ReturnType<WorkspaceFlowController['diagnostics']>;
   readonly settingsFlow: ReturnType<SettingsFlowController['diagnostics']>;
   readonly channelOptions: ReturnType<ChannelOptionsController['diagnostics']>;
+  readonly surfaces: ReturnType<SurfaceController['activity']['diagnostics']>;
   /** WP-08a plugin scene runtime counters (absent when no runtime is wired). */
   readonly scenes?: PluginUIRuntimeDiagnostics;
 }
@@ -300,6 +311,7 @@ export interface CoordinatorControllers {
   readonly workspaceFlow: WorkspaceFlowController;
   readonly settingsFlow: SettingsFlowController;
   readonly channelOptions: ChannelOptionsController;
+  readonly surfaces: SurfaceController;
 }
 
 export interface TuiV2Coordinator {
@@ -359,8 +371,8 @@ const MAX_GAP_RECOVERIES = 8;
 
 export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2Coordinator {
   const { channel, profile, clock } = options;
-  /** WP-08a plugin scene runtime (null = no scene support wired). */
-  const pluginRuntime: PluginUIRuntime | null = options.scenes ?? null;
+  /** WP-08a plugin scene runtime plus the optional built-in trajectory scene. */
+  const pluginRuntime: PluginUIRuntime | null = options.scenes ?? (options.trajectory !== false ? createPluginUIRuntime() : null);
   const diagnostic = (code: string, message: string, details?: Record<string, unknown>): void => {
     try {
       options.onDiagnostic?.({ code, message, ...(details !== undefined ? { details } : {}) });
@@ -464,6 +476,11 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
 
   // ------------------------------------------------------------- renderer
 
+  // Created after the Channel adapter below; factories close over this slot.
+  let surfaceController: SurfaceController | null = null
+  let trajectoryController: TrajectoryController | null = null
+  let trajectoryRegistration: { dispose(): void } | null = null
+
   const baseRenderer: BaseRenderer = createBaseRenderer({
     profile,
     theme: options.theme ?? 'default',
@@ -492,7 +509,23 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         return promptEditor;
       },
       status: (view) => createStatusLine(view, { profile, theme }),
-      activity: () => null,
+      activity: (_activity, surface) => createActivityLine(
+        surfaceController?.activity.view(surface?.activity ?? null) ?? surface?.activity ?? null,
+        profile,
+      ),
+      goalTodo: (surface) => surface.goal === null && surface.todos.length === 0
+        ? null
+        : createGoalTodoComponent(surface, profile),
+      contextSummary: (context) => context.available
+        ? createContextPanel(context, profile, false)
+        : null,
+      contextBar: (surface) => surface !== undefined && surface.contextBarEnabled
+        ? createContextBar({
+            contextSegments: surface.contextSegments,
+            contextWindow: surface.contextWindow,
+            usage: surface.usage,
+          }, profile)
+        : null,
     },
   });
 
@@ -537,6 +570,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     }
     eventsApplied += 1;
     stateRevision += 1;
+    if (validated.type === 'surface/update') surfaceController?.refresh(validated.surface)
     if (state.terminal.needsFullRedraw) {
       // Consume the pulse on read: the reducer flag is an edge trigger, not a
       // level. Left set, it would force a full redraw on EVERY later frame
@@ -583,10 +617,47 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     ...(options.welcomeText !== undefined ? { welcomeText: options.welcomeText } : {}),
     onDockChange: (dock) => {
       dockMirror = dock;
+      surfaceController?.refresh(dock.surface);
+      if (trajectoryController !== null && pluginRuntime?.activeView()?.sceneId === 'trajectory') void trajectoryController.refresh();
       if (phase === 'active') scheduler.requestRender('notify', getScheduledState);
+    },
+    onSurfaceChange: (surface) => {
+      streamingController.ingest({
+        ...meta.next('session', `surface-${surface.revision}`),
+        type: 'surface/update',
+        surface,
+      });
     },
     onDiagnostic: (d) => diagnostic(`adapter/${d.code}`, d.message),
   });
+
+  surfaceController = createSurfaceController({
+    adapter: adapter.surfaces,
+    clock,
+    onRender: () => {
+      if (phase === 'active') scheduler.requestRender('stream', getScheduledState)
+    },
+    onDiagnostic: (code, details) => diagnostic(code, code, details),
+  });
+  if (options.trajectory !== false && pluginRuntime !== null) {
+    trajectoryController = createTrajectoryController({
+      adapter: adapter.surfaces,
+      clock,
+      degradedNotice: modeSelection.ok && modeSelection.mode === 'inline'
+        ? 'Inline mode: fixed viewport and scrollback parity are degraded; keys remain owned by trajectory.'
+        : undefined,
+      onView: () => {
+        if (phase === 'active') scheduler.requestRender('sync', getScheduledState)
+      },
+      onDiagnostic: (code, details) => diagnostic(code, code, details),
+    });
+    const registration = pluginRuntime.register(createTrajectorySceneDescriptor(
+      trajectoryController,
+      profile,
+    ), { pluginId: 'dsh-tui' });
+    if (registration.result.status === 'accepted') trajectoryRegistration = registration;
+    else diagnostic('trajectory/register-rejected', registration.result.code);
+  }
 
   // -------------------------------------------------------- terminal stack
 
@@ -635,6 +706,48 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   let channelOptionsController: ChannelOptionsController;
 
   type UtilityOwner = 'interactive' | 'session' | 'workspace' | 'settings' | 'channel-options';
+  let contextOverlayRevision = 0
+  const closeContextOverlay = (): void => {
+    if (!state.overlays.stack.some((overlay) => overlay.overlayId === 'utility/context')) return
+    streamingController.ingest({
+      ...meta.next('overlay', `context-close-${++contextOverlayRevision}`),
+      type: 'overlay/close',
+      overlayId: 'utility/context',
+    })
+  }
+  const openContextOverlay = (): boolean => {
+    const context = state.surface.context
+    if (!context.available || context.loading) {
+      notify('Loaded context is not available yet', { color: 'warning' })
+      return true
+    }
+    if (state.session.rowOrder.length > 0) {
+      channel.pushLocal('/context', [
+        context.summary || 'Loaded context',
+        'Expanded context details are available before the first transcript row with Ctrl+P or /context.',
+      ])
+      return true
+    }
+    closeUtilitiesExcept('interactive')
+    streamingController.ingest({
+      ...meta.next('overlay', `context-open-${++contextOverlayRevision}`),
+      type: 'overlay/open',
+      overlay: {
+        overlayId: 'utility/context',
+        revision: contextOverlayRevision,
+        anchor: 'top-center',
+        width: '90%',
+        maxHeight: '80%',
+        margin: 1,
+        visible: true,
+        captureInput: true,
+        nonCapturing: false,
+        payload: { kind: 'context-panel', context, open: true } as unknown as SerializableValue,
+      },
+    })
+    return true
+  }
+
   const closeUtilitiesExcept = (owner: UtilityOwner): void => {
     if (owner !== 'interactive') interactiveOverlaysController.close();
     if (owner !== 'session') sessionCatalogController.close();
@@ -652,6 +765,32 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       openSessionBrowser: () => {
         closeUtilitiesExcept('session');
         return sessionCatalogController.open();
+      },
+      openTrajectory: () => {
+        if (trajectoryController === null || pluginRuntime === null) return false
+        closeContextOverlay()
+        void trajectoryController.open()
+        return pluginRuntime.open('trajectory')
+      },
+      openContext: openContextOverlay,
+      openActivity: (rawInput) => {
+        const parts = rawInput.trim().split(/\s+/u).filter(Boolean)
+        if (parts[0] === 'frames' && parts[1] !== undefined) {
+          const ok = surfaceController?.setActivityPreset(parts[1].toLowerCase()) ?? false
+          if (!ok) notify(`Unknown activity preset: ${parts[1]}`, { color: 'warning' })
+          return true
+        }
+        if (parts[0] === 'toggle') {
+          const enabled = surfaceController?.toggleActivity() ?? false
+          notify(`Activity line ${enabled ? 'enabled' : 'disabled'}`)
+          return true
+        }
+        if (parts[0] === 'status') {
+          notify(`Activity line ${surfaceController?.activityEnabled() === false ? 'disabled' : 'enabled'} · ${state.surface.activity?.preset ?? 'claude'}`)
+          return true
+        }
+        notify('Use /activity frames <preset>, /activity toggle, or /activity status')
+        return true
       },
       openWorkspace: (rawInput) => {
         closeUtilitiesExcept('workspace');
@@ -952,10 +1091,23 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           }
         } else if (event.kind === 'key') {
           const payload = event.payload as KeyPayload;
+          if (payload.eventType !== 'release' && payload.key === 'ctrl+t' && state.focus.target !== 'scene') {
+            commandsController.handleSubmittedText('/trace')
+            return
+          }
+          if (payload.eventType !== 'release' && payload.key === 'ctrl+p' && state.session.rowOrder.length === 0) {
+            if (state.overlays.stack.some((overlay) => overlay.overlayId === 'utility/context')) closeContextOverlay()
+            else openContextOverlay()
+            return
+          }
           // Route by the focused overlay id. Unknown/foreign overlays never
           // leak keys into a dialog, utility controller or editor.
           if (state.focus.target === 'overlay') {
             const overlayId = state.focus.overlayId ?? '';
+            if (overlayId === 'utility/context') {
+              if (payload.eventType !== 'release' && (payload.key === 'escape' || payload.key === 'ctrl+p')) closeContextOverlay()
+              return
+            }
             if (overlayId === dialogsController.activeOverlayId()) {
               dialogsController.handleInput(event);
             } else if (sessionCatalogController.isManagedOverlay(overlayId)) {
@@ -1123,6 +1275,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       },
       pendingMessages: dockMirror.pending.map((message) => message.text),
       notifications: dockMirror.notifications,
+      surface: dockMirror.surface,
     };
   };
 
@@ -1351,6 +1504,9 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       workspaceFlowController.dispose();
       settingsFlowController.dispose();
       channelOptionsController.dispose();
+      surfaceController?.dispose();
+      trajectoryController?.dispose();
+      trajectoryRegistration?.dispose();
       interactiveOverlaysController.dispose();
       dialogsController.dispose();
       // WP-08a: tear down the open plugin scene (reason 'teardown') before
@@ -1426,6 +1582,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       workspaceFlow: workspaceFlowController,
       settingsFlow: settingsFlowController,
       channelOptions: channelOptionsController,
+      surfaces: surfaceController as SurfaceController,
     },
     diagnostics: () => ({
       phase,
@@ -1451,6 +1608,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       workspaceFlow: workspaceFlowController.diagnostics(),
       settingsFlow: settingsFlowController.diagnostics(),
       channelOptions: channelOptionsController.diagnostics(),
+      surfaces: surfaceController?.activity.diagnostics() ?? { ticks: 0, stalls: 0, invalidPresets: 0 },
       ...(pluginRuntime !== null ? { scenes: pluginRuntime.diagnostics() } : {}),
     }),
   };

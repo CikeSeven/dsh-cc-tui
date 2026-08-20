@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AppEvent } from '../src/tui-v2/model/events.js'
+import type { UiSurfaceView } from '../src/tui-v2/model/surfaces.js'
 import type {
   SessionBrowserPayload,
   WorkspaceDialogPayload,
@@ -258,6 +259,20 @@ const SETTINGS_ROUTING_TRACE_LITERALS = new Set([
 const SETTINGS_ROUTING_TRACE_REDACTION: RedactionPolicy = {
   redactPayload: (text) =>
     text === '' || text.startsWith('[placeholder]') || SETTINGS_ROUTING_TRACE_LITERALS.has(text)
+      ? undefined
+      : DEFAULT_REDACTION_POLICY.redactPayload?.(text),
+  redactCredential: DEFAULT_REDACTION_POLICY.redactCredential,
+  redactOsc: DEFAULT_REDACTION_POLICY.redactOsc,
+}
+
+const SURFACE_TRACE_LITERALS = new Set([
+  'trajectory', 'timeline', 'hotspot', 'compressed', 'duration', 'count',
+  'active', 'blocked', 'complete', 'pending', 'in_progress', 'completed',
+  'thinking', 'done', 'context-panel', 'ready', 'loading',
+])
+const SURFACE_TRACE_REDACTION: RedactionPolicy = {
+  redactPayload: (text) =>
+    text === '' || text.startsWith('[placeholder]') || SURFACE_TRACE_LITERALS.has(text)
       ? undefined
       : DEFAULT_REDACTION_POLICY.redactPayload?.(text),
   redactCredential: DEFAULT_REDACTION_POLICY.redactCredential,
@@ -1447,6 +1462,70 @@ traces['exit-error'] = {
     }),
     event(fx, 'input', { type: 'input/command', command: cmd({ type: 'app', command: 'exit' }) }),
   ],
+}
+
+// --- WP-08e1 trajectory + goal/todo + activity + context ---------------------
+traces['trajectory-goal-activity-context@v1'] = {
+  terminalProfile: 'unicode-ambiguous-narrow',
+  redactionPolicy: SURFACE_TRACE_REDACTION,
+  build: (fx) => {
+    const context = {
+      available: true,
+      loading: false,
+      sections: [{ name: '[placeholder] system identity', text: '[placeholder] safe system context 你好😀' }],
+      contexts: [{ name: '[placeholder] runtime cwd', text: '[placeholder] /workspace/project' }],
+      files: [{ displayPath: '[placeholder] ./AGENTS.md' }],
+      skills: [{ name: '[placeholder] review', description: '[placeholder] review code' }],
+      tools: [{ name: '[placeholder] bash', description: '[placeholder] run commands' }],
+      summary: '[placeholder] sections 1 · runtime 1 · files 1 · skills 1 · tools 1',
+    }
+    const surface = (revision: number, phase: 'active' | 'blocked' | 'complete', activityPhase: 'thinking' | 'done'): UiSurfaceView => ({
+      revision,
+      sessionEpoch: fx.sessionEpoch,
+      activityEnabled: true,
+      contextBarEnabled: true,
+      goalTodo: {
+        goal: {
+          id: '[placeholder] goal-1', revision, objective: '[placeholder] ship renderer 你好😀', phase,
+          maxGoalRounds: 5, roundsStarted: revision,
+          ...(phase === 'blocked' ? { blockedReason: { code: '[placeholder] WAIT', message: '[placeholder] awaiting approval' } } : {}),
+        },
+        todos: phase === 'complete'
+          ? []
+          : [
+              { content: '[placeholder] migrate trajectory', status: revision > 1 ? 'completed' : 'in_progress' },
+              { content: '[placeholder] add context tests', status: 'pending' },
+            ],
+        hiddenTodos: 0,
+      },
+      activity: {
+        phase: activityPhase,
+        line: activityPhase === 'done' ? '[placeholder] completed renderer migration' : '[placeholder] rendering trajectory',
+        preset: 'claude', frame: '✻', frameIndex: revision, intervalMs: 150, startedAt: BASE_AT, updatedAt: BASE_AT + revision * 100,
+      },
+      context,
+      contextSegments: { system: 300, prompt: 250, assistant: 400, thinking: 120, tools: 180 },
+      contextWindow: 2_000,
+      usage: { input: 900, cacheRead: 100, cacheWrite: 20 },
+    })
+    const contextOverlay = (revision: number): OverlayState => makeOverlay({
+      overlayId: 'utility/context', revision, anchor: 'top-center', width: '90%', maxHeight: '80%',
+      payload: { kind: 'context-panel', context, open: true } as unknown as SerializableValue,
+    })
+    return [
+      resetEvent(fx, 'new-session', [], 'reset-trajectory-surface-1'),
+      event(fx, 'session', { type: 'surface/update', surface: surface(1, 'active', 'thinking') }),
+      event(fx, 'overlay', { type: 'overlay/open', overlay: contextOverlay(1) }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/context' }),
+      event(fx, 'plugin', { type: 'scene/open', scene: { sceneId: 'trajectory', revision: 0, data: { status: 'loading' } } }),
+      event(fx, 'plugin', { type: 'scene/open', scene: { sceneId: 'trajectory', revision: 1, data: { status: 'ready', view: 'timeline', projection: 'compressed', query: '' } } }),
+      event(fx, 'plugin', { type: 'scene/open', scene: { sceneId: 'trajectory', revision: 2, data: { status: 'ready', view: 'timeline', projection: 'compressed', query: '[placeholder] tool filter', cursor: 1 } } }),
+      event(fx, 'plugin', { type: 'scene/open', scene: { sceneId: 'trajectory', revision: 3, data: { status: 'ready', view: 'hotspot', sort: 'duration', cursor: 0 } } }),
+      event(fx, 'session', { type: 'surface/update', surface: surface(2, 'blocked', 'thinking') }),
+      event(fx, 'session', { type: 'surface/update', surface: surface(3, 'complete', 'done') }),
+      event(fx, 'plugin', { type: 'scene/close', sceneId: 'trajectory', reason: 'user' }),
+    ]
+  },
 }
 
 // --- inline scrollback (WP-07): end-growth past a small viewport feeds settled

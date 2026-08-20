@@ -19,6 +19,7 @@ import type {
   TranscriptSearchState,
   UiRowSnapshot,
 } from './schema.js'
+import { emptySurfaceView, type UiSurfaceView } from './surfaces.js'
 
 // ---------------------------------------------------------------------------
 // Bounded capacities (§5.2: diagnostics and buffers are bounded).
@@ -279,6 +280,8 @@ export interface UiState {
   readonly focus: UiFocusState
   readonly viewport: UiViewportState
   readonly dock: UiDockState
+  /** Bounded Channel surface projection (goal/activity/context). */
+  readonly surface: UiSurfaceView
   readonly overlays: UiOverlayStackState
   readonly search: UiTranscriptSearchState
   /** Open plugin scene's view model; null when no scene is open. */
@@ -337,6 +340,7 @@ export function initialUiState(options: InitialUiStateOptions): UiState {
       pendingMessages: [],
       notifications: [],
     },
+    surface: emptySurfaceView(),
     overlays: { stack: [] },
     search: { query: '', active: false, current: 0, matches: [] },
     scene: null,

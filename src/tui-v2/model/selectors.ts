@@ -75,6 +75,7 @@ export interface DockView {
   readonly activity: UiActivityState | null
   readonly pendingMessages: readonly string[]
   readonly notifications: readonly UiNotification[]
+  readonly surface?: UiState['surface']
 }
 
 export function selectDockView(state: UiState): DockView {
@@ -84,7 +85,12 @@ export function selectDockView(state: UiState): DockView {
     activity: state.dock.activity,
     pendingMessages: state.dock.pendingMessages,
     notifications: state.dock.notifications,
+    surface: state.surface,
   }
+}
+
+export function selectSurfaceView(state: UiState): UiState['surface'] {
+  return state.surface
 }
 
 export interface EditorView {

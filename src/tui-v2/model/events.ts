@@ -23,6 +23,7 @@ import {
   type TranscriptSearchState,
   type UiRowSnapshot,
 } from './schema.js'
+import type { SurfaceUpdatePayload } from './surfaces.js'
 
 export type AppEvent =
   | (EventMeta & { type: 'session/row-upsert'; row: UiRowSnapshot })
@@ -35,6 +36,7 @@ export type AppEvent =
   | (EventMeta & { type: 'overlay/open'; overlay: OverlayState })
   | (EventMeta & { type: 'overlay/close'; overlayId: string })
   | (EventMeta & { type: 'search/update'; search: TranscriptSearchState })
+  | (EventMeta & { type: 'surface/update'; surface: SurfaceUpdatePayload['surface'] })
   | (EventMeta & { type: 'terminal/suspended' | 'terminal/resumed' })
   | (EventMeta & { type: 'app/error'; error: SerializableError })
   | (EventMeta & { type: 'scene/open'; scene: SceneViewModel })
@@ -53,6 +55,7 @@ const APP_EVENT_TYPES = [
   'overlay/open',
   'overlay/close',
   'search/update',
+  'surface/update',
   'terminal/suspended',
   'terminal/resumed',
   'app/error',
@@ -131,6 +134,36 @@ function validateSceneViewModel(value: unknown, field: string): void {
   if (typeof v.sceneId !== 'string' || v.sceneId === '') fail(`${field}.sceneId must be a non-empty string`)
   if (!isNonNegativeInt(v.revision)) fail(`${field}.revision must be a non-negative integer`)
   if (!isSerializableValue(v.data)) fail(`${field}.data must be a SerializableValue`)
+}
+
+function validateSurface(value: unknown, field: string): void {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) fail(`${field} must be an object`)
+  if (!isSerializableValue(value)) fail(`${field} must be a SerializableValue`)
+  const surface = value as Record<string, unknown>
+  if (!isNonNegativeInt(surface.revision)) fail(`${field}.revision must be a non-negative integer`)
+  if (typeof surface.sessionEpoch !== 'string') fail(`${field}.sessionEpoch must be a string`)
+  const goalTodo = surface.goalTodo
+  if (goalTodo === null || typeof goalTodo !== 'object' || Array.isArray(goalTodo)) {
+    fail(`${field}.goalTodo must be an object`)
+  }
+  const context = surface.context
+  if (context === null || typeof context !== 'object' || Array.isArray(context)) fail(`${field}.context must be an object`)
+  const boundedArrays: readonly [string, number][] = [
+    ['goalTodo.todos', 64],
+    ['context.sections', 64],
+    ['context.contexts', 64],
+    ['context.files', 64],
+    ['context.skills', 64],
+    ['context.tools', 64],
+  ]
+  for (const [path, max] of boundedArrays) {
+    const [parentName, childName] = path.split('.') as [string, string]
+    const parent = (surface[parentName] ?? {}) as Record<string, unknown>
+    const child = parent[childName]
+    if (child !== undefined && (!Array.isArray(child) || child.length > max)) {
+      fail(`${field}.${path} must be an array with at most ${max} entries`)
+    }
+  }
 }
 
 function validateInputCommand(value: unknown): void {
@@ -233,6 +266,9 @@ export function validateAppEvent(value: unknown): AppEvent {
       }
       break
     }
+    case 'surface/update':
+      validateSurface(e.surface, 'surface')
+      break
     case 'terminal/suspended':
     case 'terminal/resumed':
       break

@@ -99,7 +99,11 @@ export interface DockComponentFactories {
   readonly editor: (view: EditorView) => Component & Partial<Focusable>
   readonly status: (view: StatusLineView) => Component
   /** Activity/spinner line; return null to hide. */
-  readonly activity?: (activity: UiActivityState | null) => Component | null
+  readonly activity?: (activity: UiActivityState | null, surface?: DockView['surface']) => Component | null
+  /** Optional goal/todo and context bar line components. */
+  readonly goalTodo?: (view: NonNullable<DockView['surface']>['goalTodo']) => Component | null
+  readonly contextSummary?: (view: NonNullable<DockView['surface']>['context']) => Component | null
+  readonly contextBar?: (surface: NonNullable<DockView['surface']>) => Component | null
 }
 
 export interface BaseRendererOptions {
@@ -441,18 +445,37 @@ export function createBaseRenderer(options: BaseRendererOptions): BaseRenderer {
       for (const notification of input.dock.notifications) {
         dockBlocks.push([renderNotification(notification, width)])
       }
-      const activityComponent = options.dock.activity?.(input.dock.activity) ?? null
+      const contextSummaryComponent = input.transcript.totalRows === 0 && input.dock.surface !== undefined
+        ? (options.dock.contextSummary?.(input.dock.surface.context) ?? null)
+        : null
+      if (contextSummaryComponent !== null) {
+        const contextSummaryLines = contextSummaryComponent.render(width).map((line) => assertLineWidth(line, profile, width))
+        if (contextSummaryLines.length > 0) dockBlocks.push(contextSummaryLines)
+      }
+      const activityComponent = options.dock.activity?.(input.dock.activity, input.dock.surface) ?? null
       if (activityComponent !== null) {
         const activityLines = activityComponent
           .render(width)
           .map((line) => assertLineWidth(line, profile, width))
-        if (activityLines.length > 0) {
-          dockBlocks.push(activityLines.map((line) => line))
-        }
+        if (activityLines.length > 0) dockBlocks.push(activityLines)
+      }
+      const goalTodoComponent = input.dock.surface === undefined
+        ? null
+        : (options.dock.goalTodo?.(input.dock.surface.goalTodo) ?? null)
+      if (goalTodoComponent !== null) {
+        const goalTodoLines = goalTodoComponent.render(width).map((line) => assertLineWidth(line, profile, width))
+        if (goalTodoLines.length > 0) dockBlocks.push(goalTodoLines)
       }
       const editorComponent = options.dock.editor(input.editor)
       const editorLines = editorComponent.render(width).map((line) => assertLineWidth(line, profile, width))
       dockBlocks.push(editorLines)
+      const contextBarComponent = input.dock.surface === undefined
+        ? null
+        : (options.dock.contextBar?.(input.dock.surface) ?? null)
+      if (contextBarComponent !== null) {
+        const contextLines = contextBarComponent.render(width).map((line) => assertLineWidth(line, profile, width))
+        if (contextLines.length > 0) dockBlocks.push(contextLines)
+      }
       const statusLines = options.dock
         .status(input.status)
         .render(width)
