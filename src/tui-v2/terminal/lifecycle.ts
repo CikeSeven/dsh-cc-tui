@@ -423,6 +423,10 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
     // they are detached at the end of the barrier (§5.7 listener removal).
     const deadlineAt = this.clock.now() + LIFECYCLE_CLEANUP_DEADLINE_MS
     const preserveScreen = options.preserveScreen === true
+    // WP-07: a main-screen (inline) session parked the cursor below the frame
+    // (the coordinator's exit-park patch); the writer's cleanup bundle must
+    // not home it afterwards. preserveScreen keeps the visible screen too.
+    const preserveCursor = preserveScreen || !this.mode.alternateScreen
     if (this.state !== 'failed-before-takeover' && this.state !== 'failed-after-takeover') {
       this.state = 'stopping'
     }
@@ -448,7 +452,7 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
       deadlineHit = true
       this.diagnostic('cleanup-deadline', 'cleanup budget exhausted before writer flush', { deadlineMs: LIFECYCLE_CLEANUP_DEADLINE_MS })
     }
-    await this.writer.stop({ preserveScreen })
+    await this.writer.stop({ preserveScreen, preserveCursor })
 
     // termios restore, then drain stdin silence (kitty release events etc.).
     this.restoreRawMode()

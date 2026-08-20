@@ -535,6 +535,44 @@ traces['exit-error'] = {
   ],
 }
 
+// --- inline scrollback (WP-07): end-growth past a small viewport feeds settled
+// lines into scrollback; browsing must never feed; appends resume afterwards.
+traces['inline-scrollback'] = {
+  terminalProfile: 'unicode-ambiguous-narrow',
+  build: (fx) => {
+    const settledRows = [1, 2, 3, 4, 5, 6].map((n) =>
+      makeRow(fx, { source: 'session', sourceId: `assistant-${n}`, kind: 'assistant', blocks: [`[placeholder] inline scrollback row ${n}`] }),
+    )
+    const streamRowId = `${fx.sessionEpoch}:session:assistant-7:session-assistant-7-1`
+    const streamRow2Id = `${fx.sessionEpoch}:session:assistant-8:session-assistant-8-1`
+    return [
+      resetEvent(fx, 'new-session', settledRows, 'reset-inline-scrollback-1'),
+      // Shrink the viewport so the transcript overflows (windowing active).
+      event(fx, 'terminal', { type: 'viewport/resize', width: 60, height: 10 }),
+      // Streaming growth at follow-end: settled lines depart into scrollback.
+      event(fx, 'session', {
+        type: 'session/row-upsert',
+        row: makeRow(fx, { source: 'session', sourceId: 'assistant-7', kind: 'assistant', blocks: [], settled: false }),
+      }),
+      event(fx, 'stream', { type: 'stream/chunk', rowId: streamRowId, text: '[placeholder] stream chunk one' }),
+      event(fx, 'stream', { type: 'stream/chunk', rowId: streamRowId, text: '[placeholder] stream chunk two' }),
+      event(fx, 'stream', { type: 'stream/settled', rowId: streamRowId, revision: 1 }),
+      event(fx, 'session', { type: 'session/row-complete', rowId: streamRowId, revision: 1 }),
+      // Browsing breaks follow-end: internal scroll never feeds scrollback.
+      event(fx, 'input', { type: 'input/command', command: cmd({ type: 'scroll', delta: -3 }) }),
+      event(fx, 'input', { type: 'input/command', command: cmd({ type: 'scroll', delta: 999 }) }),
+      // Growth resumes after the browse: back at follow-end, appends continue.
+      event(fx, 'session', {
+        type: 'session/row-upsert',
+        row: makeRow(fx, { source: 'session', sourceId: 'assistant-8', kind: 'assistant', blocks: [], settled: false }),
+      }),
+      event(fx, 'stream', { type: 'stream/chunk', rowId: streamRow2Id, text: '[placeholder] later chunk' }),
+      event(fx, 'stream', { type: 'stream/settled', rowId: streamRow2Id, revision: 1 }),
+      event(fx, 'session', { type: 'session/row-complete', rowId: streamRow2Id, revision: 1 }),
+    ]
+  },
+}
+
 async function main(): Promise<void> {
   const names = Object.keys(traces).sort()
   for (const name of names) {

@@ -80,6 +80,29 @@ export interface FrameMetadata {
   readonly diffMs: number
   readonly terminalProfileId: string
   readonly fullRedrawReason?: 'initial' | 'resize' | 'resume' | 'damage' | 'unknown-mode' | 'cleanup'
+  /**
+   * WP-07 inline live-region hint (frame = screen invariant): rows
+   * [0..liveStart) are settled transcript lines (append-only candidates —
+   * they may leave the screen only INTO scrollback, never mutate in place);
+   * rows [liveStart..height) are the mutable live region (dock + streaming
+   * rows + unseen indicator) that backends repaint in place. Producers:
+   * app/inline-live-region.ts via buildFrame's `inlineHint`; the compositor
+   * passes it through. Absent on fullscreen frames; inline backends treat a
+   * missing/out-of-range hint as "everything is live" (repaint fallback).
+   */
+  readonly inline?: InlineFrameHint
+}
+
+/**
+ * WP-07 inline frame hint (see FrameMetadata.inline). `followEnd` is true
+ * only when the transcript window is pinned to the content end in this frame
+ * and the previous one — the backend may scroll settled lines into scrollback
+ * only then (append-only growth); internal scrolling frames repaint in place
+ * and feed nothing (no scrollback duplicates).
+ */
+export interface InlineFrameHint {
+  readonly liveStart: number
+  readonly followEnd: boolean
 }
 
 export interface ScreenBackendCapabilities {
@@ -122,6 +145,25 @@ export type PatchOperation =
   | { kind: 'cursor'; x: number; y: number; visible: boolean }
   | { kind: 'mode'; name: keyof TerminalModeSnapshot; value: null | boolean | number | string | TerminalModeSnapshot['scrollRegion'] | TerminalModeSnapshot['progress'] }
   | { kind: 'resources'; resources: FrameResources }
+  /**
+   * WP-07 inline initial paint: write one full row at the CURRENT cursor
+   * position (no CUP — the session's starting row is wherever the shell left
+   * the cursor). Encoded as CR + cell payload + (feed ? LF : nothing). A feed
+   * at the bottom row of a full-height main-screen scroll region pushes the
+   * top line into scrollback (the only scrollback-producing primitive inline
+   * mode uses). Requires a preceding resources op; cells[0] must not be a
+   * width-0 continuation. Only the inline backend emits this, and only on
+   * the initial paint recipe.
+   */
+  | { kind: 'append'; cells: readonly TerminalCell[]; feed: boolean }
+  /**
+   * WP-07 inline scroll primitive: CUP to (y+1, 1) then `count` line feeds.
+   * With y === height-1 on a full-height main-screen region each feed pushes
+   * the current top screen line into scrollback and opens a blank bottom row
+   * (append-only transcript scroll). Never emitted by the fullscreen backend;
+   * never touches ED 3 or DECSTBM.
+   */
+  | { kind: 'line-feed'; y: number; count: number }
   | { kind: 'image-upload'; storeKey: string; protocol: 'kitty' | 'iterm2'; payloadHash: string }
   | { kind: 'image-place'; placement: FrameImagePlacement }
   | { kind: 'image-delete'; storeKey: string }

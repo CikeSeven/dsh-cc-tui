@@ -573,6 +573,7 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
       'assistant-stream.jsonl',
       'editor.jsonl',
       'exit-error.jsonl',
+      'inline-scrollback.jsonl',
       'interrupt.jsonl',
       'notification-status.jsonl',
       'overlay.jsonl',

@@ -509,7 +509,12 @@ export function runTraceDifferential(
       pendingFullRedraw = true
       fullRedrawReason = 'cleanup'
     }
-    if (state.terminal.needsFullRedraw) pendingFullRedraw = true
+    // Consume-on-read mirrors app/coordinator.ts (the reducer flag is an edge
+    // trigger; leaving it set would full-redraw every later frame).
+    if (state.terminal.needsFullRedraw) {
+      pendingFullRedraw = true
+      state = { ...state, terminal: { ...state.terminal, needsFullRedraw: false } }
+    }
 
     const output = renderer.render({
       transcript: selectTranscriptView(state),

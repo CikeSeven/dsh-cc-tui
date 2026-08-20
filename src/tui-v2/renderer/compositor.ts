@@ -560,6 +560,10 @@ export function compositeFrame(input: CompositorInput): CompositorOutput {
     diffMs: base.metadata.diffMs,
     terminalProfileId: base.metadata.terminalProfileId,
     ...(fullRedrawReason !== undefined ? { fullRedrawReason } : {}),
+    // WP-07: the inline live-region hint describes the BASE layout (overlays
+    // do not shift rows); pass it through so the inline backend still sees
+    // the append-only boundary on composed frames.
+    ...(base.metadata.inline !== undefined ? { inline: base.metadata.inline } : {}),
   }
 
   const frame: Frame = {

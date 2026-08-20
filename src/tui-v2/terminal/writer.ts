@@ -69,9 +69,12 @@
  *   stopped, waits for the in-flight write up to 500 ms (then destroys the
  *   stream), sends a best-effort cleanup bundle built from ansi builders
  *   (sync-output end, SGR/hyperlink reset, paste/focus/mouse off, kitty
- *   keyboard pop, cursor show, scroll-region reset, alt-screen exit unless
- *   preserveScreen) with its own 500 ms budget, then transitions to
- *   `stopped`. stop is idempotent: every call returns the same promise.
+ *   keyboard pop, cursor show, scroll-region reset — skipped with
+ *   `preserveCursor` because the reset HOMES the cursor (xterm DECSTBM
+ *   semantics) and an inline session parks the cursor below the frame;
+ *   alt-screen exit unless preserveScreen) with its own 500 ms budget, then
+ *   transitions to `stopped`. stop is idempotent: every call returns the
+ *   same promise.
  *
  * Stats are a fixed set of bounded counters (`stats()`); no stdout bytes are
  * retained. All timers run on the injected `Clock` — no real timers exist in
@@ -147,7 +150,7 @@ export interface TerminalWriter {
   resume(barrier: WriterBarrier, generation: number): void
   flush(): Promise<void>
   invalidate(): void
-  stop(options?: { preserveScreen?: boolean }): Promise<void>
+  stop(options?: { preserveScreen?: boolean; preserveCursor?: boolean }): Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -448,6 +451,35 @@ export function encodePatchOperationsSync(
         out += ansi.setScrollRegion(op.top + 1, op.bottom + 1)
         out += op.delta > 0 ? ansi.scrollUp(op.delta) : ansi.scrollDown(-op.delta)
         out += ansi.resetScrollRegion()
+        break
+      }
+      case 'append': {
+        // WP-07 inline initial paint: write at the CURRENT cursor row. CR
+        // homes the column (and clears any pending wrap) because the shell's
+        // cursor column at session start is unknown; the optional LF is the
+        // append-only feed (at a full-height main-screen region bottom it
+        // pushes the top line into scrollback — the only scroll primitive
+        // inline mode uses).
+        if (!Array.isArray(op.cells)) throw new TypeError('append.cells must be an array')
+        if (resources === null) throw new TypeError('append requires a preceding resources operation')
+        if (typeof op.feed !== 'boolean') throw new TypeError('append.feed must be boolean')
+        if (op.cells.length === 0) throw new TypeError('append.cells must be a non-empty full row')
+        if ((op.cells[0] as { width: number }).width === 0) {
+          throw new TypeError('append row must not start with a width-0 continuation cell')
+        }
+        out += '\r'
+        out += ansi.encodeCells(op.cells, resources).sequence
+        if (op.feed) out += '\n'
+        break
+      }
+      case 'line-feed': {
+        // WP-07 inline scroll primitive: home to (y, col 1), then raw LFs.
+        // Never DECSTBM/SU/SD (those never reach scrollback) and never ED 3.
+        requireInt('line-feed.y', op.y, 0, MAX_COORD - 1)
+        requireInt('line-feed.count', op.count, 0, MAX_COORD)
+        if (op.count === 0) break
+        out += ansi.cursorTo(op.y + 1, 1)
+        out += '\n'.repeat(op.count)
         break
       }
       case 'cursor': {
@@ -937,14 +969,14 @@ class TerminalWriterImpl implements TerminalWriter {
     this.accepted = { generation: this.currentGeneration, stateRevision: -1, patchSeq: -1 }
   }
 
-  stop(options: { preserveScreen?: boolean } = {}): Promise<void> {
+  stop(options: { preserveScreen?: boolean; preserveCursor?: boolean } = {}): Promise<void> {
     // Idempotent: repeated stop/signal converges on the same promise (§5.7).
     if (this.stopPromise !== null) return this.stopPromise
     this.stopPromise = this.doStop(options)
     return this.stopPromise
   }
 
-  private async doStop(options: { preserveScreen?: boolean }): Promise<void> {
+  private async doStop(options: { preserveScreen?: boolean; preserveCursor?: boolean }): Promise<void> {
     if (this.state !== 'failed-before-takeover' && this.state !== 'failed-after-takeover') {
       this.state = 'stopping'
     }
@@ -965,7 +997,7 @@ class TerminalWriterImpl implements TerminalWriter {
     }
     // Best-effort cleanup bundle from ansi builders only (§5.6 cleanup goes
     // through the same writer; the coordinator may send richer cleanup first).
-    await this.writeCleanupBundle(options.preserveScreen === true)
+    await this.writeCleanupBundle(options.preserveScreen === true, options.preserveCursor === true)
     if (this.state !== 'failed-before-takeover' && this.state !== 'failed-after-takeover') {
       this.state = 'stopped'
     }
@@ -1180,7 +1212,7 @@ class TerminalWriterImpl implements TerminalWriter {
     this.notifyQuiescence()
   }
 
-  private async writeCleanupBundle(preserveScreen: boolean): Promise<void> {
+  private async writeCleanupBundle(preserveScreen: boolean, preserveCursor: boolean): Promise<void> {
     if ((this.stream as { destroyed?: boolean }).destroyed === true) return
     let bundle =
       ansi.syncOutputEnd() +
@@ -1194,8 +1226,12 @@ class TerminalWriterImpl implements TerminalWriter {
       ansi.decrst(1006) +
       ansi.decrst(1015) +
       ansi.kittyKeyboardPop(99) +
-      ansi.cursorShow() +
-      ansi.resetScrollRegion()
+      ansi.cursorShow()
+    // The scroll-region reset HOMES the cursor (xterm DECSTBM semantics). A
+    // main-screen (inline) session parks the cursor below the frame for the
+    // returning shell prompt and must not be homed afterwards; alt-screen
+    // sessions restore the saved main-screen cursor on 1049 exit anyway.
+    if (!preserveCursor) bundle += ansi.resetScrollRegion()
     if (!preserveScreen) bundle += ansi.decrst(1049)
     const bytes = Buffer.byteLength(bundle, 'utf8')
     await new Promise<void>((resolve) => {

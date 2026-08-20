@@ -14,15 +14,18 @@
  *
  * Design notes / registered deviations:
  *
- *  - WP-06b: the fullscreen backend is `terminal/fullscreen-backend.ts`
- *    (v2-native cell-diff planner; capabilities per §6.4). Its
- *    start()/stop() are generation gates only — alt-screen enter/exit bytes
- *    stay with the lifecycle orchestration. The coordinator calls them for
- *    the fullscreen backend; the inline path keeps the pi main-screen
- *    backend as a pure Frame → TerminalPatch planner whose start() is
- *    deliberately NOT called (it would run the vendored TUI's own
- *    timer-driven render loop and input ownership, double-writing the
- *    terminal around the patch channel; inline semantics are WP-07).
+ *  - WP-06b/WP-07: the fullscreen backend is `terminal/fullscreen-backend.ts`
+ *    (v2-native cell-diff planner; capabilities per §6.4) and the inline
+ *    backend is `terminal/inline-backend.ts` (main-screen append-only
+ *    planner; capabilities per §15.1 WP-07). Their start()/stop() are
+ *    generation gates only — takeover/restore bytes stay with the lifecycle
+ *    orchestration. The coordinator calls them for BOTH backends. The old pi
+ *    main-screen adapter no longer sits on this path (its vendored TUI would
+ *    double-write around the patch channel). Inline-only wiring is
+ *    capability-driven (`supportsInlineLiveRegion`): the frame metadata
+ *    live-region hint, the foreign-output guard (third-party writes trigger
+ *    a damage re-anchor), the exit park patch, and the overlay strip +
+ *    notification degradation (`supportsNestedOverlay` false).
  *  - Full-redraw triggers (§6.4, WP-06b): resize → scheduler resize
  *    transaction ('resize'); SIGCONT → terminal/resumed journal +
  *    markFullRedraw ('resume'); Ctrl+L → input controller onRedrawRequest
@@ -97,6 +100,8 @@ import { createToolRow } from '../components/transcript/tool-row.js';
 import { createUserMessage } from '../components/transcript/user-message.js';
 import { renderDialogOverlayLines } from '../components/overlays/render-dialog.js';
 import { FullscreenBackend } from '../terminal/fullscreen-backend.js';
+import { createForeignOutputGuard } from '../terminal/foreign-output.js';
+import { InlineBackend, type InlineScreenBackend } from '../terminal/inline-backend.js';
 import {
   createInputSource,
   type InputStdin,
@@ -110,8 +115,6 @@ import {
   type ProcessSignalHost,
   type TerminalLifecycle,
 } from '../terminal/lifecycle.js';
-import { PiTuiMainScreenBackend } from '../terminal/main-screen.js';
-import { createPiTerminalAdapter, type PiTerminalStack } from '../terminal/pi-adapter.js';
 import type { TerminalProfile } from '../terminal/profile.js';
 import { createTerminalWriter } from '../terminal/writer.js';
 import type { Channel } from '../../dsh-adapter/channel.js';
@@ -141,6 +144,7 @@ import {
   type QuestionStoreLike,
 } from '../controllers/dialogs.js';
 import { buildFrame } from '../renderer/frame-builder.js';
+import { computeInlineLiveRegion } from './inline-live-region.js';
 import { selectTerminalMode } from './modes.js';
 
 export type CoordinatorPhase = 'created' | 'starting' | 'active' | 'stopping' | 'stopped' | 'failed';
@@ -426,6 +430,10 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   let pendingFullRedraw = true;
   let fullRedrawReason: 'initial' | 'resize' | 'resume' | 'damage' | 'unknown-mode' | 'cleanup' = 'initial';
   let previousFrame: Frame | null = null;
+  /** WP-07 inline: whether the PREVIOUS written frame's window was follow-end. */
+  let prevFollowEnd = false;
+  /** Overlay ids already notified as unsupported (re-armed when the stack empties). */
+  const overlayUnsupportedNotified = new Set<string>();
 
   const getScheduledState = (): ScheduledFrame => ({ stateRevision });
 
@@ -447,7 +455,14 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     }
     eventsApplied += 1;
     stateRevision += 1;
-    if (state.terminal.needsFullRedraw) pendingFullRedraw = true;
+    if (state.terminal.needsFullRedraw) {
+      // Consume the pulse on read: the reducer flag is an edge trigger, not a
+      // level. Left set, it would force a full redraw on EVERY later frame
+      // (WP-07 wiring fix; the inline backend's incremental recipes depend on
+      // ordinary frames NOT being full redraws).
+      pendingFullRedraw = true;
+      state = { ...state, terminal: { ...state.terminal, needsFullRedraw: false } };
+    }
     if (validated.type === 'app/error') {
       // Abnormal path (§6.4): any frame rendered from here on cannot trust
       // the physical screen — mark the cleanup full-redraw reason.
@@ -654,7 +669,33 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     },
   });
 
-  const writer = createTerminalWriter({ stream: options.stream, clock, profile });
+  // WP-07: backend choice follows the mode selection; everything below keys
+  // off its CAPABILITIES, never a mode string. The inline backend shares only
+  // the contract with fullscreen (plan: no `if (mode === 'inline')` copies of
+  // fullscreen logic). The pi main-screen adapter is gone from this path.
+  const backend: ScreenBackend =
+    modeSelection.ok && modeSelection.mode === 'fullscreen'
+      ? new FullscreenBackend()
+      : new InlineBackend();
+
+  const onForeignOutput = (bytes: number): void => {
+    diagnostic('output/foreign', 'foreign write on the main screen; scheduling a damage re-anchor', { bytes });
+    if (phase !== 'active') return;
+    // Foreign bytes may have moved cursor/screen arbitrarily: the next frame
+    // re-anchors (erase + absolute rewrite, never a scrollback clear).
+    pendingFullRedraw = true;
+    fullRedrawReason = 'damage';
+    scheduler.requestRender('sync', getScheduledState);
+  };
+
+  // Inline shares the main screen with third-party writes; the guard detects
+  // bytes that bypass the writer. Fullscreen owns the alternate screen — no
+  // guard needed (capability-driven, §15.1 WP-07).
+  const foreignGuard = backend.capabilities.supportsInlineLiveRegion
+    ? createForeignOutputGuard(options.stream, onForeignOutput)
+    : null;
+
+  const writer = createTerminalWriter({ stream: foreignGuard?.writerStream ?? options.stream, clock, profile });
 
   const lifecycle: TerminalLifecycle = createTerminalLifecycle({
     writer,
@@ -669,9 +710,6 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     onProcessError: (error, origin) => lifecycleController.handleProcessError(error, origin),
   });
 
-  const piAdapter = createPiTerminalAdapter({ writer, lifecycle, input, profile, stdout: options.stdout });
-  const stack: PiTerminalStack = { adapter: piAdapter, writer, input, lifecycle };
-
   const scheduler: RenderScheduler<ScheduledFrame> = createRenderScheduler<ScheduledFrame>({
     clock,
     ...(options.streamWindowMs !== undefined ? { streamWindowMs: options.streamWindowMs } : {}),
@@ -681,14 +719,10 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   scheduler.onResize(() => {
     baseRenderer.applyEnvironmentChange({ widthChanged: true });
     previousFrame = null;
+    prevFollowEnd = false;
     pendingFullRedraw = true;
     fullRedrawReason = 'resize';
   });
-
-  const backend: ScreenBackend =
-    modeSelection.ok && modeSelection.mode === 'fullscreen'
-      ? new FullscreenBackend()
-      : new PiTuiMainScreenBackend(stack);
 
   // ------------------------------------------------------------ render loop
 
@@ -738,8 +772,9 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       const startedAt = clock.now();
       const dock = mergedDockView();
       const status = mergedStatusLine();
+      const transcript = selectTranscriptView(state);
       const output = baseRenderer.render({
-        transcript: selectTranscriptView(state),
+        transcript,
         dock,
         editor: editorView(),
         status,
@@ -750,6 +785,22 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       });
       framesRendered += 1;
       const fullRedraw = pendingFullRedraw || output.diagnostics.fullRedraw;
+      // WP-07: the inline live-region hint (append-only boundary) is computed
+      // from THIS render's own layout diagnostics and row mutability.
+      const inlineHint = backend.capabilities.supportsInlineLiveRegion
+        ? computeInlineLiveRegion({
+            transcriptHeight: output.diagnostics.transcriptHeight,
+            scrollTopLine: output.diagnostics.scrollTopLine,
+            heightIndex: baseRenderer.heightIndex,
+            isMutableRow: (rowId) => {
+              if (transcript.streamingRowId === rowId) return true;
+              const row = transcript.visibleRows.find((candidate) => candidate.rowId === rowId);
+              return row === undefined ? true : !row.settled; // unknown id: conservatively mutable
+            },
+            showUnseenIndicator: transcript.showUnseenIndicator,
+            followEnd: (state.viewport.sticky || baseRenderer.anchor === null) && prevFollowEnd,
+          })
+        : undefined;
       const baseFrame = buildFrame({
         frameId: `frame-${++frameSeq}`,
         stateRevision,
@@ -763,14 +814,36 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         fullRedraw,
         fullRedrawReason: fullRedraw ? fullRedrawReason : undefined,
         renderMs: Math.max(0, clock.now() - startedAt),
+        ...(inlineHint !== undefined ? { inlineHint } : {}),
       });
+      // WP-07 overlay degradation: a backend without nested-overlay support
+      // gets an EMPTY stack (the frame pipeline itself never branches on
+      // mode); each newly visible overlay is surfaced ONCE through the dock
+      // notification lane (append-only, consistent degradation feedback).
+      let overlayStack = state.overlays.stack;
+      if (overlayStack.length === 0) {
+        overlayUnsupportedNotified.clear();
+      } else if (!backend.capabilities.supportsNestedOverlay) {
+        for (const overlay of overlayStack) {
+          if (!overlay.visible || overlayUnsupportedNotified.has(overlay.overlayId)) continue;
+          overlayUnsupportedNotified.add(overlay.overlayId);
+          notify('Inline mode cannot render overlay dialogs; the dialog is hidden and keys still apply', {
+            color: 'warning',
+          });
+          diagnostic('overlay/unsupported', 'overlay stripped by backend capability', {
+            overlayId: overlay.overlayId,
+            mode: backend.mode,
+          });
+        }
+        overlayStack = [];
+      }
       // WP-06b: composite the overlay stack (back -> front) over THIS frame's
       // base; no overlays = the base frame passes through unchanged (the
       // base-only degradation path stays byte-equivalent to WP-06a).
       const frame = compositeFrame({
         base: baseFrame,
         profile,
-        overlays: state.overlays.stack,
+        overlays: overlayStack,
         renderOverlay: (overlay, width) =>
           renderDialogOverlayLines(overlay.payload, width, { profile, theme }),
         previous: previousFrame,
@@ -788,6 +861,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         patchesWritten += 1;
         writtenBytes += result.bytes ?? 0;
         previousFrame = frame;
+        prevFollowEnd = state.viewport.sticky || baseRenderer.anchor === null;
         pendingFullRedraw = false;
         fullRedrawReason = 'unknown-mode';
         return;
@@ -795,6 +869,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       // The patch did not land (stale/dropped): the physical screen no longer
       // provably matches previousFrame — the next frame must be a full redraw.
       previousFrame = null;
+      prevFollowEnd = false;
       pendingFullRedraw = true;
       fullRedrawReason = 'damage';
     } catch (error) {
@@ -830,11 +905,11 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       if (result.status !== 'active') {
         throw new CoordinatorStartError(result.error.code, result.error.message);
       }
-      if (backend.mode === 'fullscreen') {
-        // Generation gate for the fullscreen backend; the physical
-        // alt-screen entry already ran inside lifecycle.start (§6.4).
-        await backend.start(lifecycle.generation());
-      }
+      // Backend generation gate (both backends): the physical takeover bytes
+      // (alt-screen entry for fullscreen) already ran inside lifecycle.start
+      // (§6.4); the inline backend's start emits nothing by construction.
+      await backend.start(lifecycle.generation());
+      foreignGuard?.attach();
       if (options.attachProcessHandlers !== false) lifecycle.attachProcessHandlers();
       scheduler.start();
       adapter.start();
@@ -860,11 +935,26 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       // dispatch overlay/close into a streaming controller that is stopping.
       dialogsController.dispose();
       scheduler.stop();
-      if (backend.mode === 'fullscreen') {
-        // Backend generation gate closes before the lifecycle teardown emits
-        // the alt-screen exit bytes (§6.4; backend.stop emits nothing).
-        await backend.stop(lifecycle.generation());
+      // WP-07: park the cursor below the frame so the returning shell prompt
+      // lands under the dock instead of overwriting it (best-effort, inline
+      // only — fullscreen's alt-screen exit restores the shell screen).
+      if (backend.capabilities.supportsInlineLiveRegion) {
+        try {
+          const park = (backend as InlineScreenBackend).planExitPark(lifecycle.generation());
+          if (park !== null) {
+            const parkResult = await writer.write(park);
+            if (parkResult.status === 'error') {
+              diagnostic('writer/error', parkResult.error.message);
+            }
+          }
+        } catch (error) {
+          diagnostic('inline/park-error', error instanceof Error ? error.message : String(error));
+        }
       }
+      // Backend generation gate closes before the lifecycle teardown emits
+      // any physical restore bytes (§6.4; backend.stop emits nothing).
+      await backend.stop(lifecycle.generation());
+      foreignGuard?.detach();
       streamingController.stop();
       adapter.stop();
       lifecycle.detachProcessHandlers();

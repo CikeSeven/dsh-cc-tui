@@ -33,7 +33,18 @@
  *                        frame-by-frame under the golden profiles; a scripted
  *                        overlay open/move/resize/nest/close no-ghosting
  *                        scan; and the §9.3 P0/P1 regression-fixture ledger
- *                        (WP-07/WP-08 domains registered as deferred).
+ *                        (WP-08 domains registered as deferred).
+ *   - inline (WP-07):    every trace replayed through the inline pipeline
+ *                        (reducer → selectors → base-renderer → inline hint →
+ *                        buildFrame → compositor → InlineBackend) with
+ *                        canonical + VT byte replay and append-only scrollback
+ *                        invariants; the inline-scrollback trace must
+ *                        demonstrate the append recipe (feeds > 0); the
+ *                        third-party-output re-anchor drill (guard detection,
+ *                        no scrollback growth, detach restore); the cleanup
+ *                        drills (sigterm/error: modes restored, cursor parked);
+ *                        and the docs/tui-v2/support-matrix.md machine block
+ *                        validated against INLINE_/FULLSCREEN_CAPABILITIES.
  *
  * Every check writes an atomic JSON artifact
  *   { schemaVersion: 1, check, status, details, startedAt, durationMs,
@@ -1159,15 +1170,21 @@ const FULLSCREEN_LEDGER: readonly FullscreenLedgerEntry[] = [
     id: 'inline-scrollback-incremental',
     severity: 'P1',
     requirement: '主屏 inline 不把每次局部更新复制进 scrollback，不用清空 scrollback 的危险序列',
-    covers: [],
-    deferred: 'WP-07',
+    covers: [
+      { kind: 'trace', name: 'inline-scrollback' },
+      { kind: 'test', file: 'test/tui-v2/inline-backend.test.ts' },
+      { kind: 'test', file: 'test/tui-v2/inline-pipeline.test.ts' },
+      { kind: 'check', name: 'inline' },
+    ],
   },
   {
     id: 'third-party-stdout',
     severity: 'P1',
     requirement: '第三方 stdout/stderr 最小 trace/profile',
-    covers: [],
-    deferred: 'WP-07',
+    covers: [
+      { kind: 'test', file: 'test/tui-v2/inline-third-party-output.test.ts' },
+      { kind: 'check', name: 'inline' },
+    ],
   },
   {
     id: 'external-editor-suspend-resume',
@@ -1330,7 +1347,7 @@ async function checkFullscreen(): Promise<CheckResult> {
   }
 
   // Part 4 — §9.3 P0/P1 ledger: every entry maps to resolvable coverage;
-  // WP-07/WP-08 domains are registered as deferred and never fail.
+  // WP-08 domains are registered as deferred and never fail.
   const resolveRef = async (ref: FullscreenLedgerRef): Promise<string | null> => {
     try {
       switch (ref.kind) {
@@ -1402,6 +1419,217 @@ async function checkFullscreen(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
+// inline check (WP-07)
+// ---------------------------------------------------------------------------
+
+const SUPPORT_MATRIX_DOC = path.join(repoRoot, 'docs', 'tui-v2', 'support-matrix.md')
+
+/**
+ * Parse the ```json machine block of docs/tui-v2/support-matrix.md and pin it
+ * to the code constants: every capability key must match BOTH backend
+ * capability objects, and every capability where the two modes differ must
+ * carry a non-empty note (fullscreen-only features never masquerade as parity).
+ */
+async function checkSupportMatrix(
+  inlineCaps: Record<string, boolean>,
+  fullscreenCaps: Record<string, boolean>,
+): Promise<{ errors: string[]; capabilities: Record<string, unknown> }> {
+  const errors: string[] = []
+  let markdown: string
+  try {
+    markdown = await readFile(SUPPORT_MATRIX_DOC, 'utf8')
+  } catch (error: any) {
+    return { errors: [`support matrix doc unreadable: ${String(error?.message || error)}`], capabilities: {} }
+  }
+  let machine: any = null
+  for (const match of markdown.matchAll(/```json\s*\n([\s\S]*?)```/g)) {
+    try {
+      const parsed = JSON.parse(match[1])
+      if (parsed && typeof parsed === 'object' && parsed.capabilities && typeof parsed.capabilities === 'object') {
+        machine = parsed
+        break
+      }
+    } catch {
+      // Not the machine block; keep scanning.
+    }
+  }
+  if (machine === null) {
+    return { errors: ['no ```json machine block with a capabilities object found'], capabilities: {} }
+  }
+  const documented = machine.capabilities as Record<string, any>
+  const expectedKeys = new Set([...Object.keys(fullscreenCaps), ...Object.keys(inlineCaps)])
+  for (const key of expectedKeys) {
+    const entry = documented[key]
+    if (!entry || typeof entry !== 'object') {
+      errors.push(`capability ${key}: missing from the matrix`)
+      continue
+    }
+    if (entry.fullscreen !== fullscreenCaps[key]) {
+      errors.push(`capability ${key}: matrix fullscreen=${JSON.stringify(entry.fullscreen)} but FULLSCREEN_CAPABILITIES=${fullscreenCaps[key]}`)
+    }
+    if (entry.inline !== inlineCaps[key]) {
+      errors.push(`capability ${key}: matrix inline=${JSON.stringify(entry.inline)} but INLINE_CAPABILITIES=${inlineCaps[key]}`)
+    }
+    if (entry.fullscreen !== entry.inline && (typeof entry.note !== 'string' || entry.note.trim() === '')) {
+      errors.push(`capability ${key}: fullscreen/inline differ but the matrix carries no note (divergence must be explicit)`)
+    }
+  }
+  for (const key of Object.keys(documented)) {
+    if (!expectedKeys.has(key)) errors.push(`capability ${key}: documented but not present in either backend`)
+  }
+  return { errors, capabilities: documented }
+}
+
+async function checkInline(): Promise<CheckResult> {
+  const { readTrace } = await import('../src/tui-v2/testkit/trace.js')
+  const { getProfile } = await import('../src/tui-v2/testkit/terminal-profiles.js')
+  const { FULLSCREEN_CAPABILITIES } = await import('../src/tui-v2/terminal/fullscreen-backend.js')
+  const { INLINE_CAPABILITIES } = await import('../src/tui-v2/terminal/inline-backend.js')
+  const { runInlineCleanup, runInlineTraceReplay, runThirdPartyOutputReanchor } = await import(
+    '../test/tui-v2/helpers/inline-harness.js'
+  )
+
+  const errors: string[] = []
+  const tracesDir = path.join(repoRoot, 'fixtures', 'tui-v2', 'traces')
+
+  // Part 1 — every trace through the inline pipeline (canonical + VT replay,
+  // append-only scrollback invariants) under the profiles the fullscreen scan
+  // pins. The inline-scrollback trace must DEMONSTRATE the append recipe —
+  // feedPatches > 0 — otherwise the scrollback coverage is vacuous.
+  const replay = {
+    profiles: [...FULLSCREEN_SCAN_PROFILES],
+    traces: 0,
+    frames: 0,
+    fullRedraws: 0,
+    feedPatches: 0,
+    scrollbackFeeds: 0,
+    bytes: 0,
+    maxRowWidth: 0,
+    strippedOverlays: 0,
+    perTrace: [] as Record<string, unknown>[],
+    failures: [] as unknown[],
+  }
+  let traceFiles: string[] = []
+  try {
+    traceFiles = (await readdir(tracesDir)).filter((f) => f.endsWith('.jsonl')).sort()
+  } catch (error: any) {
+    errors.push(`traces dir unreadable: ${String(error?.message || error)}`)
+  }
+  for (const file of traceFiles) {
+    try {
+      const trace = await readTrace(path.join(tracesDir, file))
+      replay.traces += 1
+      for (const profileId of FULLSCREEN_SCAN_PROFILES) {
+        const result = runInlineTraceReplay(trace, getProfile(profileId))
+        replay.frames += result.frames
+        replay.fullRedraws += result.fullRedraws
+        replay.feedPatches += result.feedPatches
+        replay.scrollbackFeeds += result.scrollbackFeeds
+        replay.bytes += result.bytes
+        replay.maxRowWidth = Math.max(replay.maxRowWidth, result.maxRowWidth)
+        replay.strippedOverlays += result.strippedOverlays
+        if (!result.ok) {
+          errors.push(
+            `trace ${result.trace} @ ${profileId}: ${result.failures.map((f) => `[${f.scope}] ${f.frameId ?? ''} ${f.message}`).join('; ')}`,
+          )
+          replay.failures.push(...result.failures)
+        }
+        if (result.trace === 'inline-scrollback' && (result.feedPatches === 0 || result.scrollbackLines === 0)) {
+          errors.push(
+            `trace inline-scrollback @ ${profileId}: append recipe never fired (feedPatches=${result.feedPatches}, scrollbackLines=${result.scrollbackLines}) — scrollback coverage would be vacuous`,
+          )
+        }
+        replay.perTrace.push({
+          trace: result.trace,
+          profile: profileId,
+          events: result.events,
+          frames: result.frames,
+          fullRedraws: result.fullRedraws,
+          feedPatches: result.feedPatches,
+          scrollbackLines: result.scrollbackLines,
+          strippedOverlays: result.strippedOverlays,
+          bytes: result.bytes,
+          ok: result.ok,
+          gridHash: result.gridHash,
+          vtHash: result.vtHash,
+        })
+      }
+    } catch (error: any) {
+      errors.push(`trace fixture ${file}: ${String(error?.message || error)}`)
+    }
+  }
+
+  // Part 2 — third-party output: guard detection + damage re-anchor restores
+  // the screen without growing scrollback; detach restores the stream.
+  const thirdParty: Record<string, unknown>[] = []
+  for (const profileId of FULLSCREEN_SCAN_PROFILES) {
+    const result = await runThirdPartyOutputReanchor(getProfile(profileId))
+    if (!result.ok) {
+      errors.push(
+        `third-party re-anchor @ ${profileId}: ${result.failures.map((f) => `[${f.scope}] ${f.message}`).join('; ')}`,
+      )
+    }
+    if (result.foreignWrites !== 1) errors.push(`third-party @ ${profileId}: expected exactly 1 foreign write, got ${result.foreignWrites}`)
+    if (result.scrollbackDeltaDuringReanchor !== 0) {
+      errors.push(`third-party @ ${profileId}: re-anchor grew scrollback by ${result.scrollbackDeltaDuringReanchor}`)
+    }
+    if (!result.detachRestored) errors.push(`third-party @ ${profileId}: detach did not restore stream.write`)
+    thirdParty.push({
+      profile: profileId,
+      ok: result.ok,
+      foreignWrites: result.foreignWrites,
+      reanchorBytes: result.reanchorBytes,
+      scrollbackDeltaDuringReanchor: result.scrollbackDeltaDuringReanchor,
+      detachRestored: result.detachRestored,
+    })
+  }
+
+  // Part 3 — cleanup drills: SIGTERM + error stops restore modes and raw mode,
+  // and the exit-park cursor survives the writer cleanup bundle.
+  const cleanup: Record<string, unknown>[] = []
+  for (const profileId of FULLSCREEN_SCAN_PROFILES) {
+    for (const scenario of ['sigterm', 'error'] as const) {
+      const result = await runInlineCleanup(getProfile(profileId), scenario)
+      if (!result.ok) {
+        errors.push(
+          `inline cleanup @ ${profileId}/${scenario}: ${result.failures.map((f) => `[${f.scope}] ${f.message}`).join('; ')}`,
+        )
+      }
+      if (result.stopReason !== scenario) errors.push(`cleanup @ ${profileId}/${scenario}: stopReason=${result.stopReason}`)
+      if (!result.modesRestored) errors.push(`cleanup @ ${profileId}/${scenario}: modes not restored`)
+      if (!result.rawModeRestored) errors.push(`cleanup @ ${profileId}/${scenario}: raw mode not restored`)
+      if (!result.cursorParked) errors.push(`cleanup @ ${profileId}/${scenario}: cursor not parked`)
+      cleanup.push({
+        profile: profileId,
+        scenario,
+        ok: result.ok,
+        modesRestored: result.modesRestored,
+        rawModeRestored: result.rawModeRestored,
+        cursorParked: result.cursorParked,
+      })
+    }
+  }
+
+  // Part 4 — support matrix machine block vs the code constants.
+  const supportMatrix = await checkSupportMatrix(
+    INLINE_CAPABILITIES as unknown as Record<string, boolean>,
+    FULLSCREEN_CAPABILITIES as unknown as Record<string, boolean>,
+  )
+  errors.push(...supportMatrix.errors)
+
+  return {
+    status: errors.length === 0 ? 'pass' : 'fail',
+    details: {
+      replay,
+      thirdParty,
+      cleanup,
+      supportMatrix: { doc: path.relative(repoRoot, SUPPORT_MATRIX_DOC), errors: supportMatrix.errors, capabilities: supportMatrix.capabilities },
+      errors,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // registry + CLI
 // ---------------------------------------------------------------------------
 
@@ -1413,6 +1641,7 @@ const checks = new Map<string, (ctx: CheckContext) => Promise<CheckResult>>([
   ['skeleton', () => checkSkeleton()],
   ['controllers', () => checkControllers()],
   ['fullscreen', () => checkFullscreen()],
+  ['inline', () => checkInline()],
 ])
 
 function defaultOutput(check: string): string {

@@ -120,6 +120,9 @@ export function applyPatchToCanonicalGrid(grid: CanonicalGridV1, patch: Terminal
   const cells: CanonicalCell[] = [...grid.cells]
   let cursor = { ...(grid.cursor as { x: number; y: number; visible: boolean }) }
   let modes: TerminalModeSnapshot = { ...grid.modes }
+  // WP-07: append/line-feed are the only ops that may grow scrollback
+  // (full-height main-screen LF semantics, mirroring VirtualTerminal).
+  let scrollback: CanonicalCell[][] | null = null
   const styles = new Map<number, CanonicalStyle>()
   const hyperlinks = new Map<number, CanonicalHyperlink>()
   const uploads = new Map<string, { protocol: 'kitty' | 'iterm2'; payloadHash: string }>()
@@ -228,6 +231,85 @@ export function applyPatchToCanonicalGrid(grid: CanonicalGridV1, patch: Terminal
     }
   }
 
+  /**
+   * One LF at the replay-tracked cursor (WP-07): at the scroll region bottom
+   * the region scrolls up one line — and only a FULL-HEIGHT MAIN-screen
+   * region pushes the removed top line into scrollback (xterm semantics,
+   * mirrored from VirtualTerminal.advanceRow); otherwise the cursor moves
+   * down one row. Column unchanged; wrap-pending clears (not tracked: the
+   * final cursor op always re-homes it before comparison).
+   */
+  const lineFeedOnce = () => {
+    const top = modes.scrollRegion.top
+    const bottom = modes.scrollRegion.bottom
+    if (cursor.y === bottom) {
+      if (top < 0 || bottom >= height || top >= bottom) fail(`line-feed with degenerate scroll region ${top}..${bottom}`)
+      if (scrollback === null) scrollback = grid.scrollback.map((line) => [...line])
+      const removed = cells.slice(top * width, (top + 1) * width)
+      if (top === 0 && bottom === height - 1 && !modes.alternateScreen) {
+        scrollback.push(removed)
+      }
+      cells.copyWithin(top * width, (top + 1) * width, (bottom + 1) * width)
+      for (let x = 0; x < width; x++) blankAt(bottom * width + x)
+    } else {
+      cursor = { ...cursor, y: Math.min(height - 1, cursor.y + 1) }
+    }
+  }
+
+  const applyAppend = (op: Extract<PatchOperation, { kind: 'append' }>) => {
+    if (!Array.isArray(op.cells) || op.cells.length === 0) fail('append.cells must be a non-empty full row')
+    if (op.cells.length > width) fail(`append row of ${op.cells.length} cells exceeds grid width ${width}`)
+    if (cursor.y < 0 || cursor.y >= height) fail(`append with cursor row ${cursor.y} outside ${width}x${height}`)
+    const y = cursor.y
+    // CR semantics: column home + wrap-pending clears. Continuation
+    // integrity inside the row is the §5.5 write-cells rule.
+    for (let i = 0; i < op.cells.length; i++) {
+      const cell = op.cells[i]
+      if (cell.width === 2) {
+        const next = op.cells[i + 1]
+        if (!next || next.width !== 0 || next.grapheme !== '') {
+          fail(`append at (${i},${y}): wide head without in-patch continuation`)
+        }
+      } else if (cell.width === 0 && cell.grapheme === '') {
+        const prev = i > 0 ? op.cells[i - 1] : undefined
+        if (!prev || prev.width !== 2) {
+          fail(`append at (${i},${y}): orphan continuation update`)
+        }
+      }
+    }
+    healAroundWrite(0, y, op.cells.length)
+    for (let i = 0; i < op.cells.length; i++) {
+      const cell = op.cells[i]
+      const style = styles.get(cell.styleId)
+      if (!style) fail(`append at (${i},${y}) references missing styleId ${cell.styleId}`)
+      let hyperlink: CanonicalHyperlink | null = null
+      if (cell.hyperlinkId !== undefined) {
+        const link = hyperlinks.get(cell.hyperlinkId)
+        if (!link) fail(`append at (${i},${y}) references missing hyperlinkId ${cell.hyperlinkId}`)
+        hyperlink = link.params === undefined ? { uri: link.uri } : { uri: link.uri, params: link.params }
+      }
+      cells[y * width + i] = {
+        grapheme: cell.grapheme,
+        width: cell.width,
+        continuation: cell.width === 0 && cell.grapheme === '',
+        resolvedStyle: style,
+        hyperlink,
+      }
+    }
+    // A full row leaves the cursor on the last column (pending wrap); a
+    // shorter row leaves it just past the last written cell.
+    cursor = { ...cursor, x: op.cells.length >= width ? width - 1 : op.cells.length }
+    if (op.feed) lineFeedOnce()
+  }
+
+  const applyLineFeed = (op: Extract<PatchOperation, { kind: 'line-feed' }>) => {
+    if (!Number.isInteger(op.y) || op.y < 0 || op.y >= height) fail(`line-feed y=${op.y} outside ${width}x${height}`)
+    if (!Number.isInteger(op.count) || op.count < 0) fail(`line-feed count ${op.count} must be a non-negative integer`)
+    // CUP(y+1, 1): row home + column 0 + wrap-pending clears.
+    cursor = { ...cursor, x: 0, y: op.y }
+    for (let i = 0; i < op.count; i++) lineFeedOnce()
+  }
+
   const applyMode = (op: Extract<PatchOperation, { kind: 'mode' }>) => {
     modes = { ...modes, [op.name]: op.value } as TerminalModeSnapshot
   }
@@ -257,6 +339,12 @@ export function applyPatchToCanonicalGrid(grid: CanonicalGridV1, patch: Terminal
         break
       case 'scroll':
         applyScroll(op)
+        break
+      case 'append':
+        applyAppend(op)
+        break
+      case 'line-feed':
+        applyLineFeed(op)
         break
       case 'cursor':
         if (op.visible ? op.x < 0 || op.y < 0 || op.x >= width || op.y >= height : op.x !== 0 || op.y !== 0) {
@@ -310,7 +398,7 @@ export function applyPatchToCanonicalGrid(grid: CanonicalGridV1, patch: Terminal
     cells,
     cursor,
     modes,
-    scrollback: grid.scrollback,
+    scrollback: scrollback ?? grid.scrollback,
     images: placements.map((p) => p.placement),
   }
 }

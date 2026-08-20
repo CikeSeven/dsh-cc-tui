@@ -71,6 +71,12 @@ export interface FrameBuilderInput {
   readonly fullRedraw?: boolean
   readonly fullRedrawReason?: FrameMetadata['fullRedrawReason']
   /**
+   * WP-07 inline live-region hint (see FrameMetadata.inline). Validated to
+   * 0 <= liveStart <= height; stored on the published frame's metadata.
+   * Fullscreen callers leave it absent.
+   */
+  readonly inlineHint?: FrameMetadata['inline']
+  /**
    * Rows changed vs the previous frame. WP-06a publishes whole frames, so the
    * honest default is `height`; the compositor/diff stage will supply exact
    * counts.
@@ -170,6 +176,15 @@ export function buildFrame(input: FrameBuilderInput): Frame {
   }
 
   const fullRedraw = input.fullRedraw ?? false
+  if (input.inlineHint !== undefined) {
+    const { liveStart, followEnd } = input.inlineHint
+    if (!Number.isInteger(liveStart) || liveStart < 0 || liveStart > height) {
+      throw new TypeError(`frame-builder: inlineHint.liveStart ${liveStart} outside [0, ${height}]`)
+    }
+    if (typeof followEnd !== 'boolean') {
+      throw new TypeError('frame-builder: inlineHint.followEnd must be boolean')
+    }
+  }
   const frame: Frame = {
     frameId: input.frameId,
     stateRevision: input.stateRevision,
@@ -197,6 +212,7 @@ export function buildFrame(input: FrameBuilderInput): Frame {
       diffMs: input.diffMs ?? 0,
       terminalProfileId: input.profile.id,
       ...(input.fullRedrawReason !== undefined ? { fullRedrawReason: input.fullRedrawReason } : {}),
+      ...(input.inlineHint !== undefined ? { inline: input.inlineHint } : {}),
     },
   }
   // §5.1: published frames are immutable data. Freeze the whole graph (cells,
