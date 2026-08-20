@@ -8,32 +8,52 @@
  * lines — components never guess at shapes they do not recognize (WP-05b
  * contract), and a zero-line overlay paints nothing.
  */
+import { parseInteractiveOverlayPayload } from '../../model/interactive-overlay-payloads.js'
 import { parseDialogOverlayPayload } from '../../model/overlay-payloads.js'
 import type { TerminalProfile } from '../../terminal/profile.js'
 import type { ComponentTheme } from '../theme.js'
 import { createApprovalDialog } from './approval-dialog.js'
+import { createHelpDialog } from './help-dialog.js'
+import { createHistorySearchDialog } from './history-search-dialog.js'
+import { createPickerDialog } from './picker-dialog.js'
 import { createPluginDialog } from './plugin-dialog.js'
 import { createQuestionDialog } from './question-dialog.js'
+import { createTranscriptSearchDialog } from './transcript-search-dialog.js'
 
 export interface DialogOverlayRenderOptions {
   readonly profile: TerminalProfile
   readonly theme: ComponentTheme
 }
 
-/** Trusted logical lines for a dialog overlay payload at `width` columns. */
+/** Trusted logical lines for any managed interactive overlay at `width`. */
 export function renderDialogOverlayLines(
   payload: unknown,
   width: number,
   options: DialogOverlayRenderOptions,
 ): readonly string[] {
-  const parsed = parseDialogOverlayPayload(payload)
-  if (parsed === null || width <= 0) return []
-  switch (parsed.kind) {
-    case 'approval':
-      return createApprovalDialog(parsed, options).render(width)
-    case 'question':
-      return createQuestionDialog(parsed, options).render(width)
-    case 'plugin-dialog':
-      return createPluginDialog(parsed, options).render(width)
+  if (width <= 0) return []
+  const dialog = parseDialogOverlayPayload(payload)
+  if (dialog !== null) {
+    switch (dialog.kind) {
+      case 'approval':
+        return createApprovalDialog(dialog, options).render(width)
+      case 'question':
+        return createQuestionDialog(dialog, options).render(width)
+      case 'plugin-dialog':
+        return createPluginDialog(dialog, options).render(width)
+    }
+  }
+
+  const interactive = parseInteractiveOverlayPayload(payload)
+  if (interactive === null) return []
+  switch (interactive.kind) {
+    case 'picker-dialog':
+      return createPickerDialog(interactive, options).render(width)
+    case 'help-dialog':
+      return createHelpDialog(interactive, options).render(width)
+    case 'history-search-dialog':
+      return createHistorySearchDialog(interactive, options).render(width)
+    case 'transcript-search-dialog':
+      return createTranscriptSearchDialog(interactive, options).render(width)
   }
 }

@@ -5,7 +5,7 @@
  *
  *   baseFrame (this frame's buildFrame output)
  *     + overlay stack (back -> front, model stack order)
- *     + selection/search highlight regions (skeleton, see below)
+ *     + selection/search highlight regions
  *     + cursor (hardware cursor metadata = Frame.cursor, passed through)
  *     = finalFrame
  *
@@ -28,9 +28,9 @@
  * the available height (pi lets an oversized overlay overflow and relies on
  * line-index clipping; a cell grid clips by clamping instead).
  *
- * Overlay content: the injected `renderOverlay` bridge turns an
- * OverlayState payload into trusted logical lines (components/overlays/*
- * minimal dialog components). Each line is re-parsed through the §6.1 cell
+ * Overlay content: the injected `renderOverlay` bridge turns a business or
+ * utility OverlayState payload into trusted logical lines
+ * (components/overlays/*). Each line is re-parsed through the §6.1 cell
  * pipeline, fitted to the rect width (`fitCellsToWidth` — clip + pad), and
  * blitted into the rect. Overlays paint exactly their content rows (at most
  * `maxHeight`); transparent areas below the content stay base. Blitting
@@ -47,11 +47,10 @@
  * the base-only degradation path stays byte-equivalent to the WP-06a
  * output.
  *
- * Selection/search highlight SKELETON: the model has no selection/search
- * state yet (WP-06c/WP-08). The compositor accepts optional `highlights`
- * regions (cell rects + style, painted above the overlay stack per §6.3);
- * absent/empty regions are a no-op. The full producers land with the
- * selection/search work packages (registered in plan §15.1).
+ * Selection/search highlights: the compositor accepts optional cell rects +
+ * styles and paints them above the overlay stack per §6.3. WP-08c supplies
+ * visible-frame transcript-search regions; selection and off-screen search
+ * indexing remain separate producers. Absent/empty regions are a no-op.
  *
  * `affectedRegions` proof rule: compositor damage is enumerable by
  * construction — the union of current overlay/highlight rects whose
@@ -93,10 +92,9 @@ export interface OverlayRect {
 }
 
 /**
- * Selection/search highlight region (WP-06b skeleton): a cell rect painted
- * with `style` ABOVE the overlay stack (§6.3 composition order). Producers
- * (model selection/search state) land in WP-06c/WP-08; until then callers
- * pass nothing and the stage is a no-op.
+ * Selection/search highlight region: a cell rect painted with `style` ABOVE
+ * the overlay stack (§6.3 composition order). Producers derive these regions
+ * from replayable model state and the current frame.
  */
 export interface HighlightRegion {
   readonly kind: 'selection' | 'search'
@@ -121,7 +119,7 @@ export interface CompositorInput {
   /** Ordered overlay stack, back -> front (model order). Invisible overlays are skipped. */
   readonly overlays?: readonly OverlayState[]
   readonly renderOverlay?: CompositorOverlayRenderer
-  /** Selection/search highlight skeleton; empty/absent = no-op. */
+  /** Selection/search highlight regions; empty/absent = no-op. */
   readonly highlights?: readonly HighlightRegion[]
   /**
    * Previous FINAL (composed) frame — used only for affectedRegions proof
@@ -275,7 +273,7 @@ function rectEquals(a: OverlayRect, b: OverlayRect): boolean {
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
 }
 
-/** Layer ids that are not overlays (base + highlight skeleton). */
+/** Layer ids that are not overlays (base + highlight layers). */
 function isOverlayLayerId(id: string): boolean {
   return id !== 'base' && !id.startsWith('highlight:')
 }
@@ -484,7 +482,7 @@ export function compositeFrame(input: CompositorInput): CompositorOutput {
     layers.push({ id: overlay.overlayId, z: index + 1, revision: overlay.revision, clip: rect })
   })
 
-  // --- selection/search highlight skeleton (above the overlay stack). ---
+  // --- selection/search highlights (above the overlay stack). ---
   highlights.forEach((region, index) => {
     const clip: OverlayRect = {
       x: Math.max(0, Math.trunc(region.x)),
@@ -524,8 +522,8 @@ export function compositeFrame(input: CompositorInput): CompositorOutput {
     seen.add(layer.id)
     const prev = previousRegions.get(layer.id)
     const isOverlay = isOverlayLayerId(layer.id)
-    // Highlights carry no meaningful revision yet (skeleton): treat them as
-    // always-changed so a stale highlight rect is never left on screen.
+    // Highlight identities are derived by index rather than model revision:
+    // treat them as always changed so stale match rects never remain.
     const unchanged =
       isOverlay &&
       prev !== undefined &&

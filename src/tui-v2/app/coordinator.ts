@@ -9,8 +9,8 @@
  *     → (pendingReset? adapter.recoverSnapshotGap) → scheduler.requestRender
  *   scheduler render: selectors → base-renderer lines → buildFrame
  *     (renderer/frame-builder.ts, WP-06a) → compositeFrame
- *     (renderer/compositor.ts, WP-06b: overlay stack + highlight skeleton
- *     over the base frame) → backend.plan(prev, frame) → writer.write(patch)
+ *     (renderer/compositor.ts: business/utility overlay stack + visible-search
+ *     highlights over the base frame) → backend.plan(prev, frame) → writer.write(patch)
  *
  * Design notes / registered deviations:
  *
@@ -146,7 +146,12 @@ import {
   type PluginDialogStoreLike,
   type QuestionStoreLike,
 } from '../controllers/dialogs.js';
+import {
+  createInteractiveOverlaysController,
+  type InteractiveOverlaysController,
+} from '../controllers/interactive-overlays.js';
 import { buildFrame } from '../renderer/frame-builder.js';
+import { buildSearchHighlightRegions } from '../renderer/search-highlights.js';
 import { computeInlineLiveRegion } from './inline-live-region.js';
 import { selectTerminalMode } from './modes.js';
 
@@ -226,6 +231,7 @@ export interface CoordinatorDiagnostics {
   readonly scrolling: ReturnType<ScrollingController['diagnostics']>;
   readonly commands: ReturnType<CommandsController['diagnostics']>;
   readonly dialogs: ReturnType<DialogsController['diagnostics']>;
+  readonly interactiveOverlays: ReturnType<InteractiveOverlaysController['diagnostics']>;
   /** WP-08a plugin scene runtime counters (absent when no runtime is wired). */
   readonly scenes?: PluginUIRuntimeDiagnostics;
 }
@@ -239,6 +245,7 @@ export interface CoordinatorControllers {
   readonly scrolling: ScrollingController;
   readonly commands: CommandsController;
   readonly dialogs: DialogsController;
+  readonly interactiveOverlays: InteractiveOverlaysController;
 }
 
 export interface TuiV2Coordinator {
@@ -567,11 +574,78 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     },
   });
 
+  let interactiveOverlaysController: InteractiveOverlaysController;
+
   const commandsController = createCommandsController({
     dispatch: (event) => streamingController.ingest(event),
     nextMeta: (sourceSeq) => meta.next('input', sourceSeq),
     channel,
     replay: replayController,
+    overlays: {
+      openResumePicker: (onSelect) => interactiveOverlaysController.openPicker({
+        key: 'resume',
+        title: 'Resume session',
+        subtitle: 'Session catalog arrives in WP-08d',
+        items: [],
+        emptyMessage: 'No session catalog is available in WP-08c.',
+        noResultsMessage: 'No sessions match this filter.',
+        onSelect,
+      }),
+      openHelp: (query) => interactiveOverlaysController.openHelp({
+        key: 'help',
+        title: 'Help',
+        query,
+        shortcuts: [
+          { keys: '?', label: 'Open help from an empty editor' },
+          { keys: 'Ctrl+R', label: 'Search prompt history' },
+          { keys: '/search', label: 'Search visible transcript' },
+        ],
+        items: channel.commandList.map((command) => ({
+          id: command.name,
+          label: `/${command.name}`,
+          ...(command.description !== undefined ? { description: command.description } : {}),
+          keywords: [command.name],
+        })),
+        emptyMessage: 'No commands are registered.',
+        noResultsMessage: 'No commands match this search.',
+        onSelect: (name) => editorBinding.setDraft?.(`/${name} `),
+      }),
+      openHistorySearch: (query) => {
+        const history = inputController.history();
+        const values = new Map<string, string>();
+        const items = history.map((text, index) => {
+          const id = `history-${index}`;
+          values.set(id, text);
+          return { id, label: text, keywords: [text] };
+        });
+        return interactiveOverlaysController.openHistory({
+          key: 'history',
+          title: 'Prompt history',
+          query,
+          placeholder: 'type to search submitted prompts',
+          items,
+          emptyMessage: 'No submitted prompts yet.',
+          noResultsMessage: 'No history entries match this search.',
+          onSelect: (id) => {
+            const text = values.get(id);
+            if (text !== undefined) editorBinding.setDraft?.(text);
+          },
+        });
+      },
+      openTranscriptSearch: (query) => interactiveOverlaysController.openTranscriptSearch({
+        key: 'transcript',
+        title: 'Search visible transcript',
+        query,
+        findMatches: (needle) => {
+          const folded = needle.toLocaleLowerCase('en-US');
+          if (folded === '') return [];
+          return selectTranscriptView(state).visibleRows
+            .filter((row) => asRowBlocks(row.blocks).some((block) =>
+              'text' in block && block.text.toLocaleLowerCase('en-US').includes(folded)))
+            .map((row) => row.rowId);
+        },
+      }),
+    },
     submitToModel: (text) => adapter.commands.submit(text),
     steerToModel: (text) => adapter.commands.steer(text),
     notify,
@@ -598,7 +672,16 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     ...(options.approvalStore !== undefined ? { approvals: options.approvalStore } : {}),
     ...(options.questionStore !== undefined ? { questions: options.questionStore } : {}),
     ...(options.pluginDialogStore !== undefined ? { dialogs: options.pluginDialogStore } : {}),
+    onQuestionSummary: (title, lines) => channel.pushLocal(title, lines),
     onDiagnostic: (code, message) => diagnostic(`dialogs/${code}`, message),
+  });
+
+  interactiveOverlaysController = createInteractiveOverlaysController({
+    dispatch: (event) => streamingController.ingest(event),
+    nextMeta: (sourceSeq) => meta.next('overlay', sourceSeq),
+    getState: () => state,
+    isBusinessDialogActive: () => dialogsController.activeOverlayId() !== null,
+    onDiagnostic: (code, message) => diagnostic(`interactive-overlays/${code}`, message),
   });
 
   const inputController = createInputController({
@@ -641,6 +724,12 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       pendingFullRedraw = true;
       fullRedrawReason = 'damage';
     },
+    onHelpRequest: () => {
+      commandsController.handleSubmittedText('/help');
+    },
+    onHistorySearchRequest: () => {
+      commandsController.handleSubmittedText('/history');
+    },
   });
 
   const input = createInputSource({
@@ -669,12 +758,17 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           }
         } else if (event.kind === 'key') {
           const payload = event.payload as KeyPayload;
-          // While an overlay holds focus it owns the keyboard entirely
-          // (WP-05b; legacy: Chat's global handler early-returns while a
-          // dialog snapshot is pending) — ctrl+c/escape included: the dialog
-          // maps them to its own cancel semantics.
+          // Route by the focused overlay id. Unknown/foreign overlays never
+          // leak keys into a dialog, utility controller or editor.
           if (state.focus.target === 'overlay') {
-            dialogsController.handleInput(event);
+            const overlayId = state.focus.overlayId ?? '';
+            if (overlayId === dialogsController.activeOverlayId()) {
+              dialogsController.handleInput(event);
+            } else if (interactiveOverlaysController.isManagedOverlay(overlayId)) {
+              interactiveOverlaysController.handleInput(event);
+            } else {
+              diagnostic('input/unknown-overlay', `no input owner for ${overlayId}`);
+            }
             return;
           }
           // While a plugin scene holds focus it owns the keyboard entirely
@@ -690,9 +784,14 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           if (payload.eventType !== 'release' && scrollingController.handleKey(payload.key)) return;
           inputController.handleEvent(event);
         } else if (event.kind === 'paste' && state.focus.target === 'overlay') {
-          // Only text-bearing dialogs (plugin input / optionless question)
-          // consume pastes; other dialogs count-and-drop them.
-          dialogsController.handleInput(event);
+          const overlayId = state.focus.overlayId ?? '';
+          if (overlayId === dialogsController.activeOverlayId()) {
+            dialogsController.handleInput(event);
+          } else if (interactiveOverlaysController.isManagedOverlay(overlayId)) {
+            interactiveOverlaysController.handleInput(event);
+          } else {
+            diagnostic('input/unknown-overlay', `no paste owner for ${overlayId}`);
+          }
         } else if (event.kind === 'paste' && state.focus.target === 'scene') {
           pluginRuntime?.handleInput(event);
         } else {
@@ -924,15 +1023,21 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         }
         overlayStack = [];
       }
-      // WP-06b: composite the overlay stack (back -> front) over THIS frame's
-      // base; no overlays = the base frame passes through unchanged (the
-      // base-only degradation path stays byte-equivalent to WP-06a).
+      // WP-08c search is intentionally visible-transcript only: scan current
+      // transcript cells (not the dock), then compose matches above overlays.
+      const highlights = state.search.active
+        ? buildSearchHighlightRegions(baseFrame, state.search.query, state.search.current, {
+            match: theme.roles.searchMatch,
+            current: theme.roles.searchCurrent,
+          }, baseDiagnostics?.transcriptHeight ?? 0)
+        : [];
       const frame = compositeFrame({
         base: baseFrame,
         profile,
         overlays: overlayStack,
         renderOverlay: (overlay, width) =>
           renderDialogOverlayLines(overlay.payload, width, { profile, theme }),
+        highlights,
         previous: previousFrame,
       }).frame;
       lastFrameFullRedraw = frame.fullRedraw;
@@ -1029,8 +1134,9 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     }
     phase = 'stopping';
     stopPromise = (async () => {
-      // Unsubscribe the dialog stores first: a teardown settleAll must not
-      // dispatch overlay/close into a streaming controller that is stopping.
+      // Close utility overlays while the event pipeline is still alive, then
+      // unsubscribe business stores before teardown can emit again.
+      interactiveOverlaysController.dispose();
       dialogsController.dispose();
       // WP-08a: tear down the open plugin scene (reason 'teardown') before
       // the terminal stack stops; close/teardown run at most once (§7.4).
@@ -1100,6 +1206,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       scrolling: scrollingController,
       commands: commandsController,
       dialogs: dialogsController,
+      interactiveOverlays: interactiveOverlaysController,
     },
     diagnostics: () => ({
       phase,
@@ -1120,6 +1227,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       scrolling: scrollingController.diagnostics(),
       commands: commandsController.diagnostics(),
       dialogs: dialogsController.diagnostics(),
+      interactiveOverlays: interactiveOverlaysController.diagnostics(),
       ...(pluginRuntime !== null ? { scenes: pluginRuntime.diagnostics() } : {}),
     }),
   };

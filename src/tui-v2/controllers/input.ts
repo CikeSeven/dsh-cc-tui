@@ -98,6 +98,10 @@ export interface InputControllerOptions {
    * (fullRedrawReason 'damage'). The `app redraw` command is journaled first.
    */
   readonly onRedrawRequest?: () => void;
+  /** Empty-editor `?` opens searchable help instead of inserting a draft. */
+  readonly onHelpRequest?: () => void;
+  /** Ctrl+R opens prompt-history search instead of reaching the editor. */
+  readonly onHistorySearchRequest?: () => void;
   /** Arming window for the double-Ctrl+C exit. Default 2000ms. */
   readonly ctrlCArmMs?: number;
 }
@@ -112,6 +116,8 @@ export interface InputControllerDiagnostics {
   readonly exitRequests: number;
   readonly escapeInterrupts: number;
   readonly redrawRequests: number;
+  readonly helpRequests: number;
+  readonly historySearchRequests: number;
   readonly submittedCommands: number;
 }
 
@@ -146,6 +152,8 @@ export function createInputController(options: InputControllerOptions): InputCon
     exitRequests: 0,
     escapeInterrupts: 0,
     redrawRequests: 0,
+    helpRequests: 0,
+    historySearchRequests: 0,
     submittedCommands: 0,
   };
   /** Submission history mirror: newest first, consecutive duplicates merged. */
@@ -223,6 +231,22 @@ export function createInputController(options: InputControllerOptions): InputCon
         disarm();
         journal({ type: 'app', command: 'redraw' });
         options.onRedrawRequest?.();
+        return;
+      }
+      if (payload.eventType !== 'release' && payload.key === 'ctrl+r') {
+        counts.historySearchRequests += 1;
+        disarm();
+        options.onHistorySearchRequest?.();
+        return;
+      }
+      if (
+        payload.eventType !== 'release' &&
+        payload.text === '?' &&
+        options.editor.getText() === ''
+      ) {
+        counts.helpRequests += 1;
+        disarm();
+        options.onHelpRequest?.();
         return;
       }
       if (payload.key === 'escape' && options.isWorking()) {

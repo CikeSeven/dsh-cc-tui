@@ -22,9 +22,18 @@ import type {
 } from '../../src/dsh-adapter/workspaces.js';
 import { createControllerRig, addUserRows, ManualClock, type ControllerRig } from './helpers/controller-rig.js';
 
+interface OverlayHarness {
+  resumeSelect: ((id: string) => void) | null;
+  helpQueries: string[];
+  historyQueries: string[];
+  searchQueries: string[];
+}
+
 interface CommandsRig {
   commands: CommandsController;
   rig: ControllerRig;
+  overlays: OverlayHarness;
+  resumed: string[];
 }
 
 function commandsFor(rig: ControllerRig): CommandsRig {
@@ -39,16 +48,48 @@ function commandsFor(rig: ControllerRig): CommandsRig {
     notify: (text, options) => rig.channel.notify(text, options),
     requestStop: () => {},
   });
+  const overlays: OverlayHarness = {
+    resumeSelect: null,
+    helpQueries: [],
+    historyQueries: [],
+    searchQueries: [],
+  };
+  const resumed: string[] = [];
   const commands = createCommandsController({
     dispatch: (event) => rig.streaming.ingest(event),
     nextMeta: (sourceSeq) => rig.meta.next('input', sourceSeq),
     channel: rig.channel,
-    replay,
+    replay: {
+      newSession: replay.newSession,
+      clear: replay.clear,
+      resume: (id) => {
+        resumed.push(id);
+        return replay.resume(id);
+      },
+    },
+    overlays: {
+      openResumePicker: (onSelect) => {
+        overlays.resumeSelect = onSelect;
+        return true;
+      },
+      openHelp: (query) => {
+        overlays.helpQueries.push(query);
+        return true;
+      },
+      openHistorySearch: (query) => {
+        overlays.historyQueries.push(query);
+        return true;
+      },
+      openTranscriptSearch: (query) => {
+        overlays.searchQueries.push(query);
+        return true;
+      },
+    },
     submitToModel: (text) => rig.adapter.commands.submit(text),
     steerToModel: (text) => rig.adapter.commands.steer(text),
     notify: (text, options) => rig.channel.notify(text, options),
   });
-  return { commands, rig };
+  return { commands, rig, overlays, resumed };
 }
 
 function replayEquivalence(rig: ControllerRig): void {
@@ -109,25 +150,30 @@ test('controller commands: /new and /clear reset through the replay controller',
   replayEquivalence(rig);
 });
 
-test('controller commands: /resume without an id opens the session-browser overlay', async () => {
-  const { commands, rig } = commandsFor(createControllerRig({ height: 5 }));
+test('controller commands: /resume uses the generic picker callback boundary', async () => {
+  const { commands, rig, overlays, resumed } = commandsFor(createControllerRig({ height: 5 }));
 
   assert.equal(commands.handleSubmittedText('/resume'), 'command');
-  const stack = rig.state().overlays.stack;
-  assert.equal(stack.length, 1);
-  assert.equal(stack[0]?.overlayId, 'session-browser');
-  assert.equal(stack[0]?.captureInput, true);
-  assert.deepEqual(stack[0]?.payload, { kind: 'session-browser' });
-  assert.equal(rig.state().focus.target, 'overlay', 'capturing overlay takes input focus');
-
-  // Re-opening bumps the journal revision instead of duplicating.
-  assert.equal(commands.handleSubmittedText('/resume'), 'command');
-  assert.equal(rig.state().overlays.stack.length, 1);
-  assert.equal(rig.state().overlays.stack[0]?.revision, 2);
+  assert.equal(typeof overlays.resumeSelect, 'function');
+  assert.equal(rig.state().overlays.stack.length, 0, 'commands never invent a session-browser payload');
+  overlays.resumeSelect?.('picked-session');
+  assert.deepEqual(resumed, ['picked-session']);
 
   assert.equal(commands.handleSubmittedText('/resume abc123'), 'command');
+  assert.deepEqual(resumed, ['picked-session', 'abc123']);
   await new Promise((resolve) => setImmediate(resolve));
   replayEquivalence(rig);
+});
+
+test('controller commands: /help, /history and /search use utility actions with initial queries', () => {
+  const { commands, overlays } = commandsFor(createControllerRig({ height: 5 }));
+  assert.equal(commands.handleSubmittedText('/help keys'), 'command');
+  assert.equal(commands.handleSubmittedText('/history deploy'), 'command');
+  assert.equal(commands.handleSubmittedText('/search error'), 'command');
+  assert.deepEqual(overlays.helpQueries, ['keys']);
+  assert.deepEqual(overlays.historyQueries, ['deploy']);
+  assert.deepEqual(overlays.searchQueries, ['error']);
+  assert.equal(commands.diagnostics().overlaysOpened, 3);
 });
 
 test('controller commands: /workspace usage, provider subcommands, choices and target', async () => {

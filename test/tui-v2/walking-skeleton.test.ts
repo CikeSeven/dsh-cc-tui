@@ -283,6 +283,51 @@ test('walking skeleton input: ctrl+c cancels a working turn (no exit, no clear)'
   assertTeardown(rig);
 });
 
+test('walking skeleton WP-08c: help/history/search/resume route through utility overlays', async () => {
+  const rig = buildRig('kitty-sync');
+  await rig.coordinator.start();
+
+  rig.stdin.write('?');
+  await waitForReal(() => rig.coordinator.controllers.interactiveOverlays.activeOverlayId() === 'utility/help');
+  await waitForReal(() => screenText(rig.vt).includes('Help'));
+  rig.stdin.write('\x1b');
+  await waitForReal(() => rig.coordinator.controllers.interactiveOverlays.activeOverlayId() === null);
+
+  rig.coordinator.controllers.input.handleEditorCommand({
+    type: 'editor', command: 'submit', text: 'past prompt',
+  });
+  rig.stdin.write('\x12');
+  await waitForReal(() => rig.coordinator.controllers.interactiveOverlays.activeOverlayId() === 'utility/history');
+  await waitForReal(() => screenText(rig.vt).includes('past prompt'));
+  rig.stdin.write('\r');
+  await waitForReal(() => rig.coordinator.controllers.interactiveOverlays.activeOverlayId() === null);
+  await waitForReal(() => screenText(rig.vt).includes('past prompt'));
+
+  rig.channel.addUserRow('visible search needle');
+  await waitForReal(() => rig.coordinator.state.session.rowOrder.length > 0);
+  rig.coordinator.controllers.commands.handleSubmittedText('/search needle');
+  await waitForReal(() => rig.coordinator.state.search.active);
+  assert.ok(rig.coordinator.state.search.matches.length > 0);
+  assert.equal(rig.coordinator.controllers.interactiveOverlays.activeOverlayId(), 'utility/search');
+  rig.stdin.write('\x1b');
+  await waitForReal(() => !rig.coordinator.state.search.active);
+
+  rig.channel.setWorking(false);
+  rig.coordinator.controllers.commands.handleSubmittedText('/resume');
+  await waitForReal(() => rig.coordinator.controllers.interactiveOverlays.activeOverlayId() === 'utility/picker/resume');
+  const resumePayload = rig.coordinator.state.overlays.stack.at(-1)?.payload as { kind?: string; subtitle?: string };
+  assert.equal(resumePayload.kind, 'picker-dialog');
+  assert.equal(resumePayload.subtitle, 'Session catalog arrives in WP-08d');
+  assert.ok(!rig.coordinator.state.overlays.stack.some((overlay) =>
+    (overlay.payload as { kind?: string }).kind === 'session-browser'));
+  rig.stdin.write('\x1b');
+  await waitForReal(() => rig.coordinator.controllers.interactiveOverlays.activeOverlayId() === null);
+
+  await rig.coordinator.stop('user-exit');
+  await rig.coordinator.awaitStop();
+  assertTeardown(rig);
+});
+
 // ---------------------------------------------------------------------------
 // child-process scenarios (normal exit / SIGTERM / injected fault)
 // ---------------------------------------------------------------------------

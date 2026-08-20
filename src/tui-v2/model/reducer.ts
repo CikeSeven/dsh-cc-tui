@@ -294,6 +294,8 @@ function applyEvent(state: UiState, event: AppEvent): UiState {
       return applyOverlayOpen(state, event.overlay)
     case 'overlay/close':
       return applyOverlayClose(state, event.overlayId)
+    case 'search/update':
+      return { ...state, search: deepFreeze({ ...event.search, matches: [...event.search.matches] }) }
     case 'terminal/suspended':
       return {
         ...state,
@@ -487,6 +489,7 @@ function applyRowsReset(state: UiState, event: RowsResetEvent): UiState {
       notifications: [],
     },
     overlays: { stack: [] },
+    search: { query: '', active: false, current: 0, matches: [] },
     terminal: { ...state.terminal, needsFullRedraw: true },
     bookkeeping: {
       adapterInstanceId: event.adapterInstanceId,

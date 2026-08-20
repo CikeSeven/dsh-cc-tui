@@ -16,6 +16,7 @@ import type {
   OverlayState,
   SceneViewModel,
   TerminalMode,
+  TranscriptSearchState,
   UiRowSnapshot,
 } from './schema.js'
 
@@ -167,6 +168,10 @@ export interface UiOverlayStackState {
   readonly stack: readonly OverlayState[]
 }
 
+/** Transcript-search state is model truth so live and replay produce identical
+ * compositor highlight regions. Editing cursors stay in overlay payloads. */
+export type UiTranscriptSearchState = TranscriptSearchState
+
 // ---------------------------------------------------------------------------
 // Plugin scenes (WP-08a, plan §7.4)
 // ---------------------------------------------------------------------------
@@ -275,6 +280,7 @@ export interface UiState {
   readonly viewport: UiViewportState
   readonly dock: UiDockState
   readonly overlays: UiOverlayStackState
+  readonly search: UiTranscriptSearchState
   /** Open plugin scene's view model; null when no scene is open. */
   readonly scene: UiSceneState | null
   readonly terminal: UiTerminalState
@@ -332,6 +338,7 @@ export function initialUiState(options: InitialUiStateOptions): UiState {
       notifications: [],
     },
     overlays: { stack: [] },
+    search: { query: '', active: false, current: 0, matches: [] },
     scene: null,
     terminal: {
       mode: options.mode ?? 'fullscreen',

@@ -37,6 +37,17 @@ export type InputCommand =
   | { readonly type: 'overlay'; readonly command: 'open' | 'close' | 'focus'; readonly overlayId?: string }
   | { readonly type: 'app'; readonly command: 'interrupt' | 'exit' | 'redraw' }
 export type TerminalMode = 'fullscreen' | 'inline'
+/** Serializable transcript-search state. The controller owns interaction and
+ * publishes complete immutable snapshots through `search/update` events. */
+export interface TranscriptSearchState {
+  readonly query: string
+  /** True while matching cells should be highlighted (editing or committed). */
+  readonly active: boolean
+  /** Zero-based current match row; always 0 when `matches` is empty. */
+  readonly current: number
+  /** Bounded row ids containing the query, in transcript order. */
+  readonly matches: readonly string[]
+}
 export type OverlayAnchor = 'center' | 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right' | 'top-center' | 'bottom-center' | 'left-center' | 'right-center'
 export interface UiRowSnapshot {
   readonly rowId: string

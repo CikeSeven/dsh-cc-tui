@@ -28,6 +28,9 @@ export interface TuiDialogSelectOption {
   id: string
   label: string
   description?: string
+  /** Optional host-compatible disabled row; absent remains enabled. */
+  disabled?: boolean
+  disabledReason?: string
 }
 
 /** What the chat screen renders while a dialog is pending. */
@@ -331,7 +334,15 @@ export class TuiDialogRuntime extends Service {
         if (typeof id !== 'string' || id === '' || !label) continue
         // '' (absent, blank, or a dropped non-scalar) means no description row.
         const description = clean(raw?.description, MESSAGE_CELLS)
-        options.push({ id, label, ...(description === '' ? {} : { description }) })
+        const disabled = raw?.disabled === true
+        const disabledReason = disabled ? clean(raw?.disabledReason, MESSAGE_CELLS) : ''
+        options.push({
+          id,
+          label,
+          ...(description === '' ? {} : { description }),
+          ...(disabled ? { disabled: true } : {}),
+          ...(disabledReason === '' ? {} : { disabledReason }),
+        })
       }
       if (!title || options.length === 0) {
         this.ctx.logger.warn('dsh-tui: tuiDialogs.select called without a title or options; cancelled')

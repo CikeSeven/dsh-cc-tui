@@ -21,22 +21,41 @@
 import { isSerializableValue, type SerializableValue } from './schema.js'
 
 /** One selectable row. Question options use the label as the id (the answer
- *  protocol echoes labels); plugin select options carry their opaque id. */
+ * protocol echoes labels); plugin select options carry their opaque id.
+ * `disabled` is a backward-compatible host extension: absent means enabled. */
 export type DialogOptionView = {
   readonly id: string
   readonly label: string
   readonly description?: string
+  readonly disabled?: boolean
+  readonly disabledReason?: string
 }
 
+export type DialogPresentationStatus = 'ready' | 'error' | 'unavailable'
+
 /**
- * Interaction state mirror: `focusIndex` is the highlighted row, `checked`
- * the toggled option indices (multi-select questions, ascending), `text` the
- * single-line draft (plugin input dialogs and optionless questions).
+ * Serializable mirror of controller-owned interaction state. Fields added by
+ * WP-08c are optional so older traces/payload producers remain readable; the
+ * full DialogsController always publishes them.
  */
 export type DialogSelectionView = {
   readonly focusIndex: number
   readonly checked: readonly number[]
   readonly text: string
+  /** Code-point cursor in `text`. */
+  readonly cursor?: number
+  /** Select-dialog filter and its code-point cursor. */
+  readonly filter?: string
+  readonly filterCursor?: number
+  /** Derived visible item range [start,end). */
+  readonly windowStart?: number
+  readonly windowEnd?: number
+  /** Scroll offset for approval command/reason content. */
+  readonly contentOffset?: number
+  /** Single-select option attached to custom text typed beside that option. */
+  readonly attachedOptionId?: string
+  /** User-visible validation/store error. */
+  readonly error?: string
 }
 
 /** Approval ask (dsh approval seam). Esc/Ctrl+C rejects (fail closed). */
@@ -46,15 +65,19 @@ export type ApprovalDialogPayload = {
   readonly toolName: string
   readonly reason?: string
   readonly command?: string
+  readonly status?: DialogPresentationStatus
+  readonly statusMessage?: string
+  /** Maximum wrapped command/reason rows kept above the fixed actions. */
+  readonly contentWindowRows?: number
   readonly selection: DialogSelectionView
 }
 
-/**
- * ask_user_question ask. The item is projected field-by-field (never embedded
- * raw) so the payload stays a plain SerializableValue; the presentation
- * `intent` tag (e.g. plan-review) is a WP-08 rendering concern and is not
- * mirrored here.
- */
+export type QuestionIntentView = {
+  readonly kind: 'plan-review'
+  readonly approve: string
+}
+
+/** ask_user_question item projected field-by-field into serializable view data. */
 export type QuestionDialogPayload = {
   readonly kind: 'question'
   readonly key: string
@@ -64,11 +87,17 @@ export type QuestionDialogPayload = {
   readonly detail?: string
   readonly options: readonly DialogOptionView[]
   readonly multiSelect: boolean
+  readonly hideCustomInput?: boolean
+  readonly intent?: QuestionIntentView
   /** 1-based position within the batch. */
   readonly position: number
   readonly total: number
   /** Questions answered before this one. */
   readonly answered: number
+  readonly answeredSummary?: readonly string[]
+  readonly optionWindowRows?: number
+  readonly status?: DialogPresentationStatus
+  readonly statusMessage?: string
   readonly selection: DialogSelectionView
 }
 
@@ -80,14 +109,19 @@ export type PluginDialogPayload = {
   readonly title: string
   /** confirm only. */
   readonly message?: string
-  /** select only. */
+  /** select only (already filtered by the controller). */
   readonly options?: readonly DialogOptionView[]
+  /** Number of source options before filtering; distinguishes empty/no-results. */
+  readonly totalOptions?: number
   /** confirm only; '' means the host default label. */
   readonly confirmLabel?: string
   readonly cancelLabel?: string
   /** input only. */
   readonly placeholder?: string
   readonly initial: string
+  readonly optionWindowRows?: number
+  readonly status?: DialogPresentationStatus
+  readonly statusMessage?: string
   readonly selection: DialogSelectionView
 }
 
@@ -108,10 +142,14 @@ function parseOption(value: unknown): DialogOptionView | null {
   if (!isRecord(value)) return null
   if (typeof value.id !== 'string' || typeof value.label !== 'string') return null
   if (value.description !== undefined && typeof value.description !== 'string') return null
+  if (value.disabled !== undefined && typeof value.disabled !== 'boolean') return null
+  if (value.disabledReason !== undefined && typeof value.disabledReason !== 'string') return null
   return {
     id: value.id,
     label: value.label,
     ...(value.description !== undefined ? { description: value.description } : {}),
+    ...(value.disabled !== undefined ? { disabled: value.disabled } : {}),
+    ...(value.disabledReason !== undefined ? { disabledReason: value.disabledReason } : {}),
   }
 }
 
@@ -126,23 +164,69 @@ function parseOptions(value: unknown): readonly DialogOptionView[] | null {
   return out
 }
 
+function optString(record: Record<string, unknown>, field: string): string | undefined | null {
+  const value = record[field]
+  if (value === undefined) return undefined
+  return typeof value === 'string' ? value : null
+}
+
+function optNonNegativeInt(record: Record<string, unknown>, field: string): number | undefined | null {
+  const value = record[field]
+  if (value === undefined) return undefined
+  return Number.isInteger(value) && (value as number) >= 0 ? (value as number) : null
+}
+
+function optBoolean(record: Record<string, unknown>, field: string): boolean | undefined | null {
+  const value = record[field]
+  if (value === undefined) return undefined
+  return typeof value === 'boolean' ? value : null
+}
+
 function parseSelection(value: unknown): DialogSelectionView | null {
   if (!isRecord(value)) return null
   if (!Number.isInteger(value.focusIndex) || (value.focusIndex as number) < 0) return null
   if (typeof value.text !== 'string') return null
   if (!Array.isArray(value.checked)) return null
   if (!value.checked.every((item) => Number.isInteger(item) && (item as number) >= 0)) return null
+  const cursor = optNonNegativeInt(value, 'cursor')
+  const filterCursor = optNonNegativeInt(value, 'filterCursor')
+  const windowStart = optNonNegativeInt(value, 'windowStart')
+  const windowEnd = optNonNegativeInt(value, 'windowEnd')
+  const contentOffset = optNonNegativeInt(value, 'contentOffset')
+  const filter = optString(value, 'filter')
+  const attachedOptionId = optString(value, 'attachedOptionId')
+  const error = optString(value, 'error')
+  if (
+    cursor === null || filterCursor === null || windowStart === null || windowEnd === null ||
+    contentOffset === null || filter === null || attachedOptionId === null || error === null
+  ) return null
+  if (cursor !== undefined && cursor > [...value.text].length) return null
+  if (filterCursor !== undefined && filterCursor > [...(filter ?? '')].length) return null
+  if (windowStart !== undefined && windowEnd !== undefined && windowEnd < windowStart) return null
   return {
     focusIndex: value.focusIndex as number,
     checked: value.checked as readonly number[],
     text: value.text,
+    ...(cursor !== undefined ? { cursor } : {}),
+    ...(filter !== undefined ? { filter } : {}),
+    ...(filterCursor !== undefined ? { filterCursor } : {}),
+    ...(windowStart !== undefined ? { windowStart } : {}),
+    ...(windowEnd !== undefined ? { windowEnd } : {}),
+    ...(contentOffset !== undefined ? { contentOffset } : {}),
+    ...(attachedOptionId !== undefined ? { attachedOptionId } : {}),
+    ...(error !== undefined ? { error } : {}),
   }
 }
 
-function optString(record: Record<string, unknown>, field: string): string | undefined | null {
-  const value = record[field]
+function parseStatus(value: unknown): DialogPresentationStatus | undefined | null {
   if (value === undefined) return undefined
-  return typeof value === 'string' ? value : null
+  return value === 'ready' || value === 'error' || value === 'unavailable' ? value : null
+}
+
+function parseStringArray(value: unknown): readonly string[] | undefined | null {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return null
+  return value as readonly string[]
 }
 
 /**
@@ -161,13 +245,22 @@ export function parseDialogOverlayPayload(value: unknown): DialogOverlayPayload 
       if (typeof value.toolName !== 'string') return null
       const reason = optString(value, 'reason')
       const command = optString(value, 'command')
-      if (reason === null || command === null) return null
+      const status = parseStatus(value.status)
+      const statusMessage = optString(value, 'statusMessage')
+      const contentWindowRows = optNonNegativeInt(value, 'contentWindowRows')
+      if (
+        reason === null || command === null || status === null ||
+        statusMessage === null || contentWindowRows === null
+      ) return null
       return {
         kind: 'approval',
         key,
         toolName: value.toolName,
         ...(reason !== undefined ? { reason } : {}),
         ...(command !== undefined ? { command } : {}),
+        ...(status !== undefined ? { status } : {}),
+        ...(statusMessage !== undefined ? { statusMessage } : {}),
+        ...(contentWindowRows !== undefined ? { contentWindowRows } : {}),
         selection,
       }
     }
@@ -176,13 +269,29 @@ export function parseDialogOverlayPayload(value: unknown): DialogOverlayPayload 
       if (typeof value.question !== 'string') return null
       const header = optString(value, 'header')
       const detail = optString(value, 'detail')
-      if (header === null || detail === null) return null
+      const hideCustomInput = optBoolean(value, 'hideCustomInput')
+      const answeredSummary = parseStringArray(value.answeredSummary)
+      const optionWindowRows = optNonNegativeInt(value, 'optionWindowRows')
+      const status = parseStatus(value.status)
+      const statusMessage = optString(value, 'statusMessage')
+      if (
+        header === null || detail === null || hideCustomInput === null || answeredSummary === null ||
+        optionWindowRows === null || status === null || statusMessage === null
+      ) return null
       const options = parseOptions(value.options)
       if (options === null) return null
       if (typeof value.multiSelect !== 'boolean') return null
       if (!Number.isInteger(value.position) || (value.position as number) < 1) return null
       if (!Number.isInteger(value.total) || (value.total as number) < 1) return null
+      if ((value.position as number) > (value.total as number)) return null
       if (!Number.isInteger(value.answered) || (value.answered as number) < 0) return null
+      let intent: QuestionIntentView | undefined
+      if (value.intent !== undefined) {
+        if (!isRecord(value.intent) || value.intent.kind !== 'plan-review' || typeof value.intent.approve !== 'string') {
+          return null
+        }
+        intent = { kind: 'plan-review', approve: value.intent.approve }
+      }
       return {
         kind: 'question',
         key,
@@ -192,9 +301,15 @@ export function parseDialogOverlayPayload(value: unknown): DialogOverlayPayload 
         ...(detail !== undefined ? { detail } : {}),
         options,
         multiSelect: value.multiSelect,
+        ...(hideCustomInput !== undefined ? { hideCustomInput } : {}),
+        ...(intent !== undefined ? { intent } : {}),
         position: value.position as number,
         total: value.total as number,
         answered: value.answered as number,
+        ...(answeredSummary !== undefined ? { answeredSummary } : {}),
+        ...(optionWindowRows !== undefined ? { optionWindowRows } : {}),
+        ...(status !== undefined ? { status } : {}),
+        ...(statusMessage !== undefined ? { statusMessage } : {}),
         selection,
       }
     }
@@ -208,9 +323,14 @@ export function parseDialogOverlayPayload(value: unknown): DialogOverlayPayload 
       const confirmLabel = optString(value, 'confirmLabel')
       const cancelLabel = optString(value, 'cancelLabel')
       const placeholder = optString(value, 'placeholder')
-      if (message === null || confirmLabel === null || cancelLabel === null || placeholder === null) {
-        return null
-      }
+      const totalOptions = optNonNegativeInt(value, 'totalOptions')
+      const optionWindowRows = optNonNegativeInt(value, 'optionWindowRows')
+      const status = parseStatus(value.status)
+      const statusMessage = optString(value, 'statusMessage')
+      if (
+        message === null || confirmLabel === null || cancelLabel === null || placeholder === null ||
+        totalOptions === null || optionWindowRows === null || status === null || statusMessage === null
+      ) return null
       let options: readonly DialogOptionView[] | undefined
       if (value.options !== undefined) {
         const parsed = parseOptions(value.options)
@@ -225,10 +345,14 @@ export function parseDialogOverlayPayload(value: unknown): DialogOverlayPayload 
         title: value.title,
         ...(message !== undefined ? { message } : {}),
         ...(options !== undefined ? { options } : {}),
+        ...(totalOptions !== undefined ? { totalOptions } : {}),
         ...(confirmLabel !== undefined ? { confirmLabel } : {}),
         ...(cancelLabel !== undefined ? { cancelLabel } : {}),
         ...(placeholder !== undefined ? { placeholder } : {}),
         initial: value.initial,
+        ...(optionWindowRows !== undefined ? { optionWindowRows } : {}),
+        ...(status !== undefined ? { status } : {}),
+        ...(statusMessage !== undefined ? { statusMessage } : {}),
         selection,
       }
     }

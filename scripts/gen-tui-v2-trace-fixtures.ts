@@ -160,6 +160,23 @@ const COMPONENT_TRACE_REDACTION: RedactionPolicy = {
   redactOsc: DEFAULT_REDACTION_POLICY.redactOsc,
 }
 
+const INTERACTIVE_TRACE_LITERALS = new Set([
+  'picker-dialog',
+  'help-dialog',
+  'history-search-dialog',
+  'transcript-search-dialog',
+  'markdown',
+  'text',
+])
+const INTERACTIVE_TRACE_REDACTION: RedactionPolicy = {
+  redactPayload: (text) =>
+    text === '' || text.startsWith('[placeholder]') || INTERACTIVE_TRACE_LITERALS.has(text)
+      ? undefined
+      : DEFAULT_REDACTION_POLICY.redactPayload?.(text),
+  redactCredential: DEFAULT_REDACTION_POLICY.redactCredential,
+  redactOsc: DEFAULT_REDACTION_POLICY.redactOsc,
+}
+
 function event(fx: EventFactory, source: EventSource, body: Omit<AppEvent, keyof EventMeta>): TraceBodyLine {
   return { kind: 'event', event: fx.stamp({ ...fx.meta(source), ...body } as AppEvent) }
 }
@@ -487,6 +504,150 @@ traces['question'] = {
     event(fx, 'input', { type: 'input/command', command: cmd({ type: 'editor', command: 'cancel' }) }),
     event(fx, 'overlay', { type: 'overlay/close', overlayId: 'question-2' }),
   ],
+}
+
+// --- WP-08c picker/help/history/transcript-search overlays -------------------
+traces['interactive-overlays'] = {
+  terminalProfile: 'unicode-ambiguous-narrow',
+  redactionPolicy: INTERACTIVE_TRACE_REDACTION,
+  build: (fx) => {
+    const first = makeRow(fx, {
+      source: 'session',
+      sourceId: 'interactive-search-row-1',
+      kind: 'assistant',
+      blocks: [{ type: 'markdown', text: '[placeholder] searchable transcript one' }],
+    })
+    const second = makeRow(fx, {
+      source: 'session',
+      sourceId: 'interactive-search-row-2',
+      kind: 'user',
+      blocks: [{ type: 'text', text: '[placeholder] searchable transcript two' }],
+    })
+    const pickerQuery = '[placeholder] filter'
+    const list = (query: string, items: readonly SerializableValue[]) => ({
+      query,
+      cursor: [...query].length,
+      activeIndex: 0,
+      windowStart: 0,
+      windowEnd: items.length,
+      items,
+      sourceCount: 2,
+      emptyMessage: '[placeholder] empty',
+      noResultsMessage: '[placeholder] no results',
+      hint: '[placeholder] list hint',
+    })
+    const pickerItems = [
+      { id: '[placeholder] alpha-id', label: '[placeholder] Alpha', description: '[placeholder] first item' },
+      {
+        id: '[placeholder] beta-id',
+        label: '[placeholder] Beta',
+        disabled: true,
+        disabledReason: '[placeholder] unavailable',
+      },
+    ]
+    return [
+      resetEvent(fx, 'new-session', [first, second], 'reset-interactive-overlays-1'),
+      event(fx, 'overlay', {
+        type: 'overlay/open',
+        overlay: makeOverlay({
+          overlayId: 'utility/picker/fixture',
+          revision: 1,
+          width: '80%',
+          maxHeight: '80%',
+          payload: {
+            kind: 'picker-dialog',
+            key: '[placeholder] picker-key',
+            title: '[placeholder] picker title',
+            subtitle: '[placeholder] generic picker boundary',
+            list: list('', pickerItems),
+          },
+        }),
+      }),
+      event(fx, 'overlay', {
+        type: 'overlay/open',
+        overlay: makeOverlay({
+          overlayId: 'utility/picker/fixture',
+          revision: 2,
+          width: '80%',
+          maxHeight: '80%',
+          payload: {
+            kind: 'picker-dialog',
+            key: '[placeholder] picker-key',
+            title: '[placeholder] picker title',
+            list: list(pickerQuery, [pickerItems[0] as SerializableValue]),
+          },
+        }),
+      }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/picker/fixture' }),
+      event(fx, 'overlay', {
+        type: 'overlay/open',
+        overlay: makeOverlay({
+          overlayId: 'utility/help',
+          revision: 1,
+          width: '80%',
+          maxHeight: '80%',
+          payload: {
+            kind: 'help-dialog',
+            key: '[placeholder] help-key',
+            title: '[placeholder] Help',
+            shortcuts: [{ keys: '[placeholder] Ctrl+R', label: '[placeholder] history search' }],
+            list: list('', pickerItems),
+          },
+        }),
+      }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/help' }),
+      event(fx, 'overlay', {
+        type: 'overlay/open',
+        overlay: makeOverlay({
+          overlayId: 'utility/history',
+          revision: 1,
+          width: '80%',
+          maxHeight: '80%',
+          payload: {
+            kind: 'history-search-dialog',
+            key: '[placeholder] history-key',
+            title: '[placeholder] Prompt history',
+            placeholder: '[placeholder] type to search',
+            list: list('', pickerItems),
+          },
+        }),
+      }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/history' }),
+      event(fx, 'overlay', {
+        type: 'overlay/open',
+        overlay: makeOverlay({
+          overlayId: 'utility/search',
+          revision: 1,
+          width: '80%',
+          maxHeight: '80%',
+          payload: {
+            kind: 'transcript-search-dialog',
+            key: '[placeholder] search-key',
+            title: '[placeholder] Search transcript',
+            query: '[placeholder] searchable',
+            cursor: [...'[placeholder] searchable'].length,
+            current: 0,
+            total: 2,
+            noResultsMessage: '[placeholder] no transcript matches',
+            hint: '[placeholder] search hint',
+          },
+        }),
+      }),
+      event(fx, 'overlay', {
+        type: 'search/update',
+        search: { query: '[placeholder] searchable', active: true, current: 0, matches: [first.rowId, second.rowId] },
+      }),
+      event(fx, 'overlay', {
+        type: 'search/update',
+        search: { query: '[placeholder] searchable', active: true, current: 1, matches: [first.rowId, second.rowId] },
+      }),
+      event(fx, 'overlay', { type: 'overlay/close', overlayId: 'utility/search' }),
+      event(fx, 'overlay', {
+        type: 'search/update',
+        search: { query: '[placeholder] searchable', active: false, current: 1, matches: [first.rowId, second.rowId] },
+      }),
+    ]
+  },
 }
 
 // --- overlay open/move/shrink/close ------------------------------------------

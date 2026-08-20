@@ -21,7 +21,11 @@ import type {
   AskUserQuestionItem,
 } from '@deepseek-ai/dsh-user-questions';
 import type { ApprovalSnapshot } from '../../../src/dsh-adapter/approvals.js';
-import type { QuestionSelection, QuestionSnapshot } from '../../../src/dsh-adapter/questions.js';
+import type {
+  QuestionSelection,
+  QuestionSnapshot,
+  QuestionSummary,
+} from '../../../src/dsh-adapter/questions.js';
 import type { TuiDialogAnswer, TuiDialogSnapshot } from '../../../src/dsh-adapter/dialogs.js';
 import type { Clock } from '../../../src/tui-v2/model/schema.js';
 import type {
@@ -109,6 +113,7 @@ export interface FakeQuestionStore extends QuestionStoreLike {
   readonly ask: (request: { questions: readonly AskUserQuestionItem[] }) => Promise<AskUserQuestionAnswer>;
   /** Simulate the harness abort signal: rejects the active ask ASK_ABORTED. */
   readonly abortActive: () => void;
+  readonly takeSummaries: () => QuestionSummary[];
   readonly listenerCount: number;
 }
 
@@ -124,8 +129,17 @@ export function createFakeQuestionStore(): FakeQuestionStore {
   const queue: Pending[] = [];
   let active: Pending | null = null;
   const listeners = new Set<() => void>();
+  let summaries: QuestionSummary[] = [];
   let batchSeq = 0;
 
+  const summaryLines = (pending: Pending): string[] => pending.answers.map((answer) => {
+    const question = pending.request.questions.find((item) => item.id === answer.id);
+    const labels = answer.selected.join(', ');
+    const value = answer.custom === undefined || answer.custom === ''
+      ? labels
+      : labels === '' ? answer.custom : `${labels}: ${answer.custom}`;
+    return `· ${question?.question ?? answer.id} → ${value}`;
+  });
   const emit = (): void => {
     for (const listener of [...listeners]) listener();
   };
@@ -151,7 +165,7 @@ export function createFakeQuestionStore(): FakeQuestionStore {
     answerCurrent(selection) {
       const pending = active;
       const question = pending?.request.questions[pending.index];
-      if (pending === undefined || pending === null || question === undefined) return;
+      if (pending === null || question === undefined) return;
       pending.answers.push({
         id: question.id,
         selected: [...selection.selected],
@@ -161,6 +175,10 @@ export function createFakeQuestionStore(): FakeQuestionStore {
       if (pending.index >= pending.request.questions.length) {
         active = null;
         pending.resolve({ answers: [...pending.answers] });
+        summaries.push({
+          title: `Answered ${pending.request.questions.length} question(s)`,
+          lines: summaryLines(pending),
+        });
         advance();
         return;
       }
@@ -180,7 +198,13 @@ export function createFakeQuestionStore(): FakeQuestionStore {
         position: active.index + 1,
         total: active.request.questions.length,
         answered: active.answers.length,
+        answeredSummary: summaryLines(active),
       };
+    },
+    takeSummaries() {
+      const taken = summaries;
+      summaries = [];
+      return taken;
     },
     subscribe(listener) {
       listeners.add(listener);

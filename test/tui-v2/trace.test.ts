@@ -28,6 +28,7 @@ import {
   validateAppEvent,
   type AppEvent,
 } from '../../src/tui-v2/model/events.js'
+import { parseInteractiveOverlayPayload } from '../../src/tui-v2/model/interactive-overlay-payloads.js'
 import type { Frame, TerminalModeSnapshot } from '../../src/tui-v2/renderer/frame.js'
 import {
   canonicalJson,
@@ -124,6 +125,7 @@ function variantEvents(): AppEvent[] {
     { ...meta(), type: 'viewport/resize', width: 120, height: 40 },
     { ...meta(), type: 'overlay/open', overlay: sampleOverlay() },
     { ...meta(), type: 'overlay/close', overlayId: 'overlay-1' },
+    { ...meta(), type: 'search/update', search: { query: 'x', active: true, current: 0, matches: ['row-1'] } },
     { ...meta(), type: 'terminal/suspended' },
     { ...meta(), type: 'terminal/resumed' },
     { ...meta(), type: 'app/error', error: { code: 'E_X', message: 'boom', recoverable: false } },
@@ -259,7 +261,7 @@ test('trace schema: validateOverlayState rejects contradictory capture flags', (
 
 test('trace events: every AppEvent variant survives a JSON round-trip', () => {
   const variants = variantEvents()
-  assert.equal(new Set(variants.map((e) => e.type)).size, 12, 'expected one example per variant')
+  assert.equal(new Set(variants.map((e) => e.type)).size, 13, 'expected one example per variant')
   for (const event of variants) {
     const parsed = parseAppEvent(serializeAppEvent(event))
     assert.deepEqual(parsed, event, `round-trip mismatch for ${event.type}`)
@@ -382,6 +384,14 @@ test('trace redaction: credentials, prompts and OSC payloads never reach disk', 
         event: { ...meta(), type: 'input/command', command: { type: 'editor', command: 'insert', text: prompt } },
       },
       { kind: 'event', event: { ...meta(), type: 'stream/chunk', rowId: 'row-1', text: osc } },
+      {
+        kind: 'event',
+        event: {
+          ...meta(),
+          type: 'search/update',
+          search: { query: prompt, active: true, current: 0, matches: ['row-1'] },
+        },
+      },
     ],
   }
   const redacted = redactTrace(trace)
@@ -399,6 +409,9 @@ test('trace redaction: credentials, prompts and OSC payloads never reach disk', 
   assert.deepEqual(again, redacted)
   const blockText = (redacted.lines[0] as { event: AppEvent & { row: UiRowSnapshot } }).event.row.blocks[0]
   assert.match(blockText as string, /^<redacted:text [0-9a-f]{8}>$/)
+  const search = (redacted.lines[3] as { event: Extract<AppEvent, { type: 'search/update' }> }).event.search
+  assert.match(search.query, /^<redacted:text [0-9a-f]{8}>$/)
+  assert.deepEqual(search.matches, ['row-1'], 'structural row ids remain replayable')
 })
 
 // ---------------------------------------------------------------------------
@@ -574,6 +587,7 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
       'editor.jsonl',
       'exit-error.jsonl',
       'inline-scrollback.jsonl',
+      'interactive-overlays.jsonl',
       'interrupt.jsonl',
       'markdown-tool-rendering.jsonl',
       'notification-status.jsonl',
@@ -626,4 +640,33 @@ test('trace fixtures: WP-08b scenario preserves safe Markdown/tool discriminants
   const output = upserts.find((row) => row.sourceId === 'tool-render-output-1')
   assert.equal((output?.tool?.resultView as { readonly card?: string } | undefined)?.card, 'terminal')
   assert.ok(upserts.some((row) => row.sourceId === 'tool-render-error-1' && row.tool?.phase === 'error'))
+})
+
+test('trace fixtures: WP-08c interactive overlay payloads and search state remain replayable', async () => {
+  const trace = await readTrace(path.join(fixturesDir, 'interactive-overlays.jsonl'))
+  const opens = trace.lines
+    .filter((line) => line.kind === 'event' && line.event.type === 'overlay/open')
+    .map((line) => (line as { event: Extract<AppEvent, { type: 'overlay/open' }> }).event.overlay)
+  const kinds = opens.map((overlay) => parseInteractiveOverlayPayload(overlay.payload)?.kind)
+  assert.deepEqual([...new Set(kinds)], [
+    'picker-dialog',
+    'help-dialog',
+    'history-search-dialog',
+    'transcript-search-dialog',
+  ])
+  const searchUpdates = trace.lines.filter(
+    (line) => line.kind === 'event' && line.event.type === 'search/update',
+  )
+  assert.equal(searchUpdates.length, 3)
+  assert.equal(
+    (searchUpdates[1] as { event: Extract<AppEvent, { type: 'search/update' }> }).event.search.current,
+    1,
+  )
+  assert.equal(
+    (searchUpdates[2] as { event: Extract<AppEvent, { type: 'search/update' }> }).event.search.active,
+    false,
+  )
+  const raw = JSON.stringify(trace)
+  assert.ok(!raw.includes('super-secret'))
+  assert.ok(!raw.includes('\u001b]'))
 })

@@ -59,6 +59,8 @@ export interface QuestionSnapshot {
   readonly total: number
   /** Questions answered before the current one. */
   readonly answered: number
+  /** Safe, already-clipped summary lines for answers earlier in this batch. */
+  readonly answeredSummary: readonly string[]
 }
 
 /** Completed batch summary, pushed into the transcript by the caller. */
@@ -82,8 +84,8 @@ function clip(text: string, max = 140): string {
   return `${text.slice(0, max)}…`
 }
 
-function buildSummary(pending: PendingQuestion): QuestionSummary {
-  const lines = pending.answers.map(answer => {
+function summaryLines(pending: PendingQuestion): string[] {
+  return pending.answers.map(answer => {
     const question = pending.request.questions.find(q => q.id === answer.id)
     const text = pending.redact
       ? '••••••'
@@ -95,10 +97,13 @@ function buildSummary(pending: PendingQuestion): QuestionSummary {
         })()
     return `· ${question?.question ?? answer.id} → ${clip(text)}`
   })
+}
+
+function buildSummary(pending: PendingQuestion): QuestionSummary {
   const total = pending.request.questions.length
   return {
     title: t('questionnaire-answered', { total }),
-    lines,
+    lines: summaryLines(pending),
   }
 }
 
@@ -169,6 +174,7 @@ export class QuestionStore {
       position: pending.index + 1,
       total: pending.request.questions.length,
       answered: pending.answers.length,
+      answeredSummary: summaryLines(pending),
     }
   }
 

@@ -20,6 +20,7 @@ import {
   type ResetReason,
   type SceneViewModel,
   type SerializableError,
+  type TranscriptSearchState,
   type UiRowSnapshot,
 } from './schema.js'
 
@@ -33,6 +34,7 @@ export type AppEvent =
   | (EventMeta & { type: 'viewport/resize'; width: number; height: number })
   | (EventMeta & { type: 'overlay/open'; overlay: OverlayState })
   | (EventMeta & { type: 'overlay/close'; overlayId: string })
+  | (EventMeta & { type: 'search/update'; search: TranscriptSearchState })
   | (EventMeta & { type: 'terminal/suspended' | 'terminal/resumed' })
   | (EventMeta & { type: 'app/error'; error: SerializableError })
   | (EventMeta & { type: 'scene/open'; scene: SceneViewModel })
@@ -50,6 +52,7 @@ const APP_EVENT_TYPES = [
   'viewport/resize',
   'overlay/open',
   'overlay/close',
+  'search/update',
   'terminal/suspended',
   'terminal/resumed',
   'app/error',
@@ -208,6 +211,28 @@ export function validateAppEvent(value: unknown): AppEvent {
     case 'overlay/close':
       if (typeof e.overlayId !== 'string' || e.overlayId === '') fail('overlayId must be a non-empty string')
       break
+    case 'search/update': {
+      if (e.search === null || typeof e.search !== 'object' || Array.isArray(e.search)) {
+        fail('search must be an object')
+      }
+      const search = e.search as Record<string, unknown>
+      if (typeof search.query !== 'string') fail('search.query must be a string')
+      if (typeof search.active !== 'boolean') fail('search.active must be boolean')
+      if (!isNonNegativeInt(search.current)) fail('search.current must be a non-negative integer')
+      if (!Array.isArray(search.matches) || search.matches.length > 512) {
+        fail('search.matches must be an array with at most 512 entries')
+      }
+      if (!search.matches.every((rowId) => typeof rowId === 'string' && rowId !== '')) {
+        fail('search.matches entries must be non-empty strings')
+      }
+      if (new Set(search.matches as string[]).size !== search.matches.length) {
+        fail('search.matches entries must be unique')
+      }
+      if (search.matches.length === 0 ? search.current !== 0 : (search.current as number) >= search.matches.length) {
+        fail('search.current must address search.matches (or be 0 when empty)')
+      }
+      break
+    }
     case 'terminal/suspended':
     case 'terminal/resumed':
       break

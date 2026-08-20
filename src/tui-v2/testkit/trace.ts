@@ -346,6 +346,14 @@ function redactEvent(event: AppEvent, policy: RedactionPolicy): AppEvent {
     }
     case 'overlay/open':
       return { ...e, overlay: { ...(e.overlay as Record<string, unknown>), payload: redactValue((e.overlay as Record<string, unknown>).payload, true, policy) } } as unknown as AppEvent
+    case 'search/update':
+      return {
+        ...e,
+        search: {
+          ...(e.search as Record<string, unknown>),
+          query: redactString(event.search.query, true, policy),
+        },
+      } as unknown as AppEvent
     case 'app/error': {
       const error = e.error as Record<string, unknown>
       return {

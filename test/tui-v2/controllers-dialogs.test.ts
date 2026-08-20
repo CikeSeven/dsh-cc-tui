@@ -38,7 +38,11 @@ import { createApprovalDialog } from '../../src/tui-v2/components/overlays/appro
 import { createPluginDialog } from '../../src/tui-v2/components/overlays/plugin-dialog.js';
 import { createQuestionDialog } from '../../src/tui-v2/components/overlays/question-dialog.js';
 import { DEFAULT_COMPONENT_THEME } from '../../src/tui-v2/components/theme.js';
-import { createDialogsController, type DialogsController } from '../../src/tui-v2/controllers/dialogs.js';
+import {
+  createDialogsController,
+  type ApprovalStoreLike,
+  type DialogsController,
+} from '../../src/tui-v2/controllers/dialogs.js';
 import { replayTrace } from '../../src/tui-v2/controllers/replay.js';
 import { unknownConservativeDefaults } from '../../src/tui-v2/terminal/profile.js';
 import type { TerminalInputEvent } from '../../src/tui-v2/terminal/input.js';
@@ -72,7 +76,7 @@ interface DialogsRig {
   readonly dialogs: FakePluginDialogStore;
 }
 
-function dialogsRig(): DialogsRig {
+function dialogsRig(onQuestionSummary?: (title: string, lines: readonly string[]) => void): DialogsRig {
   const rig = createControllerRig({ height: 8 });
   const approvals = createFakeApprovalStore();
   const questions = createFakeQuestionStore();
@@ -84,6 +88,7 @@ function dialogsRig(): DialogsRig {
     approvals,
     questions,
     dialogs,
+    ...(onQuestionSummary !== undefined ? { onQuestionSummary } : {}),
   });
   controller.start();
   return { rig, controller, approvals, questions, dialogs };
@@ -676,8 +681,8 @@ test('controller dialogs: approval component renders the published payload', () 
   const plain = lines.join('\n');
   assert.match(plain, /Approval required: Bash/);
   assert.match(plain, /ls -la/);
-  assert.match(plain, /❯ 1\. Yes/);
-  assert.match(plain, /2\. No/);
+  assert.match(plain, /❯ 1\. Proceed once/);
+  assert.match(plain, /2\. Reject/);
   assert.equal(component.render(0).length, 0, 'zero width renders nothing');
 });
 
@@ -706,7 +711,7 @@ test('controller dialogs: question component renders options, checks and the dra
   assert.match(plain, /◉ red/);
   assert.match(plain, /❯ ○ blue/);
   assert.match(plain, /the sky/);
-  assert.match(plain, /Space to toggle/);
+  assert.match(plain, /Space toggle/);
 
   const freeText: QuestionDialogPayload = {
     ...question,
@@ -716,7 +721,7 @@ test('controller dialogs: question component renders options, checks and the dra
   };
   const draftLines = createQuestionDialog(freeText, { profile: PROFILE, theme: THEME }).render(30);
   assertWithinWidth(draftLines, 30);
-  assert.match(draftLines.join('\n'), /❯ typed/);
+  assert.match(draftLines.join('\n'), /typed/);
 });
 
 test('controller dialogs: plugin dialog component renders select/confirm/input', () => {
@@ -752,7 +757,7 @@ test('controller dialogs: plugin dialog component renders select/confirm/input',
   const confirmLines = createPluginDialog(confirm, { profile: PROFILE, theme: THEME }).render(30);
   assertWithinWidth(confirmLines, 30);
   assert.match(confirmLines.join('\n'), /this cannot be undone/);
-  assert.match(confirmLines.join('\n'), /❯ Yes/); // '' confirm label falls back
+  assert.match(confirmLines.join('\n'), /❯ 1\. Yes/); // '' confirm label falls back
   assert.match(confirmLines.join('\n'), / Stop/);
 
   const input: PluginDialogPayload = {
@@ -766,10 +771,165 @@ test('controller dialogs: plugin dialog component renders select/confirm/input',
   };
   const emptyLines = createPluginDialog(input, { profile: PROFILE, theme: THEME }).render(30);
   assertWithinWidth(emptyLines, 30);
-  assert.match(emptyLines.join('\n'), /❯ your name/);
+  assert.match(emptyLines.join('\n'), /your name/);
   const filled = createPluginDialog(
     { ...input, selection: { focusIndex: 0, checked: [], text: 'ada' } },
     { profile: PROFILE, theme: THEME },
   ).render(30);
-  assert.match(filled.join('\n'), /❯ ada▏/);
+  assert.match(filled.join('\n'), /❯ ada/);
+});
+
+// ---------------------------------------------------------------------------
+// WP-08c complete interaction semantics
+// ---------------------------------------------------------------------------
+
+test('controller dialogs: custom answer supports attachment and code-point cursor editing', async () => {
+  const { rig, controller, questions } = dialogsRig();
+  const answer = questions.ask({
+    questions: [{ id: 'custom', question: 'Choose or explain', options: [{ label: 'a' }, { label: 'b' }] }],
+  });
+  controller.handleInput(charEvent('h'));
+  controller.handleInput(charEvent('😀'));
+  controller.handleInput(keyEvent('tab'));
+  controller.handleInput(keyEvent('left'));
+  controller.handleInput(charEvent('X'));
+  const edited = topPayload(rig);
+  assert.equal(edited.selection.text, 'hX😀');
+  assert.equal(edited.selection.cursor, 2);
+  assert.equal(edited.selection.attachedOptionId, 'a');
+  // Enter on the trailing input row carries the option that was focused when
+  // typing began and preserves the emoji as one cursor step.
+  controller.handleInput(keyEvent('enter'));
+  assert.deepEqual((await answer).answers, [
+    { id: 'custom', selected: ['a'], custom: 'hX😀' },
+  ]);
+});
+
+test('controller dialogs: plan review forbids approve-with-feedback and maps feedback to decline', async () => {
+  const { rig, controller, questions } = dialogsRig();
+  const answer = questions.ask({
+    questions: [{
+      id: 'plan',
+      question: 'Approve?',
+      detail: '# Plan\n\nDo work',
+      options: [{ label: 'approve' }, { label: 'revise' }],
+      intent: { kind: 'plan-review', approve: 'approve' },
+    }],
+  });
+  for (const ch of 'fix') controller.handleInput(charEvent(ch));
+  controller.handleInput(keyEvent('up'));
+  controller.handleInput(keyEvent('up'));
+  controller.handleInput(keyEvent('enter'));
+  const blocked = topPayload(rig);
+  assert.equal(blocked.kind, 'question');
+  assert.match(blocked.selection.error ?? '', /Clear feedback/);
+  controller.handleInput(keyEvent('backspace'));
+  controller.handleInput(keyEvent('backspace'));
+  controller.handleInput(keyEvent('backspace'));
+  controller.handleInput(keyEvent('enter'));
+  assert.deepEqual((await answer).answers, [{ id: 'plan', selected: ['approve'] }]);
+});
+
+test('controller dialogs: plugin select filters source options and skips disabled rows', async () => {
+  const { rig, controller, dialogs } = dialogsRig();
+  const answer = dialogs.ask({
+    kind: 'select',
+    title: 'Filtered',
+    options: [
+      { id: 'alpha', label: 'Alpha', disabled: true, disabledReason: 'busy' },
+      { id: 'beta', label: 'Beta' },
+      { id: 'gamma', label: 'Gamma' },
+    ],
+  });
+  let payload = topPayload(rig);
+  assert.equal(payload.kind, 'plugin-dialog');
+  if (payload.kind === 'plugin-dialog') {
+    assert.equal(payload.totalOptions, 3);
+    assert.equal(payload.selection.focusIndex, 1, 'first enabled source row is focused');
+  }
+  controller.handleInput(charEvent('z'));
+  controller.handleInput(keyEvent('enter'));
+  payload = topPayload(rig);
+  assert.match(payload.selection.error ?? '', /No options match/);
+  controller.handleInput(keyEvent('backspace'));
+  controller.handleInput(charEvent('b'));
+  payload = topPayload(rig);
+  if (payload.kind === 'plugin-dialog') {
+    assert.deepEqual(payload.options?.map((option) => option.id), ['beta']);
+    assert.equal(payload.totalOptions, 3);
+  }
+  controller.handleInput(keyEvent('enter'));
+  assert.equal(await answer, 'beta');
+});
+
+test('controller dialogs: option windows budget rendered description rows', async () => {
+  const { rig, controller, dialogs } = dialogsRig();
+  const answer = dialogs.ask({
+    kind: 'select',
+    title: 'Tall options',
+    options: Array.from({ length: 5 }, (_, index) => ({
+      id: `option-${index}`,
+      label: `Option ${index}`,
+      description: `Description ${index}`,
+    })),
+  });
+  const payload = topPayload(rig);
+  assert.equal(payload.kind, 'plugin-dialog');
+  if (payload.kind === 'plugin-dialog') {
+    assert.equal(payload.selection.windowStart, 0);
+    assert.equal(payload.selection.windowEnd, 4, 'four two-row options fit the eight-row budget');
+  }
+  controller.handleInput(keyEvent('escape'));
+  assert.equal(await answer, undefined);
+});
+
+test('controller dialogs: completed question summaries are drained to the coordinator callback', async () => {
+  const summaries: Array<{ title: string; lines: readonly string[] }> = [];
+  const { rig, controller, questions } = dialogsRig((title, lines) => summaries.push({ title, lines }));
+  const answer = questions.ask({
+    questions: [
+      { id: 'one', question: 'First?', options: [{ label: 'yes' }] },
+      { id: 'two', question: 'Second?', options: [{ label: 'done' }] },
+    ],
+  });
+  controller.handleInput(keyEvent('enter'));
+  const second = topPayload(rig);
+  assert.equal(second.kind, 'question');
+  if (second.kind === 'question') assert.match(second.answeredSummary?.[0] ?? '', /First\?/);
+  controller.handleInput(keyEvent('enter'));
+  await answer;
+  assert.equal(summaries.length, 1);
+  assert.equal(summaries[0]?.lines.length, 2);
+});
+
+test('controller dialogs: approval content paging is journaled and store failure disables proceed', async () => {
+  const rig = createControllerRig({ height: 8 });
+  const base = createFakeApprovalStore();
+  const approvals: ApprovalStoreLike = {
+    subscribe: (listener) => base.subscribe(listener),
+    getSnapshot: () => base.getSnapshot(),
+    decide: (outcome) => {
+      if (outcome === 'allowed-once') throw new Error('offline');
+      base.decide(outcome);
+    },
+  };
+  const controller = createDialogsController({
+    dispatch: (event) => rig.streaming.ingest(event),
+    nextMeta: (sourceSeq) => rig.meta.next('overlay', sourceSeq),
+    getState: rig.state,
+    approvals,
+  });
+  controller.start();
+  const answer = base.park({ toolName: 'Bash', command: 'one\ntwo\nthree\nfour\nfive\nsix\nseven' });
+  controller.handleInput(keyEvent('pageDown'));
+  assert.equal(topPayload(rig).selection.contentOffset, 6);
+  controller.handleInput(charEvent('1'));
+  const failed = topPayload(rig);
+  assert.equal(failed.kind, 'approval');
+  if (failed.kind === 'approval') assert.equal(failed.status, 'error');
+  assert.match(failed.selection.error ?? '', /disabled/);
+  controller.handleInput(charEvent('2'));
+  assert.equal(await answer, 'rejected');
+  assert.equal(rig.state().overlays.stack.length, 0);
+  replayEquivalence(rig);
 });

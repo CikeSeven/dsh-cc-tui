@@ -88,10 +88,10 @@ test('fullscreen overlay: no ghosting across open/move/resize/nest/close', async
   }
 })
 
-test('fullscreen width: CJK markdown link boundaries never break the physical row width', (t) => {
+test('fullscreen width: CJK markdown link boundaries never break the physical row width', async (t) => {
   const text = '文档链接见 [文档链接](https://example.com/docs) 后续内容跟进'
   for (const width of [10, 11, 12, 13, 14, 15, 20, 21, 22, 23, 30, 48]) {
-    t.test(`width ${width}`, () => {
+    await t.test(`width ${width}`, () => {
       const profile = { ...getProfile('unicode-ambiguous-narrow'), id: `cjk-link-${width}`, columns: width, rows: 40 }
       const lines = renderMarkdownLines(text, { theme: DEFAULT_COMPONENT_THEME, profile }, width)
       assert.ok(lines.length > 0)

@@ -29,6 +29,10 @@ function keyEvent(key: string | null, raw: string): TerminalInputEvent {
   return { kind: 'key', sequence: 0, generation: 0, payload: { key, raw, text: null, eventType: 'press' } };
 }
 
+function textEvent(text: string): TerminalInputEvent {
+  return { kind: 'key', sequence: 0, generation: 0, payload: { key: null, raw: text, text, eventType: 'press' } };
+}
+
 function pasteEvent(text: string): TerminalInputEvent {
   return { kind: 'paste', sequence: 0, generation: 0, payload: { text } };
 }
@@ -57,6 +61,8 @@ interface InputRig {
   exitRequests: number;
   exitArms: number;
   interruptHooks: number;
+  helpRequests: number;
+  historySearchRequests: number;
   pastes: string[];
   editorText: { text: string };
   setWorking(value: boolean): void;
@@ -81,6 +87,8 @@ function inputRig(options: { working?: boolean; withPaste?: boolean } = {}): Inp
     exitRequests: 0,
     exitArms: 0,
     interruptHooks: 0,
+    helpRequests: 0,
+    historySearchRequests: 0,
     clock,
     setWorking(value) {
       working = value;
@@ -132,6 +140,12 @@ function inputRig(options: { working?: boolean; withPaste?: boolean } = {}): Inp
     },
     onExitArm: () => {
       rig.exitArms += 1;
+    },
+    onHelpRequest: () => {
+      rig.helpRequests += 1;
+    },
+    onHistorySearchRequest: () => {
+      rig.historySearchRequests += 1;
     },
   });
   return rig;
@@ -205,6 +219,24 @@ test('controller input: Escape while idle reaches the editor untouched', () => {
   assert.equal(rig.interrupts, 0);
   assert.equal(rig.cancels, 0);
   assert.equal(rig.editorText.text, '\x1b', 'raw input forwarded to the editor');
+});
+
+test('controller input: empty-editor ? opens help and Ctrl+R opens history search', () => {
+  const rig = inputRig();
+  rig.controller.handleEvent(textEvent('?'));
+  assert.equal(rig.helpRequests, 1);
+  assert.equal(rig.editorText.text, '', 'help shortcut is consumed');
+
+  rig.editorText.text = 'draft';
+  rig.controller.handleEvent(textEvent('?'));
+  assert.equal(rig.helpRequests, 1, 'question mark in a draft remains text');
+  assert.equal(rig.editorText.text, 'draft?');
+
+  rig.controller.handleEvent(keyEvent('ctrl+r', '\x12'));
+  assert.equal(rig.historySearchRequests, 1);
+  assert.equal(rig.editorText.text, 'draft?', 'Ctrl+R never reaches the editor');
+  assert.equal(rig.controller.diagnostics().helpRequests, 1);
+  assert.equal(rig.controller.diagnostics().historySearchRequests, 1);
 });
 
 // ---------------------------------------------------------------------------

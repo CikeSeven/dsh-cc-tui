@@ -1,11 +1,11 @@
 /**
  * tui-v2 component theme (WP-04b).
  *
- * Minimal role -> LineStyle map for the walking-skeleton components. Color
- * strings use the canonical spellings of the width pipeline
- * (renderer/lines.ts) so WP-06 can map them onto `StyleDescriptor` 1:1.
- * This is deliberately NOT the legacy `src/theme.ts` palette — WP-08 wires
- * the full theme system; until then one default theme serves every profile.
+ * Role -> LineStyle map shared by transcript, dialogs and search highlights.
+ * Color strings use the canonical spellings of the width pipeline
+ * (renderer/lines.ts) so they map onto `StyleDescriptor` 1:1. This is
+ * deliberately NOT the legacy `src/theme.ts` palette; custom-theme loading is
+ * a later WP-08 surface, while one deterministic default serves every profile.
  *
  * Dependency rule (§4.3): components import renderer contracts only.
  */
@@ -32,6 +32,9 @@ export interface ComponentTheme {
     /** Full-row tool card surfaces; foreground styles are merged on top. */
     readonly toolBackground: LineStyle
     readonly toolBackgroundExpanded: LineStyle
+    /** Transcript search matches; current match is visually stronger. */
+    readonly searchMatch: LineStyle
+    readonly searchCurrent: LineStyle
   }
 }
 
@@ -50,5 +53,7 @@ export const DEFAULT_COMPONENT_THEME: ComponentTheme = Object.freeze({
     toolName: lineStyle({ bold: true }),
     toolBackground: lineStyle({ background: 'ansi256:236' }),
     toolBackgroundExpanded: lineStyle({ background: 'ansi256:238' }),
+    searchMatch: lineStyle({ foreground: 'black', background: 'yellow' }),
+    searchCurrent: lineStyle({ foreground: 'black', background: 'cyan', bold: true }),
   },
 })

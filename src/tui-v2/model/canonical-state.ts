@@ -55,6 +55,12 @@ export function serializeCanonicalUiState(state: DeepReadonly<UiState>): string 
       command: stripUndefined(pending.command as SerializableValue),
     })),
     rows,
+    search: {
+      query: state.search.query,
+      active: state.search.active,
+      current: state.search.current,
+      matches: [...state.search.matches],
+    },
     session: {
       durableSessionId: session.durableSessionId,
       uiSessionGeneration: session.uiSessionGeneration,

@@ -12,7 +12,7 @@ fullscreen 专属能力必须显式登记差异，不允许静默伪装 parity�
 | 能力 | fullscreen | inline | 说明 |
 | --- | --- | --- | --- |
 | `supportsViewportLayout` | ✅ | ❌ | inline 永远整视口直排：frame = screen，物理屏逐行镜像帧；没有独立 viewport 布局层。 |
-| `supportsNestedOverlay` | ✅ | ❌ | inline 不合成 overlay：栈被剥离（`overlayStack=[]` 传给 compositor），每个新可见 overlay 经 dock 通知行发一次 warning（"Inline mode cannot render overlay dialogs; the dialog is hidden and keys still apply"）+ `overlay/unsupported` 诊断；栈空后重臂。overlay 仍持有键盘焦点（focus 路由不变），不可见但可用。 |
+| `supportsNestedOverlay` | ✅ | ❌ | inline 不合成 overlay：栈被剥离（`overlayStack=[]` 传给 compositor），每个新可见 business 或 utility overlay 经 dock 通知行发一次明确 warning（"Inline mode cannot render overlay dialogs; the dialog is hidden and keys still apply"）+ `overlay/unsupported` 诊断；栈空后重臂。approval/question/plugin、picker/help/history/transcript-search 仍持有键盘焦点（按 focused overlayId 路由），这是可操作但不可见的明确降级，不是 overlay parity。 |
 | `supportsScrollRegion` | ✅ | ❌ | inline 从不发 DECSTBM，也不发 `scroll` op；滚屏只有 bottom-row LF 一种原语（`line-feed` patch op），且只在全高主屏区域上滚时把**已 settled** 的顶部行推进 scrollback。 |
 | `supportsInlineLiveRegion` | ❌ | ✅ | inline 专属：帧 metadata 携带 `inline: { liveStart, followEnd }` hint——`[0..liveStart)` 是 settled 前缀（只允许进 scrollback，绝不原地改），`[liveStart..height)` 是 live region（streaming 行 / unseen indicator / 整个 dock，原地重绘）。fullscreen 不使用该 hint。 |
 
@@ -49,8 +49,7 @@ bundle 里 `resetScrollRegion()`（`CSI r`）按 xterm 语义会把光标 home �
    不滚优于滚错（重复/拷贝）。
 2. **单帧爆增 gap**：一帧内增长超过视口高度时，超出部分直接重锚，中间行不进
    scrollback。
-3. **overlay 不可见但吃键**：inline 下 approval/question/plugin 对话框不渲染，
-   键盘仍被对话框持有（Enter/Esc 等照常生效），用户只有 dock warning 提示。
+3. **overlay 不可见但吃键**：inline 下 approval/question/plugin 以及 picker/help/history/transcript-search 均不渲染；键盘仍由当前 focused overlayId 对应 controller 持有（Enter/Esc/筛选照常生效）。每个新 overlay 有 dock warning + 诊断；这是明确 warning 降级，不伪装 fullscreen overlay parity。
 
 ## 机器块（verify --check inline Part 4 对账用）
 
@@ -82,7 +81,7 @@ bundle 里 `resetScrollRegion()`（`CSI r`）按 xterm 语义会把光标 home �
   "knownGaps": [
     "tall-stream gap: a streaming row taller than the transcript viewport pins liveStart to 0; its middle section reaches scrollback only after settling",
     "single-frame burst gap: growth beyond the viewport in one frame re-anchors without archiving the skipped middle lines",
-    "overlay invisible but keyboard-owning: dialogs are stripped from the inline frame yet still consume keys"
+    "overlay invisible but keyboard-owning: business and utility overlays are stripped from the inline frame, emit an explicit dock warning, and still consume keys via their focused controller"
   ]
 }
 ```
