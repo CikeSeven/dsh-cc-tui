@@ -1,49 +1,36 @@
-# tui-v2 渲染基线（v1 renderer，离线 baseline）
+# tui-v2 历史渲染基线（只读审阅材料）
 
-本目录收录旧渲染链路（React/Ink/Yoga）的冻结基线，供 v2 重写的离线对照与审阅。
-这些文件只入库供审阅，不被 `src/` 引用，也不进入 `package.json` 的 `files` 发布面。
+本目录保留 WP-01/WP-04 生成的历史报告，供迁移审阅。它们不是生产 fallback，也不是
+live test helper；可执行的离线 baseline 边界只有 `tools/tui-v2-baseline/`，不会被 `src/`
+或 package 发布面引用。
 
 ## 文件
 
-- `baseline.json` — `v1-chat-startup` 与 `v1-stream-200` 两个 fixture 的正式采样
-  （每 fixture 先 warm-up 100 个事件，正式样本 200 个，`formal: true`；p95 为样本排序
-  nearest-rank；记录 GC 前后 heapUsed 与 RSS）。
-- `clean-stop.json` — `v1-clean-stop` fixture：连续 3 次 spawn
-  `test/tui-v2/helpers/lifecycle-child.tsx`，每次渲染真实 `Chat` 后干净退出，
-  `results[0].details.exitCodes` 必须全为 0。
-- `compare-skeleton.json` — WP-04 中间审阅报告（非 WP-09 `V1CaptureRenderer` 契约）：
-  同一脚本化场景（welcome/user/流式 assistant/tool 卡）分别驱动 WP-01 harness
-  （mock channel + 真实 Ink `Chat` + xterm oracle）与 v2 walking skeleton
-  （fake channel → adapter → reducer → base-renderer → planner → writer →
-  `VirtualTerminal`），记录两侧帧数、写入字节、峰值 heapUsed 与最终 grid hash。
-  数值只作健全性对照，永不作为发布门槛。
+- `baseline.json` — 历史 `v1-chat-startup` 与 `v1-stream-200` 采样；保留原始身份字段，
+  不因 v2 benchmark 入口迁移而重写。
+- `clean-stop.json` — 历史 `v1-clean-stop` 报告；其中的旧 child/harness source 已退役，
+  但冻结 JSON 仍作为审阅材料保留。manifest/source hash 与 artifact/license 由
+  `test/tui-v2/baseline-compare.test.ts` 和 `verify:tui-v2` 独立校验；source 文件缺失只
+  记录为 `missingSourceFiles`，不会重建旧 source。
 
-## 基线运行环境
+## 当前 v2 benchmark
 
-见各 JSON 的身份字段（缺一不能与历史基线比较）：
-
-- Node：`v26.7.0`（本地基线机；CI gate 在 Node 22.19/24 上另跑 `test:tui-v2`/`verify:tui-v2`，
-  bench 数值只在同 runner 间比较，跨硬件不比较绝对值）
-- OS/内核：`linux x64`，详见 JSON 的 `kernel` 字段
-- profile：`headless-fake-tty-120x40`（FakeStdout/FakeStdin + `@xterm/headless` oracle，
-  不开真实 TTY；屏幕固定 120x40）
-- commit / lockfileSha256：见 JSON 的 `gitHead` / `lockfileSha256`
-
-## 再生命令
+`bench:tui-v2` 已迁移到 `createTuiV2App`/coordinator、v2 frame pipeline 和
+`VirtualTerminal`。它的默认输出写入临时目录，不覆盖本目录的历史 JSON：
 
 ```bash
-pnpm bench:tui-v2 -- --fixture v1-chat-startup,v1-stream-200 --seed 1 \
-  --output docs/tui-v2/baseline/baseline.json
-pnpm bench:tui-v2 -- --fixture v1-clean-stop --seed 1 \
-  --output docs/tui-v2/baseline/clean-stop.json
-node --expose-gc --import tsx/esm scripts/compare-tui-v2-skeleton.ts -- \
-  --output docs/tui-v2/baseline/compare-skeleton.json
+pnpm bench:tui-v2 -- --fixture v2-coordinator-startup,v2-stream-200,v2-clean-stop \
+  --iterations 200 --seed 1 --output "$RUNNER_TEMP/tui-v2/bench.json"
 ```
 
-`bench:tui-v2` 固定为 `node --expose-gc --import tsx/esm scripts/bench-tui-v2.ts`；
-绕过 package script 直跑也必须显式带 `--expose-gc`（脚本入口对 `global.gc` fail-fast）。
+固定入口为 `node --expose-gc --import tsx/esm scripts/bench-tui-v2.ts`；绕过 package
+script 直跑也必须显式带 `--expose-gc`，入口会对 `global.gc` fail-fast。每个 v2 fixture
+都使用 120x40 的注入 stream + `VirtualTerminal`，不会打开真实 TTY 或写入 process stdout
+作为终端。
 
-## 无法测量的指标
+## 历史环境
 
-测不出的指标在 JSON 中记为 `'unknown'`（例如 fixture 无法产生帧间隔序列时
-`details.frameIntervals` 为 `'unknown'`），不以编造数值或主观结论替代。
+历史 JSON 的 Node、OS、kernel、profile、commit 和 `lockfileSha256` 只用于解释它们的
+生成环境；bench 数值只在相同 runner 间比较，不能跨硬件比较绝对值。
+
+无法测量的指标在 JSON 中记为 `'unknown'`，不以编造数值或主观结论替代。

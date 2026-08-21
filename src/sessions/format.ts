@@ -8,7 +8,7 @@
  * @module @deepseek-harness-tui/dsh-tui/sessions/format
  */
 import { t } from '../i18n.js'
-import { stringWidth } from '../ink/stringWidth.js'
+import { textWidth as stringWidth } from '../utils/textWidth.js'
 import type { SessionKind, TitleSource } from '../dsh-adapter/sessions/index.js'
 import type { Theme } from '../theme.js'
 

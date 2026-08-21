@@ -10,7 +10,7 @@
  *   E. /plugins check：vendored fixtures 跑五态（compatible /
  *      waiting_authorization / unknown + grants 翻转 compatible）、schema 与
  *      语义失败路径、not-found、坏 JSON、输出零控制字符（不可信输入消毒）；
- *   F. 接线断言：LOCAL_COMMANDS、Chat.tsx 派发、channel 接口与实现、
+ *   F. 接线断言：LOCAL_COMMANDS、v2 command/adapter seam、channel 接口与实现、
  *      doctorInfo 新行引用的 i18n 键、cmd-desc-plugins、banner 双语。
  *
  * HOME/USERPROFILE 在导入 src 前隔离。
@@ -317,13 +317,17 @@ const overview = () => pluginsInfoLines('', { grants, host })
 {
   const commands = readFileSync(join(root, 'src/commands.ts'), 'utf8')
   check1("LOCAL_COMMANDS carries 'plugins'", /\{ name: 'plugins', description: /.test(commands))
-  const chat = readFileSync(join(root, 'src/screens/Chat.tsx'), 'utf8')
-  check1("Chat.tsx dispatches case 'plugins' to channel.pluginsInfo(rawInput)",
-    chat.includes("case 'plugins':") && chat.includes('channel.pluginsInfo(rawInput)'))
+  const v2Commands = readFileSync(join(root, 'src/tui-v2/controllers/commands.ts'), 'utf8')
+  check1('v2 command controller delegates external commands to the channel seam',
+    v2Commands.includes('options.channel.runExternalCommand(name, rawInput)'))
+  check1('v2 command controller keeps external-command failures in the notification/error seam',
+    v2Commands.includes("external-command-failed") && v2Commands.includes('options.notify'))
   const channel = readFileSync(join(root, 'src/dsh-adapter/channel.ts'), 'utf8')
   check1('channel interface declares pluginsInfo(args)', channel.includes('pluginsInfo(args: string): string[]'))
   check1('channel implementation soft-probes tuiPluginHost for pluginsInfo',
     /pluginsInfo\(args: string\) \{[\s\S]{0,300}ctx\.get\('tuiPluginHost'\)/.test(channel))
+  check1('v2 adapter seam exposes the plugin command bridge',
+    channel.includes('runExternalCommand(name, rawInput)') && channel.includes('executeRegistryCommand(name, rawInput)'))
   check1('doctorInfo adds the generation line', channel.includes("t('doctor-plugin-generation'"))
   check1('doctorInfo adds the registry self-check line', channel.includes("t('doctor-plugin-registry'"))
   const i18n = readFileSync(join(root, 'src/i18n.ts'), 'utf8')

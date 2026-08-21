@@ -171,10 +171,15 @@ test('v2-only rollback preflight: exact local tarball and manifest hash are enfo
   assert.ok(tampered.errors.some((error) => error.includes('sha256 does not match')))
 })
 
-test('runtime boundary: manifest and artifact provenance are independently locked', async () => {
+test('runtime boundary: missing retired sources do not weaken artifact provenance', async () => {
   const bundle = await loadAndVerifyBaselineBundle(manifestPath, repoRoot)
   assert.equal(bundle.manifest.captureBackend, 'frozen-artifact')
   assert.equal(bundle.artifact.sourceCommit, bundle.manifest.source.commit)
+  assert.equal(bundle.artifact.sourceTreeSha256, bundle.manifest.source.treeSha256)
+  assert.equal(bundle.artifact.license.spdx, bundle.manifest.source.license.spdx)
+  assert.equal(bundle.artifact.license.sha256, bundle.manifest.source.license.sha256)
   assert.deepEqual(bundle.sourceMismatches, [])
-  assert.equal(bundle.missingSourceFiles.length, 0)
+  const manifestSources = new Set(bundle.manifest.source.files.map((file) => file.path))
+  assert.ok(bundle.missingSourceFiles.includes('test/tui-v2/helpers/harness.tsx'))
+  assert.ok(bundle.missingSourceFiles.every((file) => manifestSources.has(file)))
 })

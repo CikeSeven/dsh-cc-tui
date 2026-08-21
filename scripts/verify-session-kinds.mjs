@@ -335,7 +335,7 @@ check('a zero width wraps to nothing rather than looping', wrapWidth('text', 0),
 // character count passes in English and overflows in Chinese, so the check is
 // exhaustive over both scripts and every width the row can be given.
 {
-  const stringWidth = (await import('../lib/types/ink/stringWidth.js')).stringWidth
+  const { textWidth } = await import('../lib/types/utils/textWidth.js')
   const LEFTS = ['', ' Resume session', ' 恢复会话', ' 恢复会话 Resume', '很长很长很长很长很长很长很长很长的标题']
   const RIGHTS = ['', '3 sessions', '8 个会话 · 29 个子运行已折叠 · 15 个空会话', 'mixed 混合 text 文本 here 这里']
   let worst = 'ok'
@@ -343,7 +343,7 @@ check('a zero width wraps to nothing rather than looping', wrapWidth('text', 0),
     for (const right of RIGHTS) {
       for (let columns = 0; columns <= 80; columns++) {
         const row = spreadRow(left, right, columns)
-        const total = stringWidth(row.left) + row.gap + stringWidth(row.right)
+        const total = textWidth(row.left) + row.gap + textWidth(row.right)
         if (total > columns && columns > 0) {
           worst = `overflow at columns=${columns}: ${total} for ${JSON.stringify([left, right])}`
         }

@@ -43,7 +43,7 @@ function makeStreams() {
 
 // Cursor-right moves (CSI nC) stand in for literal spaces in the
 // differential renderer; normalize them BEFORE stripping ANSI so alignment
-// checks see real columns. Same as scripts/smoke.tsx. Note the `>` in the
+// checks see real columns. Same as scripts/smoke-tui-v2.mjs. Note the `>` in the
 // CSI parameter class: the cursor-declaration probe replies (e.g. \x1b[>0q)
 // use private parameters.
 const toPlain = s =>

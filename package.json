@@ -88,7 +88,7 @@
     "dev:test": "node scripts/verify-dev-command.mjs && node scripts/dev-test.mjs --no-launch",
     "prompt:debug": "node scripts/read-prompt-debug.mjs",
     "tui": "node --import tsx/esm scripts/run.ts",
-    "smoke": "node --import tsx/esm scripts/smoke.tsx",
+    "smoke": "node --import tsx/esm scripts/smoke-tui-v2.mjs",
     "verify:build": "npm run verify:boundary && npm run verify:contract && npm run verify:manifest-deps && npm run verify:patch-surface && npm run verify:plugin-spec && npm run verify:plugin-grants && npm run verify:plugin-storage && npm run verify:plugin-messages && npm run verify:plugin-ledger && npm run verify:plugin-commands && npm run verify:plugin-negotiation && npm run verify:plugin-lifecycle && npm run verify:packaged-presets && npm run verify:minimal-preset-tools && npm run verify:liangshen-bootstrap",
     "verify:boundary": "node --import tsx/esm scripts/verify-adapter-boundary.ts",
     "verify:contract": "node --import tsx/esm scripts/verify-upstream-contract.ts",

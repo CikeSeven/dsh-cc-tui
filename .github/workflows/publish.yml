@@ -1,8 +1,6 @@
 name: Publish
 
-# 发版入口：推送 v* 标签（git tag v0.4.2 && git push origin v0.4.2）。
-# 首次发布继续使用仓库 Secrets 中的 NPM_TOKEN 鉴权；标签版本号必须与
-# package.json 的 version 一致。OIDC 仅用于生成 npm provenance。
+# 发版入口：推送 v* 标签。构建、package surface 和 v2 checks 必须先通过。
 on:
   push:
     tags: ['v*']
@@ -11,18 +9,15 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  DSH_TUI_LANG: zh
+
 jobs:
   npm:
     runs-on: ubuntu-latest
-    env:
-      # Gate scripts assert zh UI copy (same convention as CI).
-      DSH_TUI_LANG: zh
     steps:
       - uses: actions/checkout@v4
         with:
-          # vendor/dsh-std 是 @dsh-std/* workspace 依赖的来源（#308）：
-          # 不拉子模块时 prepare→compile 在空目录上构建出悬空链接，
-          # tsc 全线 TS2307。
           submodules: recursive
 
       - uses: pnpm/action-setup@v4
@@ -36,7 +31,6 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - run: pnpm install --frozen-lockfile
-
       - run: pnpm compile
 
       - name: Verify clean compile output
@@ -45,29 +39,33 @@ jobs:
           test -f lib/types/dsh-adapter/invariant.js
 
       - run: pnpm verify:build
-
       - run: pnpm verify:package
+      - run: pnpm smoke
+      - run: pnpm test:tui-v2
 
-      # 标签与 package.json version 不一致直接失败，防止发错版本。
+      - name: Verify v2 release checks
+        run: |
+          for check in baseline regression-matrix trace fork skeleton controllers fullscreen inline host-capabilities v2-only; do
+            pnpm verify:tui-v2 -- --check "$check" --output "$RUNNER_TEMP/tui-v2/$check.json"
+          done
+
+      - name: Run required domain gates
+        run: |
+          node scripts/verify-session-kinds.mjs
+          node scripts/verify-session-index.mjs
+          node scripts/verify-session-cwd.mjs
+          node scripts/verify-session-titles.mjs
+          node scripts/verify-model-route.mjs
+          node scripts/verify-external-editor.mjs
+
       - name: Check tag matches package version
         run: |
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p "require('./package.json').version")"
           [ "$tag" = "$pkg" ] || { echo "tag $tag != package.json $pkg"; exit 1; }
 
-      - run: node --import tsx/esm scripts/repro-askpanel.tsx
-
-      - run: node --import tsx/esm scripts/repro-toolcards.tsx
-
-      # /provider 向导与面板 hideCustomInput 回归（发版门禁同 CI）。
-      - run: node scripts/verify-provider-wizard.mjs
-      - run: node --import tsx/esm scripts/verify-askpanel-hide-custom-input.tsx
-
-      # 用 npm 而非 pnpm 发布：@dsh-std/* 是 bundledDependencies（workspace
-      # v0.0.0 包，#308），pnpm 在 isolated linker 下拒绝
-      # （ERR_PNPM_BUNDLED_DEPENDENCIES_WITHOUT_HOISTED），npm 原生跟随
-      # workspace 符号链接打包（dry-run 实证 7 包全入、无 vendor 杂物）。
-      # prepare（compile）在 CI 的 pnpm@11 下可正常运行。
+      # 用 npm 发布 workspace bundledDependencies；上面的 package gate 已经
+      # 在同一编译产物上验证入口和离线 baseline 排除规则。
       - run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
