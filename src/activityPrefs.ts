@@ -10,7 +10,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { isPresetName } from './components/activityFrames.js'
+import { isPresetName } from './utils/activityFrames.js'
 import { DATA_DIR } from './utils/paths.js'
 
 const PREFS_DIR = DATA_DIR

@@ -1,9 +1,9 @@
 /**
- * dsh-tui plugin entry. The TUI implementation lives in `./plugin.tsx` (its
- * render path is JSX); this module owns the plugin surface (`name`/`inject`/
- * `Config`/`apply`) at the canonical `src/index.ts` location and delegates
- * `apply` through a dynamic import so entry-scanning tooling and the Loader
- * resolve a plain `.ts` module.
+ * dsh-tui plugin entry. The production TUI implementation lives in
+ * `./plugin.ts`; this module owns the plugin surface (`name`/`inject`/`Config`/
+ * `apply`) at the canonical `src/index.ts` location and delegates `apply`
+ * through a dynamic import so entry-scanning tooling and the Loader resolve a
+ * plain `.ts` module.
  * @module @deepseek-harness-tui/dsh-tui
  */
 import type { Context } from '@deepseek-ai/cordis'
@@ -119,8 +119,8 @@ export const Config: Schema<Config> = Schema.object({
 })
 
 /**
- * Start the interactive TUI front door, delegating to the JSX implementation
- * in `./plugin.tsx` (see its module doc for the full contract).
+ * Start the interactive TUI front door, delegating to the v2 bootstrap
+ * implementation in `./plugin.ts` (see its module doc for the full contract).
  * @param ctx - the plugin context.
  * @param config - the validated dsh-tui configuration.
  * @returns a promise settling when the TUI teardown completes.

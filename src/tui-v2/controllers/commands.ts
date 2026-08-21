@@ -50,6 +50,10 @@ export interface CommandsControllerOptions {
   readonly overlays: CommandOverlayActions
   readonly submitToModel: (text: string) => void
   readonly steerToModel: (text: string) => void
+  /** Request coordinator-owned shutdown; never writes the terminal or exits. */
+  readonly onExitRequest: () => void
+  /** Production update funnel; when present it owns target checks and stop ordering. */
+  readonly onUpdateRequest?: () => void
   readonly notify: (text: string, options?: { color?: 'error' | 'warning' | 'success' }) => void
   readonly shell?: ShellController
   readonly preferences?: PreferenceController
@@ -143,6 +147,11 @@ export function createCommandsController(options: CommandsControllerOptions): Co
 
   const handleSlash = (text: string, parsed: { name: string; rawInput: string }): SubmittedTextOutcome => {
     const { name, rawInput } = parsed
+    if (name === 'exit' || name === 'quit' || name === 'q') {
+      counts.commands += 1
+      options.onExitRequest()
+      return 'command'
+    }
     if (name === 'theme' || name === 'language' || name === 'lang') {
       counts.commands += 1
       if (options.preferences === undefined) {
@@ -158,7 +167,9 @@ export function createCommandsController(options: CommandsControllerOptions): Co
     }
     if (name === 'update') {
       counts.commands += 1
-      if (options.update === undefined || options.updateRequest === undefined) {
+      if (options.onUpdateRequest !== undefined) {
+        options.onUpdateRequest()
+      } else if (options.update === undefined || options.updateRequest === undefined) {
         options.notify('Update is unavailable in this host', { color: 'warning' })
       } else {
         void options.update.request({ ...options.updateRequest, requireConfirmation: true })
@@ -275,7 +286,10 @@ export function createCommandsController(options: CommandsControllerOptions): Co
       if (options.channel.working) {
         const parsed = trimmed.startsWith('/') ? parseSlashName(trimmed) : undefined
         if (parsed !== undefined && (
-          parsed.name === 'help'
+          parsed.name === 'exit'
+          || parsed.name === 'quit'
+          || parsed.name === 'q'
+          || parsed.name === 'help'
           || parsed.name === 'history'
           || parsed.name === 'search'
           || parsed.name === 'settings'

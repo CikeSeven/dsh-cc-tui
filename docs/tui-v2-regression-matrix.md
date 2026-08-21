@@ -141,13 +141,13 @@
       "id": "REG-009",
       "severity": "P0",
       "owner": "tui-v2",
-      "status": "open",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
+      "status": "in-progress",
+      "updatedAt": "2026-08-21T13:00:00.000Z",
       "traceId": "ctrlc-clear-and-exit@v1",
-      "assertion": "cleanup: Ctrl+C 清空非空输入、空输入二次确认后才退出，进程可干净退出",
-      "ciCommand": "node --import tsx/esm scripts/repro-ctrlc.tsx",
+      "assertion": "v2 input/command controllers cover Ctrl+C clear/arm/exit, Ctrl+D two-press exit, /exit|/quit|/q coordinator callback, and stop-reason forwarding; a real child-process terminal exit drill remains",
+      "ciCommand": "node --import tsx/esm scripts/repro-ctrlc.tsx；node scripts/test-tui-v2.mjs -- --test-name-pattern 'controller commands|controller input|production wiring'",
       "blockDefault": true,
-      "deleteCondition": "v2 等价 fixture/trace（ctrlc-clear-and-exit@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
+      "deleteCondition": "保留旧 UI repro 到 WP-09c/阶段3；v2 controller/static coverage 已落地，但需生产 PTY/child-process stop drill 后才转 verified",
       "disposition": "rewrite-v2"
     },
     {
@@ -1435,6 +1435,32 @@
       "ciCommand": "node --test --import tsx/esm test/tui-v2/terminal-capabilities.test.ts test/tui-v2/mouse-controller.test.ts test/tui-v2/kitty-keyboard.test.ts test/tui-v2/osc52-capability.test.ts && pnpm verify:tui-v2 -- --check host-capabilities",
       "blockDefault": false,
       "deleteCondition": "WP-09 retains the v2 terminal capability contracts and host-capabilities check; delete only with the terminal layer",
+      "disposition": "rewrite-v2"
+    },
+    {
+      "id": "REG-111",
+      "severity": "P0",
+      "owner": "tui-v2",
+      "status": "in-progress",
+      "updatedAt": "2026-08-21T13:00:00.000Z",
+      "traceId": "production-bootstrap@v1",
+      "assertion": "production plugin has one v2 bootstrap, structural stores/status/shortcut/scene seams, profile resolver, coordinator-owned stop reasons and no React/Chat/Ink imports",
+      "ciCommand": "node --test --import tsx/esm test/tui-v2/production-wiring.test.ts test/tui-v2/production-host-seams.test.ts test/tui-v2/production-profile.test.ts && pnpm verify:tui-v2 -- --check v2-only",
+      "blockDefault": true,
+      "deleteCondition": "保留至 WP-09c child-process/PTY drill；阶段1静态与 fake-stream seam 已通过但真实 launcher 环境仍需验证",
+      "disposition": "rewrite-v2"
+    },
+    {
+      "id": "REG-112",
+      "severity": "P1",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-21T13:00:00.000Z",
+      "traceId": "neutral-helpers@v1",
+      "assertion": "activity frames and SpinnerMode preserve complete legacy presets through neutral utils; sanitize/text width and external-editor argv/cmd helpers have no Ink runtime dependency",
+      "ciCommand": "node --test --import tsx/esm test/tui-v2/neutral-helpers.test.ts test/tui-v2/controllers-surfaces.test.ts test/tui-v2/production-wiring.test.ts && node scripts/verify-external-editor.mjs",
+      "blockDefault": false,
+      "deleteCondition": "保留 neutral helper tests；旧 compatibility re-export 可在阶段3删除",
       "disposition": "rewrite-v2"
     },
     {

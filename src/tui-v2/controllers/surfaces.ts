@@ -2,14 +2,10 @@
 import type { Clock, RandomSource } from '../model/schema.js'
 import type { ActivityView, UiSurfaceView } from '../model/surfaces.js'
 import type { ChannelSurfaceAdapter } from '../../dsh-adapter/ui-surfaces.js'
+import { FRAME_PRESETS, isPresetName } from '../../utils/activityFrames.js'
 
-const PRESETS: Readonly<Record<string, { readonly frames: readonly string[]; readonly intervalMs: number }>> = {
-  claude: { frames: ['·', '✢', '*', '✶', '✻', '✽', '✻', '✶', '*', '✢'], intervalMs: 150 },
-  moon: { frames: ['◐', '◓', '◑', '◒'], intervalMs: 240 },
-  dots: { frames: ['⣾', '⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽'], intervalMs: 140 },
-  arrow: { frames: ['←', '↖', '↑', '↗', '→', '↘', '↓', '↙'], intervalMs: 160 },
-  random: { frames: ['·'], intervalMs: 150 },
-}
+/** Shared neutral preset table: v2 accepts every preset the production Channel persists. */
+const PRESETS = FRAME_PRESETS
 
 export interface ActivityControllerOptions {
   readonly clock: Clock
@@ -34,12 +30,23 @@ export function createActivityController(options: ActivityControllerOptions): Ac
   let timer: unknown = null
   let running = false
   let frameIndex = 0
+  let requestedPresetName = 'claude'
   let presetName = 'claude'
   let current: UiSurfaceView | null = null
   let ticks = 0
   let stalls = 0
   let invalidPresets = 0
 
+  const pickRandomPreset = (): string => {
+    const names = Object.keys(PRESETS)
+    const random = options.random?.next() ?? 0
+    return names[Math.min(names.length - 1, Math.max(0, Math.floor(random * names.length)))] ?? 'claude'
+  }
+  const selectPreset = (name: string): void => {
+    requestedPresetName = name
+    presetName = name === 'random' ? pickRandomPreset() : name
+    frameIndex = 0
+  }
   const preset = (): { readonly frames: readonly string[]; readonly intervalMs: number } => PRESETS[presetName] ?? PRESETS.claude!
   const nextDelay = (): number => Math.max(16, preset().intervalMs)
   const clear = (): void => {
@@ -61,7 +68,14 @@ export function createActivityController(options: ActivityControllerOptions): Ac
     update(surface) {
       current = surface
       const activity = surface.activity
-      if (activity !== null && activity.preset !== '' && PRESETS[activity.preset] !== undefined) presetName = activity.preset
+      if (
+        activity !== null
+        && activity.preset !== ''
+        && isPresetName(activity.preset)
+        && activity.preset !== requestedPresetName
+      ) {
+        selectPreset(activity.preset)
+      }
       if (activity === null || activity.phase === 'idle' || !surface.activityEnabled) {
         running = false
         clear()
@@ -89,18 +103,12 @@ export function createActivityController(options: ActivityControllerOptions): Ac
     },
     setPreset(name) {
       const normalized = name.trim().toLowerCase()
-      if (normalized === 'random') {
-        const names = Object.keys(PRESETS).filter((item) => item !== 'random')
-        const random = options.random?.next() ?? 0
-        presetName = names[Math.min(names.length - 1, Math.max(0, Math.floor(random * names.length)))] ?? 'claude'
-      } else if (PRESETS[normalized] !== undefined) {
-        presetName = normalized
-      } else {
+      if (!isPresetName(normalized)) {
         invalidPresets += 1
         options.onDiagnostic?.('activity/invalid-preset', { name: normalized })
         return false
       }
-      frameIndex = 0
+      selectPreset(normalized)
       schedule()
       options.onFrame?.()
       return true

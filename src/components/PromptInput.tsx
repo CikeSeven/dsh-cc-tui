@@ -6,7 +6,6 @@ import { Box, Text, useInput, useTerminalSize } from '../ui.js'
 import { useDeclaredCursor } from '../ink/hooks/use-declared-cursor.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import { formatClipboardInsert, readClipboard } from '../utils/clipboard.js'
-import { editInExternalEditor } from '../utils/externalEditor.js'
 import type { Channel } from '../dsh-adapter/channel.js'
 import { parseCommandName } from '../commands.js'
 import { appendHistory } from '../history.js'
@@ -486,37 +485,13 @@ export function PromptInput({
       return
     }
 
-    // Ctrl+X / Cmd+X: edit the current draft in $VISUAL/$EDITOR (issue #123,
-    // readline's edit-and-execute-command). The draft is written to a temp
-    // file, the terminal is handed to the editor (Ink's alt-screen handoff),
-    // and the saved text replaces the input when it differs. The util maps
-    // every failure to an outcome, but the catch/finally here is the hard
-    // guarantee: a rejected promise must never kill the process, and the
-    // busy flag must always clear or Ctrl+X stays locked forever.
+    // The legacy React prompt no longer owns terminal handoff. Production v2
+    // routes Ctrl+X through the coordinator's ScreenTakeover/editor runner;
+    // keeping this branch consumed prevents the old tree from issuing a second
+    // child process or writing terminal bytes during the staged migration.
     if (isMod(key) && input === 'x') {
-      editorBusyRef.current = true
-      void (async () => {
-        try {
-          const outcome = await editInExternalEditor(value)
-          if (outcome.kind === 'edited') {
-            setInput(outcome.text)
-            setSelectedCommand(0)
-            setFileSelected(0)
-          } else if (outcome.kind === 'unavailable') {
-            channel.notify(t('input-editor-unavailable'), { color: 'warning' })
-          } else if (outcome.kind === 'failed') {
-            channel.notify(t('input-editor-failed', { name: outcome.message }), {
-              color: 'warning',
-            })
-          }
-        } catch {
-          channel.notify(t('input-editor-failed', { name: 'unknown' }), {
-            color: 'warning',
-          })
-        } finally {
-          editorBusyRef.current = false
-        }
-      })()
+      editorBusyRef.current = false
+      channel.notify(t('input-editor-unavailable'), { color: 'warning' })
       return
     }
 

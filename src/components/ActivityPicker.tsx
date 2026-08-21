@@ -4,7 +4,7 @@ import { Box, Text } from '../ui.js'
 import { Pane } from './design-system/Pane.js'
 import { Select } from './Select.js'
 import { HintLine } from './design-system/HintLine.js'
-import { FRAME_PRESETS, PRESET_NAMES } from './activityFrames.js'
+import { FRAME_PRESETS, PRESET_NAMES } from '../utils/activityFrames.js'
 
 /**
  * Working-activity indicator picker in the CC ModelPicker style (ported

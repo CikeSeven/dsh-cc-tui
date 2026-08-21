@@ -10,19 +10,12 @@
  * - cross-spawn 引用协议：cmdEscapeCommand/cmdEscapeArgument 的
  *   qntm.org/cmd 转义规则、node_modules/.bin shim 双转义、
  *   buildCmdExeSpawn 的 comspec + /d /s /c + windowsVerbatimArguments
- * - editInExternalEditor 端到端（node 假编辑器进程）：
- *   追加写入 → edited；未改动 → unchanged；非零退出（:cq）→ unchanged；
- *   编辑器不存在 → failed；尾部换行边界（草稿自带 \n 不得误判、编辑器
- *   终止换行剥离、Shift+Enter 空行保留）；CRLF 三边界（内部/单个尾部/
- *   多个尾部）无操作保存不得算编辑
- * - 异常安全（never-throws 契约）：EDITOR='""' 同步 spawn 失败 → failed
- *   且不泄漏临时目录；TMPDIR 不可写 → failed；EDITOR=/bin/rm 删稿 →
- *   unchanged；假 Ink 实例下 enter 抛错 → failed 且 exit 仍被调用、
- *   exit 抛错 → outcome 正常返回不被覆盖
+ * - v2 生产路径的 child execution/takeover 不在此旧 UI 脚本中重复；它由
+ *   `EditorRunner` + `ScreenTakeover` controller 测试覆盖。旧 Ink handoff
+ *   段落保留在文件中但在阶段1明确 skip，待 WP-09c/阶段3 删除旧树时一并退役。
  *
- * CI 无 TTY：假 Ink 实例直接注册进 instances map 覆盖移交路径；真编辑器
- * 一律是 node 跑的脚本文件，EDITOR 串里的路径加双引号（Windows 默认
- * Node 安装路径含空格，拆分时不能断）。
+ * CI 无 TTY：纯 argv/path/cmd.exe helper 检查仍可直接运行；旧 UI handoff
+ *   不再注册 Ink instance，也不向 stdout 写终端控制序列。
  *
  * Run with plain node against the compiled lib: `node scripts/verify-external-editor.mjs`
  */
@@ -31,13 +24,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   buildCmdExeSpawn,
-  editInExternalEditor,
   resolveEditorCommand,
   resolveWindowsShim,
   splitEditorCommand,
 } from '../lib/types/utils/externalEditor.js'
 import { cmdEscapeArgument, cmdEscapeCommand } from '../lib/types/utils/shellQuote.js'
-import instances from '../lib/types/ink/instances.js'
 
 let failed = 0
 function check(name, ok, extra = '') {
@@ -150,6 +141,13 @@ const shimEnv = { PATH: shimDir, PATHEXT: '.EXE;.CMD' }
   const missing = resolveWindowsShim('not-on-path', shimEnv)
   check('shim: 解析不到回退裸命令', !missing.viaCmd && missing.command === 'not-on-path')
 }
+
+// The old end-to-end editor handoff belongs to the legacy Ink tree. Stage 1
+// deliberately keeps this script, but v2 execution is owned by the injected
+// EditorRunner/ScreenTakeover capability and is covered there instead.
+rmSync(scratch, { recursive: true, force: true })
+console.log('SKIP: legacy Ink editor handoff is deferred to WP-09c/阶段3')
+process.exit(failed === 0 ? 0 : 1)
 
 // ── editInExternalEditor 端到端（假编辑器）─────────────────────────────
 // 假编辑器：node 跑一段脚本文件，按 mode 对目标文件追加/不动/补终止换行/

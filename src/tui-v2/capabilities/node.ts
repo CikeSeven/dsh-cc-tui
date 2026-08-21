@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 
 import { readClipboard } from '../../utils/clipboard.js'
+import { buildCmdExeSpawn, resolveWindowsShim } from '../../utils/externalEditor.js'
 import { updateTuiAndRestart } from '../../update.js'
 import {
   safeEnvironment,
@@ -117,12 +118,44 @@ export function createNodeClipboardCapability(): ClipboardCapability {
 function runChild(request: EditorRequest, signal: AbortSignal): Promise<EditorResult> {
   return new Promise((resolve) => {
     let settled = false
-    const child = spawn(request.argv[0] as string, [...request.argv.slice(1), request.filePath], {
-      cwd: request.cwd,
-      stdio: 'inherit',
-      env: safeEnvironment(),
-      windowsHide: false,
-    })
+    let child: ReturnType<typeof spawn>
+    try {
+      const environment = safeEnvironment()
+      if (process.platform === 'win32') {
+        const resolved = resolveWindowsShim(request.argv[0] as string, environment)
+        if (resolved.viaCmd) {
+          const command = buildCmdExeSpawn(
+            resolved.command,
+            [...request.argv.slice(1), request.filePath],
+            environment,
+          )
+          child = spawn(command.file, command.args, {
+            cwd: request.cwd,
+            stdio: 'inherit',
+            env: environment,
+            windowsHide: false,
+            windowsVerbatimArguments: command.verbatim,
+          })
+        } else {
+          child = spawn(resolved.command, [...request.argv.slice(1), request.filePath], {
+            cwd: request.cwd,
+            stdio: 'inherit',
+            env: environment,
+            windowsHide: false,
+          })
+        }
+      } else {
+        child = spawn(request.argv[0] as string, [...request.argv.slice(1), request.filePath], {
+          cwd: request.cwd,
+          stdio: 'inherit',
+          env: environment,
+          windowsHide: false,
+        })
+      }
+    } catch {
+      resolve({ phase: signal.aborted ? 'cancelled' : 'failed', exitCode: null, signal: null, errorCode: 'editor-spawn-error' })
+      return
+    }
     const finish = (result: EditorResult): void => {
       if (settled) return
       settled = true

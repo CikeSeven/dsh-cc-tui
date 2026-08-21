@@ -60,6 +60,7 @@ export function createStatusLine(
         if (value === null) continue
         leftParts.push(`${key} ${String(value)}`)
       }
+      leftParts.push(...(view.contributions ?? []))
       const rightParts: string[] = []
       if (view.branch !== null && view.branch !== '') rightParts.push(view.branch)
       if (view.cwd !== null && view.cwd !== '') rightParts.push(basename(view.cwd))

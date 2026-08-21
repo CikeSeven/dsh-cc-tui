@@ -2,14 +2,15 @@
  * Input controller (WP-04, deepened WP-05).
  *
  * Routes decoded `TerminalInputEvent`s to the prompt editor, the session
- * command surface, and the app-exit path. Owns the Ctrl+C contract:
+ * command surface, and the app-exit path. Owns the Ctrl+C/Ctrl+D contract:
  *
- *   assistant working      → journal `app interrupt` + commands.cancel() +
+ *   Ctrl+C/D + working     → journal `app interrupt` + commands.cancel() +
  *                            onInterrupt() (coordinator hooks streaming cancel)
- *   editor text non-empty  → clear editor + journal `editor cancel`
- *   armed (within window)  → journal `app exit` + onExitRequest()
+ *   Ctrl+C + non-empty     → clear editor + journal `editor cancel`
+ *   Ctrl+C/D armed         → journal `app exit` + onExitRequest()
  *   otherwise              → arm for ctrlCArmMs + onExitArm() (coordinator
  *                            hooks the "press again to exit" notification)
+ *   Ctrl+D never clears a draft; while idle it always uses the shared exit arm.
  *
  * WP-05 additions:
  *   - Escape while working  → journal `app interrupt` + (commands.interrupt ??
@@ -84,15 +85,15 @@ export interface InputControllerOptions {
   readonly commands: InputCommandSink;
   /** True while the assistant is working (Ctrl+C cancels the run). */
   readonly isWorking: () => boolean;
-  /** Called after the exit journal event when the armed second Ctrl+C lands. */
+  /** Called after the exit journal event when an armed exit chord lands. */
   readonly onExitRequest: () => void;
   /**
-   * Working-state interrupt hook (WP-05): fired for Ctrl+C AND Escape while
+   * Working-state interrupt hook (WP-05): fired for Ctrl+C and Escape while
    * working; the coordinator hooks streaming.cancelStream(streamingRowId).
    */
   readonly onInterrupt?: () => void;
-  /** Armed-Ctrl+C hook (WP-05): the coordinator surfaces the notify. */
-  readonly onExitArm?: () => void;
+  /** Exit-arm hook: the coordinator surfaces the second-press notification. */
+  readonly onExitArm?: (key: 'ctrl+c' | 'ctrl+d') => void;
   /**
    * Ctrl+L hook (WP-06b): the coordinator forces a full redraw
    * (fullRedrawReason 'damage'). The `app redraw` command is journaled first.
@@ -106,7 +107,7 @@ export interface InputControllerOptions {
   readonly onPasteRequest?: () => void;
   /** Ctrl+X opens the injected external editor. */
   readonly onExternalEditorRequest?: () => void;
-  /** Arming window for the double-Ctrl+C exit. Default 2000ms. */
+  /** Arming window for the double Ctrl+C/Ctrl+D exit. Default 2000ms. */
   readonly ctrlCArmMs?: number;
 }
 
@@ -176,22 +177,19 @@ export function createInputController(options: InputControllerOptions): InputCon
     armedAt = null;
   };
 
-  const handleCtrlC = (): void => {
-    if (options.isWorking()) {
-      counts.ctrlCancellations += 1;
-      disarm();
-      journal({ type: 'app', command: 'interrupt' });
-      options.commands.cancel();
-      options.onInterrupt?.();
-      return;
-    }
-    if (options.editor.getText().length > 0) {
-      counts.ctrlCClears += 1;
-      disarm();
-      options.editor.clearText();
-      journal({ type: 'editor', command: 'cancel' });
-      return;
-    }
+  const interruptWorking = (): boolean => {
+    if (!options.isWorking()) return false;
+    // Kept under the historical counter name for diagnostics compatibility;
+    // both legacy exit chords cancel a working turn before they may exit.
+    counts.ctrlCancellations += 1;
+    disarm();
+    journal({ type: 'app', command: 'interrupt' });
+    options.commands.cancel();
+    options.onInterrupt?.();
+    return true;
+  };
+
+  const requestArmedExit = (key: 'ctrl+c' | 'ctrl+d'): void => {
     const now = options.clock.now();
     if (armedAt !== null && now - armedAt <= armMs) {
       counts.exitRequests += 1;
@@ -202,7 +200,24 @@ export function createInputController(options: InputControllerOptions): InputCon
     }
     counts.ctrlCArms += 1;
     armedAt = now;
-    options.onExitArm?.();
+    options.onExitArm?.(key);
+  };
+
+  const handleCtrlC = (): void => {
+    if (interruptWorking()) return;
+    if (options.editor.getText().length > 0) {
+      counts.ctrlCClears += 1;
+      disarm();
+      options.editor.clearText();
+      journal({ type: 'editor', command: 'cancel' });
+      return;
+    }
+    requestArmedExit('ctrl+c');
+  };
+
+  const handleCtrlD = (): void => {
+    if (interruptWorking()) return;
+    requestArmedExit('ctrl+d');
   };
 
   /** Escape while working: interrupt (delivering pending texts) or cancel. */
@@ -224,8 +239,12 @@ export function createInputController(options: InputControllerOptions): InputCon
     if (event.kind === 'key') {
       counts.keyEvents += 1;
       const payload = event.payload as KeyPayload;
-      if (payload.key === 'ctrl+c') {
+      if (payload.eventType !== 'release' && payload.key === 'ctrl+c') {
         handleCtrlC();
+        return;
+      }
+      if (payload.eventType !== 'release' && payload.key === 'ctrl+d') {
+        handleCtrlD();
         return;
       }
       if (payload.key === 'ctrl+l') {

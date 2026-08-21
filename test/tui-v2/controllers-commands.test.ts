@@ -38,6 +38,7 @@ interface CommandsRig {
   rig: ControllerRig;
   overlays: OverlayHarness;
   resumed: string[];
+  exitRequests: { count: number };
 }
 
 function commandsFor(rig: ControllerRig): CommandsRig {
@@ -68,6 +69,7 @@ function commandsFor(rig: ControllerRig): CommandsRig {
     searchQueries: [],
   };
   const resumed: string[] = [];
+  const exitRequests = { count: 0 };
   const commands = createCommandsController({
     dispatch: (event) => rig.streaming.ingest(event),
     nextMeta: (sourceSeq) => rig.meta.next('input', sourceSeq),
@@ -124,15 +126,34 @@ function commandsFor(rig: ControllerRig): CommandsRig {
     },
     submitToModel: (text) => rig.adapter.commands.submit(text),
     steerToModel: (text) => rig.adapter.commands.steer(text),
+    onExitRequest: () => { exitRequests.count += 1; },
     notify: (text, options) => rig.channel.notify(text, options),
   });
-  return { commands, rig, overlays, resumed };
+  return { commands, rig, overlays, resumed, exitRequests };
 }
 
 function replayEquivalence(rig: ControllerRig): void {
   const replayed = replayTrace(rig.applied, createReducer({ clock: new ManualClock() }), rig.initialState);
   assert.equal(serializeCanonicalUiState(replayed), serializeCanonicalUiState(rig.state()));
 }
+
+test('controller commands: /exit, /quit and /q use the coordinator-owned exit callback', () => {
+  const { commands, rig, exitRequests } = commandsFor(createControllerRig({ height: 5 }));
+  for (const command of ['/exit', '/quit', '/q']) {
+    assert.equal(commands.handleSubmittedText(command), 'command');
+  }
+  assert.equal(exitRequests.count, 3);
+  assert.equal(rig.channel.submitted.length, 0);
+
+  rig.channel.setWorking(true);
+  assert.equal(commands.handleSubmittedText('/exit now'), 'command', 'exit is not steered while working');
+  assert.equal(exitRequests.count, 4);
+  rig.channel.setWorking(false);
+
+  // Existing text routing remains unchanged.
+  assert.equal(commands.handleSubmittedText('hello model'), 'submitted');
+  assert.deepEqual(rig.channel.submitted, ['hello model']);
+});
 
 test('controller commands: empty / plain text / unknown slash fall through to the model', () => {
   const { commands, rig } = commandsFor(createControllerRig({ height: 5 }));

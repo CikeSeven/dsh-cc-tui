@@ -131,8 +131,8 @@ import { createPluginRowComponent } from '../scenes/row-component.js';
 import { createPluginUIRuntime, type PluginUIRuntime, type PluginUIRuntimeDiagnostics } from '../scenes/runtime.js';
 import { createTrajectoryController, type TrajectoryController } from '../controllers/trajectory.js';
 import { createTrajectorySceneDescriptor } from '../scenes/trajectory.js';
-import { sessionCwdMatches, type Channel } from '../../dsh-adapter/channel.js';
-import { createLocalWorkspaceRuntime } from '../../dsh-adapter/workspaces.js';
+import { createLocalWorkspaceFallback } from './local-workspace.js';
+import { sessionCwdMatches } from '../../utils/sessionCwd.js';
 import {
   createChannelUiAdapter,
   createEventMetaFactory,
@@ -211,40 +211,119 @@ export interface CoordinatorDiagnostic {
   readonly details?: Record<string, unknown>;
 }
 
+/** Cordis-free structural surface for keyed status contributions. */
+export interface CoordinatorStatusEntry {
+  readonly key: string;
+  readonly text: string;
+}
+
+export interface CoordinatorStatusHost {
+  readonly getSnapshot: () => readonly CoordinatorStatusEntry[];
+  readonly subscribe: (listener: () => void) => () => void;
+}
+
+/** Structural shortcut key compatible with the production extension host. */
+export interface CoordinatorShortcutKey {
+  readonly ctrl?: boolean;
+  readonly meta?: boolean;
+  readonly super?: boolean;
+  readonly shift?: boolean;
+  readonly return?: boolean;
+  readonly escape?: boolean;
+  readonly tab?: boolean;
+  readonly backspace?: boolean;
+  readonly delete?: boolean;
+  readonly upArrow?: boolean;
+  readonly downArrow?: boolean;
+  readonly leftArrow?: boolean;
+  readonly rightArrow?: boolean;
+  readonly home?: boolean;
+  readonly end?: boolean;
+  readonly pageUp?: boolean;
+  readonly pageDown?: boolean;
+}
+
+export interface CoordinatorShortcutHost {
+  readonly dispatch: (input: string, key: CoordinatorShortcutKey) => boolean;
+  readonly setErrorHandler: (handler: (combo: string, error: unknown) => void) => () => void;
+}
+
+/**
+ * Convert the tokenizer's canonical KeyId into the narrow extension shape.
+ * The base printable character is recovered from the KeyId for legacy Ctrl/Alt
+ * sequences whose decoded text is null.
+ */
+export function projectShortcutKey(payload: KeyPayload): {
+  readonly input: string;
+  readonly key: CoordinatorShortcutKey;
+} | null {
+  if (payload.key === null) return null;
+  const parts = payload.key.split('+');
+  const base = parts.at(-1) ?? '';
+  const modifiers = new Set(parts.slice(0, -1));
+  const key: CoordinatorShortcutKey = {
+    ...(modifiers.has('ctrl') ? { ctrl: true } : {}),
+    ...(modifiers.has('alt') ? { meta: true } : {}),
+    ...(modifiers.has('super') ? { super: true } : {}),
+    ...(modifiers.has('shift') ? { shift: true } : {}),
+  };
+  const named: Readonly<Record<string, keyof CoordinatorShortcutKey>> = {
+    enter: 'return',
+    return: 'return',
+    escape: 'escape',
+    esc: 'escape',
+    tab: 'tab',
+    backspace: 'backspace',
+    delete: 'delete',
+    up: 'upArrow',
+    down: 'downArrow',
+    left: 'leftArrow',
+    right: 'rightArrow',
+    home: 'home',
+    end: 'end',
+    pageUp: 'pageUp',
+    pageDown: 'pageDown',
+  };
+  const namedKey = named[base] ?? named[base.toLowerCase()];
+  if (namedKey !== undefined) {
+    return { input: '', key: { ...key, [namedKey]: true } };
+  }
+  const input = base === 'space' ? ' ' : payload.text ?? ([...base].length === 1 ? base : '');
+  return input === '' ? null : { input, key };
+}
+
 /**
  * Channel surface the coordinator needs: the adapter's narrow UI channel plus
  * the WP-05 command/dock/notify seams (still a structural subset of Channel).
  */
-export type CoordinatorChannel = ChannelUiChannel &
-  CommandChannel &
-  Pick<
-    Channel,
-    | 'promptRewind'
-    | 'interruptAndDeliver'
-    | 'notify'
-    | 'pushLocal'
-    | 'agentId'
-    | 'listSessions'
-    | 'previewSession'
-    | 'deleteSession'
-    | 'renameSessionTo'
-    | 'listWorkspaces'
-    | 'resolveWorkspace'
-    | 'switchWorkspace'
-    | 'renameWorkspace'
-    | 'workspaceCommands'
-    | 'runWorkspaceCommand'
-    | 'listModels'
-    | 'switchModel'
-    | 'agentPreset'
-    | 'listPresets'
-    | 'switchPreset'
-    | 'listEfforts'
-    | 'setEffort'
-    | 'settingsHost'
-    | 'settingsSections'
-    | 'subscribeSettingsSections'
-  >;
+type CoordinatorHostMethod = (...args: any[]) => any
+
+/** Structural host surface: the coordinator never imports dsh-adapter/Cordis. */
+export type CoordinatorChannel = ChannelUiChannel & CommandChannel & {
+  readonly promptRewind: CoordinatorHostMethod
+  readonly interruptAndDeliver: CoordinatorHostMethod
+  readonly pushLocal: CoordinatorHostMethod
+  readonly listSessions: CoordinatorHostMethod
+  readonly previewSession: CoordinatorHostMethod
+  readonly deleteSession: CoordinatorHostMethod
+  readonly renameSessionTo: CoordinatorHostMethod
+  readonly listWorkspaces: CoordinatorHostMethod
+  readonly resolveWorkspace: CoordinatorHostMethod
+  readonly switchWorkspace: CoordinatorHostMethod
+  readonly renameWorkspace: CoordinatorHostMethod
+  readonly workspaceCommands: CoordinatorHostMethod
+  readonly runWorkspaceCommand: CoordinatorHostMethod
+  readonly listModels: CoordinatorHostMethod
+  readonly switchModel: CoordinatorHostMethod
+  readonly listPresets: CoordinatorHostMethod
+  readonly switchPreset: CoordinatorHostMethod
+  readonly listEfforts: CoordinatorHostMethod
+  readonly setEffort: CoordinatorHostMethod
+  readonly settingsHost: CoordinatorHostMethod
+  readonly settingsSections: CoordinatorHostMethod
+  readonly subscribeSettingsSections: CoordinatorHostMethod
+  readonly agentPreset: string | undefined
+}
 
 export interface TuiV2CoordinatorOptions {
   readonly channel: CoordinatorChannel;
@@ -266,6 +345,10 @@ export interface TuiV2CoordinatorOptions {
   readonly durableSessionId?: string;
   readonly uiSessionGeneration?: string;
   readonly processHost?: ProcessSignalHost;
+  /** Production funnel for user exit requests. */
+  readonly onExitRequest?: () => void;
+  /** Production funnel for signal/stdin/error stop requests. */
+  readonly onStopRequest?: (reason: LifecycleStopReason) => void;
   /** Default true; tests disable to keep synthetic signal hosts inert. */
   readonly attachProcessHandlers?: boolean;
   readonly streamWindowMs?: number;
@@ -277,6 +360,9 @@ export interface TuiV2CoordinatorOptions {
   readonly approvalStore?: ApprovalStoreLike;
   readonly questionStore?: QuestionStoreLike;
   readonly pluginDialogStore?: PluginDialogStoreLike;
+  /** Cordis-free production extension hosts; structural to keep this module adapter-neutral. */
+  readonly statusHost?: CoordinatorStatusHost;
+  readonly shortcutHost?: CoordinatorShortcutHost;
   /**
    * WP-08a plugin UI runtime (scenes + row renderers, plan §7.4). When
    * present, the coordinator attaches it at start (it then owns scene
@@ -291,6 +377,10 @@ export interface TuiV2CoordinatorOptions {
   readonly clipboardCapability?: ClipboardCapability;
   readonly editorRunner?: EditorRunner;
   readonly restartRunner?: RestartRunner;
+  /** DSH launcher profile used by the production update funnel. */
+  readonly updateProfile?: string;
+  /** Production update target check/stop funnel; bypasses the generic runner. */
+  readonly onUpdateRequest?: () => void;
   readonly languageCapability?: LanguageCapability;
   readonly preferencePersistence?: PreferencePersistence;
   readonly actionTrace?: ExternalActionTraceSink;
@@ -609,6 +699,9 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
 
   let phase: CoordinatorPhase = 'created';
   let stopPromise: Promise<void> | null = null;
+  let statusContributions: readonly string[] = [];
+  let unsubscribeStatusHost: (() => void) | null = null;
+  let clearShortcutErrorHandler: (() => void) | null = null;
   let pendingFullRedraw = true;
   let fullRedrawReason: 'initial' | 'resize' | 'resume' | 'damage' | 'unknown-mode' | 'cleanup' = 'initial';
   let previousFrame: Frame | null = null;
@@ -618,6 +711,10 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   const overlayUnsupportedNotified = new Set<string>();
 
   const getScheduledState = (): ScheduledFrame => ({ stateRevision });
+  const requestStop = (reason: LifecycleStopReason): void => {
+    if (options.onStopRequest !== undefined) options.onStopRequest(reason)
+    else void stop(reason)
+  }
 
   const applyEvent = (event: AppEvent): void => {
     let validated: AppEvent;
@@ -774,9 +871,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         pendingFullRedraw = true;
         fullRedrawReason = 'resume';
       },
-      requestStop: (reason) => {
-        void stop(reason);
-      },
+      requestStop,
     },
   });
 
@@ -794,6 +889,63 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     const severity = notifyOptions?.color ?? 'info'
     notificationController.enqueue({ text, severity, timeoutMs: 4000 })
     if (phase === 'active') scheduler.requestRender('notify', getScheduledState)
+  }
+  const refreshStatusContributions = (): void => {
+    if (options.statusHost === undefined) return
+    try {
+      statusContributions = options.statusHost.getSnapshot()
+        .filter((entry) => typeof entry.text === 'string' && entry.text !== '')
+        .map((entry) => entry.text)
+      if (phase === 'active') scheduler.requestRender('notify', getScheduledState)
+    } catch (error) {
+      diagnostic('status/host-error', error instanceof Error ? error.message : String(error))
+    }
+  }
+  const attachExtensionHosts = (): void => {
+    refreshStatusContributions()
+    if (options.statusHost !== undefined) {
+      try {
+        unsubscribeStatusHost = options.statusHost.subscribe(refreshStatusContributions)
+      } catch (error) {
+        diagnostic('status/subscribe-error', error instanceof Error ? error.message : String(error))
+      }
+    }
+    if (options.shortcutHost !== undefined) {
+      try {
+        clearShortcutErrorHandler = options.shortcutHost.setErrorHandler((combo, error) => {
+          notify(`Plugin shortcut failed: ${combo}`, { color: 'error' })
+          diagnostic('shortcut/handler-error', error instanceof Error ? error.message : String(error), { combo })
+        })
+      } catch (error) {
+        diagnostic('shortcut/subscribe-error', error instanceof Error ? error.message : String(error))
+      }
+    }
+  }
+  const detachExtensionHosts = (): void => {
+    try {
+      unsubscribeStatusHost?.()
+    } catch (error) {
+      diagnostic('status/unsubscribe-error', error instanceof Error ? error.message : String(error))
+    }
+    unsubscribeStatusHost = null
+    try {
+      clearShortcutErrorHandler?.()
+    } catch (error) {
+      diagnostic('shortcut/unsubscribe-error', error instanceof Error ? error.message : String(error))
+    }
+    clearShortcutErrorHandler = null
+  }
+  const dispatchShortcut = (payload: KeyPayload): boolean => {
+    if (options.shortcutHost === undefined || payload.eventType === 'release') return false
+    const projected = projectShortcutKey(payload)
+    if (projected === null) return false
+    try {
+      return options.shortcutHost.dispatch(projected.input, projected.key)
+    } catch (error) {
+      notify('Plugin shortcut dispatch failed', { color: 'error' })
+      diagnostic('shortcut/dispatch-error', error instanceof Error ? error.message : String(error))
+      return true
+    }
   }
   const languageCapability: LanguageCapability = options.languageCapability ?? {
     supported: ['zh', 'en'],
@@ -866,9 +1018,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     getState: () => state,
     setEditorDraft: (text) => editorBinding.setDraft?.(text),
     notify,
-    requestStop: (reason) => {
-      void stop(reason);
-    },
+    requestStop,
   });
 
   let interactiveOverlaysController: InteractiveOverlaysController;
@@ -1066,12 +1216,17 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     },
     submitToModel: (text) => adapter.commands.submit(text),
     steerToModel: (text) => adapter.commands.steer(text),
+    onExitRequest: () => {
+      if (options.onExitRequest !== undefined) options.onExitRequest()
+      else requestStop('user-exit')
+    },
+    ...(options.onUpdateRequest === undefined ? {} : { onUpdateRequest: options.onUpdateRequest }),
     notify,
     shell: shellProxy,
     preferences: preferencesController,
     update: updateProxy,
     ...(options.restartRunner === undefined ? {} : {
-      updateRequest: { sessionId: channel.agentId, profile: profile.id },
+      updateRequest: { sessionId: channel.agentId, profile: options.updateProfile ?? profile.id },
     }),
   });
 
@@ -1138,7 +1293,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     onDiagnostic: (code, message) => diagnostic(`session-catalog/${code}`, message),
   });
 
-  const localWorkspaceFallback: WorkspaceHostCapability = createLocalWorkspaceRuntime();
+  const localWorkspaceFallback: WorkspaceHostCapability = createLocalWorkspaceFallback();
   const workspaceHost: WorkspaceHostCapability | undefined =
     typeof channel.listWorkspaces === 'function'
     && typeof channel.resolveWorkspace === 'function'
@@ -1227,14 +1382,15 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     },
     isWorking: () => channel.working === true,
     onExitRequest: () => {
-      void stop('user-exit');
+      if (options.onExitRequest !== undefined) options.onExitRequest()
+      else requestStop('user-exit')
     },
     onInterrupt: () => {
       const rowId = state.session.streamingRowId;
       if (rowId !== null) streamingController.cancelStream(rowId);
     },
-    onExitArm: () => {
-      channel.notify('Press Ctrl+C again to exit', { color: 'warning' });
+    onExitArm: (key) => {
+      channel.notify(`Press ${key === 'ctrl+d' ? 'Ctrl+D' : 'Ctrl+C'} again to exit`, { color: 'warning' });
     },
     onRedrawRequest: () => {
       // Ctrl+L (§6.4): user-forced full redraw. The journaled app/redraw
@@ -1323,8 +1479,11 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
           }
           // Scroll keys are transcript-bound and preempt the editor (the
           // vendored editor's pageScroll yields); ctrl+c/escape stay with
-          // the input controller.
+          // the input controller. Extension shortcuts run only after global
+          // and scrolling bindings decline; their registry refuses editor
+          // bindings, so they cannot shadow prompt behavior.
           if (payload.eventType !== 'release' && scrollingController.handleKey(payload.key)) return;
+          if (dispatchShortcut(payload)) return;
           inputController.handleEvent(event);
         } else if (event.kind === 'paste' && state.focus.target === 'overlay') {
           const overlayId = state.focus.overlayId ?? '';
@@ -1497,7 +1656,9 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
    */
   const mergedStatusLine = (): StatusLineView => {
     const base = selectStatusLine(state);
-    if (dockMirror === null) return base;
+    if (dockMirror === null) {
+      return statusContributions.length === 0 ? base : { ...base, contributions: statusContributions };
+    }
     return {
       ...base,
       model: dockMirror.status.model === '' ? base.model : dockMirror.status.model,
@@ -1510,6 +1671,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         working: dockMirror.status.working,
         effort: dockMirror.status.effort,
       },
+      ...(statusContributions.length === 0 ? {} : { contributions: statusContributions }),
     };
   };
 
@@ -1674,7 +1836,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       const result = await writer.write(patch);
       if (result.status === 'error') {
         diagnostic('writer/error', result.error.message);
-        void stop('error');
+        requestStop('error');
         return;
       }
       if (result.status === 'written') {
@@ -1740,6 +1902,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       scheduler.start();
       adapter.start();
       dialogsController.start();
+      attachExtensionHosts();
       // WP-08a: bind the plugin scene runtime (registration lives on the
       // Cordis facade; this coordinator session owns open/close/takeover).
       pluginRuntime?.attach({
@@ -1761,15 +1924,21 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
 
   function stop(reason: LifecycleStopReason = 'user-exit'): Promise<void> {
     if (stopPromise !== null) return stopPromise;
-    if (phase === 'created' || phase === 'failed') {
+    if (phase === 'created') {
+      detachExtensionHosts();
       phase = 'stopped';
       stopPromise = Promise.resolve();
       return stopPromise;
     }
+    // A failed start may have happened after lifecycle takeover or backend
+    // activation. Run the same teardown barrier instead of assuming no bytes or
+    // listeners were acquired; every controller/backend/lifecycle stop is
+    // idempotent when the failure happened before its own start step.
     phase = 'stopping';
     stopPromise = (async () => {
       // Close utility overlays while the event pipeline is still alive, then
-      // unsubscribe business stores before teardown can emit again.
+      // unsubscribe business and extension stores before teardown can emit.
+      detachExtensionHosts();
       sessionCatalogController.dispose();
       workspaceFlowController.dispose();
       settingsFlowController.dispose();
@@ -1815,8 +1984,15 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       clipboardController?.stop();
       notificationController.stop();
       lifecycle.detachProcessHandlers();
+      const lifecycleState = lifecycle.lifecycleState();
       try {
-        await lifecycle.stop(reason);
+        // `created`/`failed-before-takeover` prove that lifecycle emitted no
+        // control bytes and acquired no raw/input owner. Calling writer.stop in
+        // those states would itself emit a generic cleanup bundle, violating
+        // the before-takeover failure contract.
+        if (lifecycleState !== 'created' && lifecycleState !== 'failed-before-takeover') {
+          await lifecycle.stop(reason);
+        }
       } catch (error) {
         diagnostic('lifecycle/stop-error', error instanceof Error ? error.message : String(error));
       } finally {

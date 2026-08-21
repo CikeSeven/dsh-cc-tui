@@ -9,7 +9,7 @@ import type { Theme } from '../../theme.js'
 import { Byline } from '../design-system/Byline.js'
 import { GlimmerMessage } from './GlimmerMessage.js'
 import { SpinnerGlyph } from './SpinnerGlyph.js'
-import type { SpinnerMode } from './spinnerMode.js'
+import type { SpinnerMode } from '../../utils/spinnerMode.js'
 import { useStalledAnimation } from './useStalledAnimation.js'
 import { interpolateColor, toRGBColor } from './spinnerUtils.js'
 

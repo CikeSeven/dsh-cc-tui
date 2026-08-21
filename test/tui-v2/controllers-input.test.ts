@@ -200,6 +200,30 @@ test('controller input: arming expires after ctrlCArmMs; typing disarms', () => 
   assert.equal(rig.exitRequests, 0, 'disarmed by the intervening key');
 });
 
+test('controller input: Ctrl+D keeps draft text and shares the two-press exit arm', () => {
+  const rig = inputRig();
+  rig.editorText.text = 'draft';
+  rig.controller.handleEvent(keyEvent('ctrl+d', '\x04'));
+  assert.equal(rig.editorText.text, 'draft', 'Ctrl+D never clears a draft');
+  assert.equal(rig.exitArms, 1);
+  assert.equal(rig.exitRequests, 0);
+
+  rig.clock.advance(500);
+  rig.controller.handleEvent(keyEvent('ctrl+d', '\x04'));
+  assert.equal(rig.exitRequests, 1);
+  assert.deepEqual(rig.journaled.at(-1), { type: 'app', command: 'exit' });
+});
+
+test('controller input: Ctrl+D while working interrupts instead of exiting', () => {
+  const rig = inputRig({ working: true });
+  rig.controller.handleEvent(keyEvent('ctrl+d', '\x04'));
+  assert.equal(rig.cancels, 1);
+  assert.equal(rig.interruptHooks, 1);
+  assert.equal(rig.exitArms, 0);
+  assert.equal(rig.exitRequests, 0);
+  assert.deepEqual(rig.journaled, [{ type: 'app', command: 'interrupt' }]);
+});
+
 // ---------------------------------------------------------------------------
 // Escape while working
 // ---------------------------------------------------------------------------

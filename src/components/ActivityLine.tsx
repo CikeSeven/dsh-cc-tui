@@ -1,7 +1,7 @@
 import React from 'react'
 import { t } from '../i18n.js'
 import { Text, useAnimationFrame } from '../ui.js'
-import { resolvePreset } from './activityFrames.js'
+import { resolvePreset } from '../utils/activityFrames.js'
 import { BRAND, FLASH, ICE, sweep } from './shimmer.js'
 import { getTheme } from '../theme.js'
 import { useTheme } from './design-system/ThemeProvider.js'

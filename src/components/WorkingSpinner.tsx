@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { useTerminalSize } from '../ink/hooks/use-terminal-size.js'
 import { Box } from '../ui.js'
-import type { SpinnerMode } from './Spinner/spinnerMode.js'
+import type { SpinnerMode } from '../utils/spinnerMode.js'
 import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js'
 import { SPINNER_VERBS } from '../cc/spinnerVerbs.js'
 import { sample } from 'lodash-es'

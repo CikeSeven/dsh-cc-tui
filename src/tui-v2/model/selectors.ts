@@ -119,6 +119,8 @@ export interface StatusLineView {
   readonly branch: string | null
   readonly mode: string | null
   readonly extras: Readonly<Record<string, string | number | boolean | null>>
+  /** Host-owned status contribution texts; keys stay outside the render path. */
+  readonly contributions?: readonly string[]
 }
 
 export function selectStatusLine(state: UiState): StatusLineView {

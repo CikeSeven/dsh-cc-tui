@@ -15,19 +15,14 @@
  * (string/number/boolean) coerce through String() first.
  */
 
-import { stringWidth } from '../ink/stringWidth.js'
+import { textWidth, truncateTextCells } from '../utils/textWidth.js'
 
 /** Sanitize an already-string value for the render path. */
 export function cleanRenderText(value: string, maxCells: number): string {
   // eslint-disable-next-line no-control-regex -- deliberate: sanitize untrusted render-path text
   const flat = value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').replace(/\s+/g, ' ').trim()
-  if (stringWidth(flat) <= maxCells) return flat
-  let out = ''
-  for (const ch of flat) {
-    if (stringWidth(out + ch) > maxCells - 1) break
-    out += ch
-  }
-  return `${out}…`
+  if (textWidth(flat) <= maxCells) return flat
+  return `${truncateTextCells(flat, Math.max(0, maxCells - 1))}…`
 }
 
 /**
@@ -47,13 +42,7 @@ export function cleanScalarText(value: unknown, maxCells: number): string {
  * collapsing their spaces would corrupt text they can still edit.
  */
 export function capCells(value: string, maxCells: number): string {
-  if (stringWidth(value) <= maxCells) return value
-  let out = ''
-  for (const ch of value) {
-    if (stringWidth(out + ch) > maxCells) break
-    out += ch
-  }
-  return out
+  return truncateTextCells(value, maxCells)
 }
 
 /** C0/C1 control chars → space, nothing else touched. The single-line

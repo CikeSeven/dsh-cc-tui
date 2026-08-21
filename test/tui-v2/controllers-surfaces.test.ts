@@ -7,6 +7,7 @@ import { createTrajectoryController } from '../../src/tui-v2/controllers/traject
 import { emptySurfaceView, type UiSurfaceView } from '../../src/tui-v2/model/surfaces.js'
 import type { Clock } from '../../src/tui-v2/model/schema.js'
 import { createChannelSurfaceAdapter, type ChannelSurfaceAdapter, type SurfaceChannel, type TrajectoryAdapterSnapshot } from '../../src/dsh-adapter/ui-surfaces.js'
+import { FRAME_PRESETS, PRESET_NAMES } from '../../src/utils/activityFrames.js'
 import type { TrajNode } from '../../src/dsh-adapter/trajectory/types.js'
 import type { InspectDetail } from '../../src/dsh-adapter/trajectory/inspect.js'
 
@@ -52,6 +53,12 @@ test('activity controller: clock-owned frames, deterministic preset and stall', 
   assert.equal(controller.view(surface().activity)?.phase, 'stalled')
   assert.ok(controller.diagnostics().stalls > 0)
   assert.equal(controller.setPreset('not-a-preset'), false)
+  for (const name of PRESET_NAMES.filter((item) => item !== 'random')) {
+    assert.equal(controller.setPreset(name), true)
+    const view = controller.view(surface().activity)
+    assert.equal(view?.preset, name)
+    assert.ok(view?.frame !== undefined && FRAME_PRESETS[name]?.frames.includes(view.frame))
+  }
   controller.dispose()
   assert.equal(clock.pending, 0)
 })

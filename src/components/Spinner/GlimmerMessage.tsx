@@ -3,7 +3,7 @@ import Text from '../../ink/components/Text.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { getGraphemeSegmenter } from '../../utils/intl.js'
 import { getTheme, type Theme } from '../../theme.js'
-import type { SpinnerMode } from './spinnerMode.js'
+import type { SpinnerMode } from '../../utils/spinnerMode.js'
 import { interpolateColor, parseRGB, toRGBColor } from './spinnerUtils.js'
 import { useTheme } from '../design-system/ThemeProvider.js'
 
