@@ -1,74 +1,47 @@
-# 输入处理、IME 避让与命令系统
+# 输入处理、命令系统与持久历史
 
-本文覆盖输入模型（单 value+cursor、编辑键位、会话内历史）、键盘链路、
-IME 拼音 preedit 避让、粘贴双通道，以及 slash 命令系统（/rewind、/new、
-/compact 等）。行号均以审计基线 b2f4087 为准。
+生产输入链是 v2-only：input source/tokenizer → `createInputController` →
+`PromptEditor`/overlay/command controller → coordinator dispatch。旧 React/Ink
+输入实现已删除；本文件后续旧行号只作为 WP-09a provenance，不是可运行入口。
 
 ## 输入模型
 
-PromptInput 为单一 value 字符串 + 整数 cursor 双状态（无选区 API，
-`src/components/PromptInput.tsx:123-124`）；setInput 夹紧光标：
-`setCursor(Math.max(0, Math.min(cursorOffset, next.length)))`（:356-359）。
+`src/tui-v2/controllers/input.ts` 负责 Ctrl+C/Ctrl+D/escape/redraw、paste、
+help/history shortcuts 与 submit journal；`src/tui-v2/components/editor/prompt-editor.ts`
+组合 vendored pi Editor，编辑器仍是 text/cursor/history 的唯一 owner。
 
-编辑操作全集（行内，`src/components/PromptInput.tsx:582-658`）：
-
-| 键 | 行为 |
+| 键 | v2 行为 |
 | --- | --- |
-| ←/→ | 逐字符移动 |
-| Ctrl+←/→ | 单词边界（readline alt+b/alt+f 语义，辅助函数 wordBoundaryLeft/Right :18-32） |
-| backspace/delete | 删字符 |
-| Home/End、Ctrl+A/Ctrl+E | 逻辑行首尾 |
-| Ctrl+U / Ctrl+K | 删除行首/行尾 |
-| Ctrl+W | 删前词 |
+| ←/→、Home/End、word keys | pi Editor 光标/词边界 |
+| Ctrl+C/D | working 时 interrupt；idle 时 clear/arm/exit funnel |
+| Ctrl+L | journal `app/redraw`，下一帧 full redraw |
+| Ctrl+R | 打开 history-search overlay |
+| Ctrl+V | capability atomic paste，不把换行当 submit |
+| Ctrl+X | external-editor capability/controller |
+| Enter | `input/command` journal → channel submit |
 
-多行支持：Shift+Enter 在光标处插入 '\n'（:476-483）；↑/↓ 在多行时按行移动并
-夹紧到目标行长度（cursorColumn :362-371）；视觉行超过 MAX_VISIBLE_LINES=5 后
-窗口滚动保持光标行可见（:45,741-754）。
-
-会话内历史（:15,141-142,539-580）：↑/↓ 在非多行、非 overlay 时走
-history.current 环形数组（提交时 push trimmed 文本，上限 HISTORY_LIMIT=50，↑
-回退 ↓ 前进，越界回空串）；**该数组初始化即为空，从不从磁盘历史文件加载**。
-持久化历史（`src/history.ts`）：history.jsonl 每行一个 JSON（text+ts），容量
-HISTORY_LIMIT=200，appendHistory 对紧邻重复只更新时间戳、坏行跳过；historyEntryId
-用 sha1(text) 前 12 位做 React key；只有 Ctrl+R 能检索磁盘历史（见下）。
 
 ## 键盘链路
 
 ```text
-App.handleReadable 读 stdin（src/ink/components/App.tsx:434-474）
-  -> processInput -> parseMultipleKeypresses（tokenizer 切分 text/sequence，
-     IN_PASTE 状态机，src/ink/parse-keypress.ts:225-314）
-  -> parseKeypress 把序列译为 name/ctrl/shift/meta（src/ink/parse-keypress.ts:631-805；
-     keyName 表 :316-418：'\r'→return、'\t'→tab、'\b'/0x7f→backspace、
-     单字节 s<=0x1a→ctrl+字母、CSI u=ESC[13;2u 等、xterm modifyOtherKeys
-     ESC[27;m;k~、FN_KEY_RE 修饰键解码 modifier bit: shift1/meta2/ctrl4/super8）
-  -> processKeysInBatch：terminal response→querier、FOCUS→focus 状态、
-     Ctrl+Z→suspend、其余构造 InputEvent 并 emit('input') 且
-     dispatchKeyboardEvent（src/ink/components/App.tsx:550-630）
-  -> InputEvent.parseKey 折叠为 Key 布尔标志组+input 文本
-     （src/ink/events/input-event.ts:31-194，16 个标志：upArrow/return/escape/ctrl/shift/meta/
-     super 等；ctrl+space 修正为 ' '；未知名 F13 序列与 ESC 缺失的 SGR 鼠标
-     残片被吞掉防泄漏为文本；大写输入置 shift=true）
-  -> useInput 的 handleData 收到事件，Ctrl+C 门控后调用 handler
-     （src/ink/hooks/use-input.ts:72-93）
-  -> Chat 的 useInput 先处理全局键（工作态 Esc、Ctrl+R/T/O/L/E、Shift+↑ 选择、
-     搜索态等，src/screens/Chat.tsx:848-1201）；PromptInput 的 useInput 处理编辑键
-     （src/components/PromptInput.tsx:373-736）
+InputSource (v2 terminal/input.ts)
+  -> tokenizer/query broker（key/paste/resize/mouse/query response）
+  -> createInputController
+  -> focused overlay/controller 或 PromptEditor
+  -> AppEvent journal -> reducer/channel command -> scheduler
+  -> frame builder -> terminal writer
 ```
 
-监听注册细节（src/ink/hooks/use-input.ts:45-93）：useLayoutEffect（而非 useEffect）同步开
-raw mode（终端在下一事件循环 tick 前不能处于 cooked 模式）；监听注册在
-useEffect 内，handleData 经 useEventCallback 保持引用稳定——注释：注册位置稳定
-才能保证 stopImmediatePropagation 顺序。EventEmitter.emit 按 rawListeners 注册
-顺序遍历，首个调 stopImmediatePropagation 的监听者之后不再执行
-（src/ink/events/emitter.ts:27-50）。
-
-raw mode 初始化顺序（src/ink/components/App.tsx:294-318）：stopCapturingEarlyInput →
-stdin.setRawMode(true) → EBP(DEC 2004) → EFE(DECSET 1004) →
-supportsExtendedKeys() 时写 ENABLE_KITTY_KEYBOARD(CSI >1u) +
-ENABLE_MODIFY_OTHER_KEYS(CSI >4;2m)（使 Ctrl+Shift+字母可区分于 Ctrl+字母）。
+raw mode、Kitty keyboard、bracketed paste 与 terminal query 都属于
+`src/tui-v2/terminal/`；controller 不直接写 ANSI，也不调用 `process.exit`。
+`Ctrl+C/D`、signal、stdin EOF、error 都进入 coordinator stop funnel，完成 mode
+restore 后才写 resume marker。
 
 ## IME 避让：物理光标停放
+
+v2 editor 通过 `Focusable.cursor` 发布 cell 坐标，frame builder 对 cursor 做边界
+裁剪；因此 CJK/emoji 的显示宽度不会把 preedit 放到半个 grapheme 中。IME 的
+composition protocol 仍由终端模拟器处理，本包只保证硬件 cursor 的确定位置。
 
 全仓库**没有任何 compositionstart/update/end 或 beforeinput 等组合事件监听**
 （grep 仅命中注释）；IME 组合期间的行为完全委托给终端：
@@ -92,12 +65,11 @@ ENABLE_MODIFY_OTHER_KEYS(CSI >4;2m)（使 Ctrl+Shift+字母可区分于 Ctrl+字
 
 | 通道 | 链路 | 位置 |
 | --- | --- | --- |
-| Bracketed paste | raw mode 写 EBP（DEC 2004）；终端以 CSI 200~...201~ 包裹；parser 置 IN_PASTE 累积 token，PASTE_END 时 createPasteKey（isPasted=true、整段作 input）；PromptInput 最先检查 `event?.isPasted && input.length > 0`，CRLF→LF 后 insertAtCaret | src/ink/termio/csi.ts:364-368、src/ink/parse-keypress.ts:243-257、src/components/PromptInput.tsx:386-392 |
-| Ctrl+V（Windows） | `key.ctrl && input === 'v'`（clipboardBusyRef 防重复）→ execFile powershell Get-Clipboard：先试 FileDropList（Explorer 复制文件→FILE: 路径行），否则 -Raw 文本经 base64 输出（TEXT64:，保证多行与 CJK 安全）；失败 150ms 后重试至 3 次、3s 超时、child.unref；formatClipboardInsert：文件路径含空白加引号、空格连接，文本 CRLF→LF；null 时通知 'input-clipboard-empty' | src/components/PromptInput.tsx:394-409、src/utils/clipboard.ts:15-93 |
+| Bracketed paste | terminal input source 解码为 `paste` event；controller 通过 `insertPaste` 原子插入，换行永不触发 submit | `src/tui-v2/terminal/input.ts`, `src/tui-v2/controllers/input.ts` |
+| Ctrl+V | `ClipboardCapability` 读取文本/文件引用，controller 以同一 atomic insertion seam 交给 editor | `src/tui-v2/controllers/clipboard.ts`, `src/utils/clipboard.ts` |
 
-注释（src/ink/parse-keypress.ts:249-254）称空粘贴也发键（macOS 剪贴板图片处理），但
-isPasted 唯一消费点是 src/components/PromptInput.tsx:389 且要求 input.length>0——空粘贴键无
-下游消费者。
+clipboard capability 失败只产生 notification，不越过 writer 写终端；相关输入、
+OSC52 与 host capability coverage 由 v2 tests/host-capabilities check 负责。
 
 ## 工作态投递与 Esc 语义
 

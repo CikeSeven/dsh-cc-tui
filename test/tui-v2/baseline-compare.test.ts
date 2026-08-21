@@ -1,8 +1,8 @@
 /**
  * WP-09a offline baseline/compare/v2-only contract tests.
  *
- * These tests deliberately exercise the independent tools boundary. They do
- * not import React/Ink and never compare cell arrays outside `compareGrid`.
+ * These tests deliberately exercise the independent offline-tools boundary.
+ * They never compare cell arrays outside `compareGrid`.
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -130,16 +130,18 @@ test('compare report: same trace emits hashes, frame/bytes/memory metrics and no
   assert.equal(raw.includes('DeepSeek Harness'), false)
 })
 
-test('v2-only gate: staged records deferred legacy chain while final mode blocks it', async () => {
+test('v2-only gate: legacy scan is clean and only WP-09c remains deferred', async () => {
   const staged = await checkV2Only({ output: path.join(os.tmpdir(), 'v2-only-staged-test.json'), profile: null, fixture: null, final: false, rollbackManifest: null })
   assert.equal(staged.status, 'pass')
   const stagedDeferred = (staged.details.deferred as { deferredTo: string }[])
-  assert.ok(stagedDeferred.some((item) => item.deferredTo === 'WP-09b'))
-  assert.ok(stagedDeferred.some((item) => item.deferredTo === 'WP-09c'))
+  assert.deepEqual(stagedDeferred, [{ reason: 'no immutable rollback-manifest.json supplied in this work package', deferredTo: 'WP-09c' }])
+  const stagedLegacy = staged.details.legacyScan as { counts: { sourcePaths: number; switches: number; jsx: number; direct: number } }
+  assert.deepEqual(stagedLegacy.counts, { sourcePaths: 0, switches: 0, jsx: 0, direct: 0 })
 
   const final = await checkV2Only({ output: path.join(os.tmpdir(), 'v2-only-final-test.json'), profile: null, fixture: null, final: true, rollbackManifest: null })
   assert.equal(final.status, 'fail')
-  assert.ok((final.details.errors as string[]).some((error) => error.includes('WP-09b')))
+  assert.ok((final.details.errors as string[]).some((error) => error.includes('WP-09c')))
+  assert.equal((final.details.errors as string[]).some((error) => error.includes('WP-09b')), false)
 })
 
 test('v2-only rollback preflight: exact local tarball and manifest hash are enforced', async () => {

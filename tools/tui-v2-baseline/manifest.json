@@ -22,6 +22,10 @@
     "path": "tools/tui-v2-baseline/artifacts/v1-capture@v1.json",
     "sha256": "1c0ca53cd8e3d94a656e4c02c808566f34bf59b99d00f685e4b66715a5ddfd29"
   },
+  "reviewedDifferences": {
+    "path": "tools/tui-v2-baseline/reviewed-differences.json",
+    "sha256": "1e8a6e142516a31e9cf9a341ce915cc337a7e551a3c4a58842319acee6c8548a"
+  },
   "sideEffects": {
     "allowed": ["fake-writer"],
     "forbidden": ["stdout", "stderr", "subscription", "timer", "command", "session-write"],

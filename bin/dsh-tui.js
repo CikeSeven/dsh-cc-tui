@@ -111,10 +111,6 @@ const MSG = {
 }
 const msg = key => MSG[key][lang]
 
-// React 开发构建会把每次渲染的 performance.measure() 堆进无界缓冲区导致
-// 长会话 OOM——与仓库根 dsh-tui.cmd 保持一致，强制 production。
-process.env.NODE_ENV ??= 'production'
-
 const isWin = process.platform === 'win32'
 // Windows 上 .cmd shim 必须经 shell 启动（Node ≥18.20.2 的安全限制）；
 // 其余平台直接 spawn 无后缀的 dsh。cmd.exe 以空格拼接参数且 Node 不做

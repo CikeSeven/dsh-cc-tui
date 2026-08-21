@@ -132,7 +132,7 @@ const dict = {
   'context-skills': { zh: '技能 {{n}}', en: 'Skills {{n}}' },
   'context-tools': { zh: '工具 {{n}}', en: 'Tools {{n}}' },
 
-  // ── screens/Chat.tsx ────────────────────────────────────────────────
+  // ── v2 command surface ────────────────────────────────────────────────
   'skill-unavailable': { zh: '技能 {{name}} 已不可用或未开放用户直调', en: 'Skill {{name}} is gone or not user-invocable' },
   'skill-audit-prompt': { zh: '请使用 audit 技能对当前项目做一次全面的代码审计，找出安全、正确性与质量问题。', en: 'Use the audit skill to do a thorough code audit of the current project, finding security, correctness and quality issues.' },
   'skill-bug-prompt': { zh: '请使用 bug 技能协助我记录一份完整的 bug 报告（现象、复现步骤、期望行为）。', en: 'Use the bug skill to help me write a complete bug report (symptoms, reproduction steps, expected behavior).' },
@@ -359,7 +359,7 @@ const dict = {
   'show-previous-messages': { zh: ' ctrl+e 显示前 {{n}} 条消息 ', en: ' ctrl+e to show {{n}} previous messages ' },
   'resume-none-in-cwd': { zh: '当前目录没有可恢复的历史会话', en: 'No resumable sessions in the current directory' },
 
-  // ── screens/SessionBrowser.tsx + screens/Chat.tsx (/resume) ─────────
+  // ── screens/SessionBrowser.tsx + v2 command surface (/resume) ─────────
   'resume-resumed': { zh: '已恢复会话', en: 'Session resumed' },
   'resume-delete-confirm': { zh: '删除「{{name}}」？会话日志将被永久移除。', en: 'Delete "{{name}}"? The session log is removed permanently.' },
   'resume-deleted': { zh: '已删除会话「{{name}}」', en: 'Deleted session {{name}}' },
@@ -533,7 +533,7 @@ const dict = {
   'time-hours-ago': { zh: '{{n}} 小时前', en: '{{n}}h ago' },
   'time-days-ago': { zh: '{{n}} 天前', en: '{{n}}d ago' },
 
-  // ── screens/Chat.tsx（/ 转录搜索条）─────────────────────────────────
+  // ── v2 command surface（/ 转录搜索条）─────────────────────────────────
   'search-no-matches': { zh: '无匹配', en: 'no matches' },
 
   'rename-usage': { zh: '用法  /rename <新名称>', en: 'Usage  /rename <new title>' },
@@ -543,10 +543,10 @@ const dict = {
   'new-message': { zh: '{{n}} 条新消息', en: '1 new message' },
   'new-messages': { zh: '{{n}} 条新消息', en: '{{n}} new messages' },
 
-  // ── components/ThemePicker.tsx ──────────────────────────────────────
-  'theme-builtin-base': { zh: '内置 · {{name}} 基底', en: 'Built-in · {{name}} base' },
-  'theme-auto-base': { zh: '内置 · 跟随系统/终端背景自动选择 light/dark', en: 'Built-in · follows the system/terminal background (light/dark)' },
-  'theme-user-base': { zh: '{{base}} 基底 · ~/.dsh-tui/themes/{{name}}.json', en: '{{base}} base · ~/.dsh-tui/themes/{{name}}.json' },
+  // ── v2 theme registry ────────────────────────────────────────────────
+  'theme-builtin-base': { zh: 'registry · {{name}} 基底', en: 'Registry · {{name}} base' },
+  'theme-auto-base': { zh: 'registry · {{name}} 基底', en: 'Registry · {{name}} base' },
+  'theme-user-base': { zh: 'descriptor · {{base}} 基底', en: 'Descriptor · {{base}} base' },
 
   // ── components/LoadedContextPanel.tsx ───────────────────────────────
   'context-unavailable': { zh: '当前会话没有已加载的上下文', en: 'No loaded context is available for this session' },
@@ -664,7 +664,7 @@ const dict = {
   // Model / display
   'cmd-desc-activity': { zh: '切换工作状态指示器预设' },
   'cmd-desc-preset': { zh: '切换 Agent 预设（含梁神模式）' },
-  'cmd-desc-theme': { zh: '切换配色主题（auto 跟随系统，或内置/自定义）' },
+  'cmd-desc-theme': { zh: '切换 v2 registry 主题（由 host descriptor 扩展）' },
   'cmd-desc-lang': { zh: '切换界面语言（en / zh）' },
   'cmd-desc-model': { zh: '查看当前模型' },
   'cmd-desc-thinking': { zh: '切换扩展思考显示' },
@@ -756,7 +756,7 @@ const dict = {
 export type I18nKey = keyof typeof dict
 export type I18nParams = Record<string, string | number>
 
-/** The active language, module-level so non-React modules (channel.ts,
+/** The active language, module-level so non-UI modules (channel.ts,
  *  loaded-context.ts) resolve strings without a context. Defaults to `zh`
  *  (the original hard-coded language). */
 // Resolved at import time (env var → persisted /lang → OS locale → zh) so
@@ -764,7 +764,7 @@ export type I18nParams = Record<string, string | number>
 // plugin.apply — still get the pinned language instead of a hardcoded zh.
 let activeLang: Lang = resolveStartupLang()
 
-/** Emitted on every language switch so React screens can re-render. */
+/** Emitted on every language switch so v2 subscribers can re-render. */
 type Listener = () => void
 const listeners = new Set<Listener>()
 

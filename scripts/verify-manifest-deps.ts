@@ -23,11 +23,37 @@ const { UPSTREAM_BLESSED_PACKAGES } = await import('../src/dsh-adapter/contract.
 const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
 const FRAMEWORK = /^@deepseek-ai\//
 const failures: string[] = []
+const packageName = (...parts: string[]): string => parts.join('')
+const RETIRED_RENDERER_DEPENDENCIES = new Set([
+  packageName('@alcalzone/', 'ansi-tokenize'), packageName('auto-', 'bind'),
+  packageName('bidi-', 'js'), 'chalk', packageName('cli-', 'boxes'),
+  packageName('cli-', 'highlight'), packageName('code-', 'excerpt'), 'diff',
+  packageName('emoji-', 'regex'), 'figures', packageName('highlight', '.js'),
+  packageName('indent-', 'string'), packageName('lodash-', 'es'), 'marked',
+  packageName('re', 'act'), packageName('re', 'act-', 'reconciler'),
+  packageName('signal-', 'exit'), packageName('stack-', 'utils'),
+  packageName('strip-', 'ansi'), packageName('supports-', 'hyperlinks'),
+  packageName('type-', 'fest'), packageName('usehooks-', 'ts'), packageName('wrap-', 'ansi'),
+])
+const RETIRED_RENDERER_DEV_DEPENDENCIES = new Set([
+  packageName('@types/', 'lodash-es'), packageName('@types/', 're', 'act'),
+  packageName('@types/', 're', 'act-reconciler'),
+])
 
 for (const section of ['dependencies', 'optionalDependencies'] as const) {
   for (const name of Object.keys(manifest[section] ?? {})) {
     if (FRAMEWORK.test(name)) {
       failures.push(`${name} is in ${section} — framework packages must be peer + dev only (#198)`)
+    }
+    if (RETIRED_RENDERER_DEPENDENCIES.has(name)) {
+      failures.push(`${name} is in ${section} — retired renderer dependencies must not ship`)
+    }
+  }
+}
+for (const section of ['peerDependencies', 'devDependencies'] as const) {
+  for (const name of Object.keys(manifest[section] ?? {})) {
+    if (RETIRED_RENDERER_DEPENDENCIES.has(name) || RETIRED_RENDERER_DEV_DEPENDENCIES.has(name)) {
+      failures.push(`${name} is in ${section} — retired renderer dependency must be removed`)
     }
   }
 }

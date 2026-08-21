@@ -2,94 +2,53 @@
 
 [文档索引](README.md) · [English](themes.en.md)
 
-## 内置主题
+## 生产主题
 
-dsh-TUI 提供三套 Gentle Mist Blue 色板，外加一个 `auto` 伪主题：
-
-| 名称 | 用途 |
-| --- | --- |
-| `auto` | 伪主题：跟随系统/终端背景，自动解析为 `light` 或 `dark` |
-| `light` | 暖白背景、墨色正文、雾蓝交互色 |
-| `dark` | 深色终端适配，暖灰正文与柔雾蓝强调色 |
-| `dark-ansi` | 只依赖 16 色 ANSI 的兼容回退 |
-
-未明确指定主题时，TUI 会通过 OSC 11 查询终端背景并在 `light` 与 `dark` 之间
-选择；终端不响应时回退到 `dark`。
-
-`auto` 把这次性启动检测变成常驻选择：它在 `/theme`、`CC_TUI_THEME`、
-`~/.dsh-cc/theme.json` 中都是合法值。选中 `auto` 时立即应用上次检测结果，并
-在后台重新查询 OSC 11——跟随系统主题的终端切换深浅色后，再次选择 `auto`（或
-重启）即可跟上。`/theme status` 会显示 `auto` 当前解析到的色板。解析结果通过
-`getTheme('auto')` 对所有消费方生效。注意：用户自定义主题若命名为 `auto` 会被
-内置伪主题遮蔽（选择器中不列出）。
+生产 v2 registry 默认只注册 `default`。Embedder 可以通过
+`createTuiV2App({ themeDescriptors })` 注入额外 descriptor；未注册 id（包括旧版本
+偏好文件里的名字）安全回退 `default`，不会加载旧 renderer 或第二套主题实现。
 
 选择优先级：
 
 ```text
-DSH_TUI_THEME
-  > ~/.dsh-tui/theme.json 中的持久化选择
-  > OSC 11 背景检测
-  > dark 回退
+显式 createTuiV2App theme
+  > DSH_TUI_THEME
+  > ~/.dsh-tui/theme.json 中的持久化 registry id
+  > default fallback
 ```
 
 ## 切换主题
 
-- `/theme`：打开主题选择器。`auto` 与内置主题在前，自定义主题在后。
+- `/theme`：打开 v2 theme registry 选择器；默认列出 `default`，其后为注入的 descriptors。
 - `/theme <name>`：直接切换。
 - `/theme status`：显示当前主题与持久化位置。
 
 选择器确认后立即热切换，并把选择写入 `~/.dsh-tui/theme.json`。如果设置了
 `DSH_TUI_THEME`，它在下一次启动时仍然优先。
 
-## 自定义主题
+## v2 theme descriptors
 
-在 `~/.dsh-tui/themes/` 下放置 JSON 文件。每个文件定义一个主题，并从一个内置
-色板开始覆盖：
+生产 v2 不从用户主题目录动态加载第二套 theme implementation。Host/plugin 通过
+`createTuiV2App({ themeDescriptors })` 注册 descriptor；registry 只接受安全 id、
+单行 displayName、`default|dark|light|ansi` base 与已知 role 的 `LineStyle`：
 
-```json
+```ts
 {
-  "name": "sakura",
-  "displayName": "樱花粉",
-  "base": "dark",
-  "colors": {
-    "claude": "#FF9EC7",
-    "claudeShimmer": "#FFC0D5",
-    "permission": "#FFB3CC",
-    "promptBorder": "#B08B99",
-    "text": "#E8E6E0",
-    "inactive": "#A99BA0",
-    "subtle": "#8A7A80",
-    "selectionBg": "#5C3A44",
-    "success": "#9CC7A8",
-    "error": "#E08591",
-    "warning": "#E0C08A"
-  }
+  id: 'night-owl',
+  displayName: 'Night Owl',
+  base: 'dark',
+  roles: { accent: { foreground: '#ff00aa', bold: true, ... } }
 }
 ```
 
-字段：
+`src/utils/themeName.ts` 拒绝路径穿越与控制字符，`src/tui-v2/theme/registry.ts`
+拒绝未知 role/非法颜色并在未知 id 时回退 default。truecolor 不被 host capability
+确认时，`resolveThemeForProfile` 将 role 量化为 ANSI-256；不会静默启动另一个
+renderer。主题持久化只写安全 registry id 到 `~/.dsh-tui/theme.json`。
 
-| 字段 | 必需 | 说明 |
-| --- | --- | --- |
-| `base` | 是 | `light`、`dark` 或 `dark-ansi`，作为未覆盖颜色的来源 |
-| `colors` | 是 | Theme 语义键的部分覆盖 |
-| `name` | 否 | 主题 ID；缺省使用文件名 |
-| `displayName` | 否 | 选择器显示名称；缺省使用 `name` |
-
-如果文件声明了 `name`，文件名仍可作为加载别名。完整语义键见
-[`src/theme.ts`](../src/theme.ts) 中的 `Theme` 类型。
-
-常用可覆盖键分组：
-
-| 分组 | 键 |
-| --- | --- |
-| 工具卡衬底（深浅两档） | `toolCardBackground`、`toolCardBackgroundDim` |
-| 工具状态点（按分类） | `toolDotExec`、`toolDotRead`、`toolDotWrite`、`toolDotWeb`、`toolDotTask` |
-| diff 行色 | `diffAdded`、`diffRemoved`、`diffAddedDimmed`、`diffRemovedDimmed`、`diffAddedWord`、`diffRemovedWord` |
-| diff 语法高亮 | `syntaxKeyword`、`syntaxString`、`syntaxComment`、`syntaxNumber`、`syntaxFunction`、`syntaxType`、`syntaxVariable`、`syntaxOperator`、`syntaxPunctuation`、`syntaxConstant` |
-
-diff 语义优先于语法色：改动词组总是使用 `diffAddedWord` / `diffRemovedWord`，
-语法色只作用于未变更的文本。
+自定义 descriptor 的注册、非法输入、truecolor 降级和 preference round-trip 由
+`node --import tsx/esm scripts/verify-themes.mjs` 与
+`test/tui-v2/theme-i18n-width.test.ts` 覆盖。
 
 ## 颜色格式
 

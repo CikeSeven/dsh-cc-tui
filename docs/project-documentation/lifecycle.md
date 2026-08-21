@@ -1,8 +1,9 @@
 # 插件生命周期与装配
 
-本文描述 dsh-cc-tui 作为 Cordis 插件从配置组合到进程退出的完整装配过程：
-组合层构成、apply 启动序、命令分发、退出漏斗与 teardown 的区分。行号均以
-审计基线 b2f4087 为准。
+本文描述 dsh-TUI 作为 Cordis 插件从配置组合到进程退出的完整装配过程：
+`src/dsh-adapter/plugin.ts` 只启动单一 `createTuiV2App`，由 coordinator 统一负责
+input、terminal mode、frame scheduling、stop barrier 与 teardown。旧 V1 行号和入口
+只在 frozen provenance 中保留，不是可运行链路。
 
 ## 插件契约与入口
 

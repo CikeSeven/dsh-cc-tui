@@ -7,8 +7,8 @@
 ## 扫描
 
 - 命令：`rg -o 'scripts/[A-Za-z0-9_.-]+' .github/workflows package.json | LC_ALL=C sort -u`
-- sourceCommit：`fe4167c180b7c031a2fb8aa2ea1d8447ce9fc632`
-- 清单条目数：64；listHash（sha256）：`f1fe52112cdba33daa0cf82affb9439a066b2df55dea93711c5d1280e50308e5`（WP-09b2：live React workflow 入口迁移到 v2 wrapper/check，保留 renderer-neutral domain gates，smoke 入口改为 `scripts/smoke-tui-v2.mjs`）
+- sourceCommit：`54ede4405605323ee524cd9ea194b9c7ad57ed17`
+- 清单条目数：67；listHash（sha256）：`cea01eea15b0a7160e61a8eccd3b9f8c940b6d0f4c4dc382e80d729ec6984eed`（WP-09b3：旧 renderer 入口已删除；保留 v2 wrapper/check 与 renderer-neutral domain gates，域脚本改为 `.ts`）
 - 说明：清单行格式为 `<文件>:<入口>`；校验脚本用等价的纯 Node 重扫实现
   （`computeEntryScan`，对本仓库 ASCII 入口名与 `LC_ALL=C sort -u` 字节一致），
   不依赖运行时 ripgrep。
@@ -16,21 +16,22 @@
 ## 取值说明
 
 - severity：P0 = 退出/teardown/终端模式恢复/stderr 接管；P1 = 渲染正确性/滚动/宽度/输入解析；P2 = 其余。
-- disposition：`rewrite-v2`（旧入口删除，v2 fixture 替代）/ `remove` / `offline-baseline` /
-  `unaffected`（不触及被迁移的渲染/插件面，原样保留并由 CI 持续证明；扩展原因见计划文档 15.1）。
+- disposition：`remove`（旧入口已删除；同一行的 v2 fixture/check 是替代证据）/
+  `offline-baseline` / `unaffected`（不触及被迁移的渲染/插件面，原样保留并由 CI
+  持续证明；`rewrite-v2` 为历史枚举，本阶段无剩余行）。
 - status：旧 live-only 入口在本阶段标为 `retired`；v2 wrapper/check 与纯 domain 入口通过后标为 `verified`；仅真实 PTY/宿主矩阵留作非阻断 `accepted-risk`。
-- 当前分布：severity {"P2":53,"P1":50,"P0":9}；status {"verified":79,"retired":29,"accepted-risk":4}；disposition {"unaffected":54,"rewrite-v2":57,"offline-baseline":1}。
+- 当前分布：severity {"P2":53,"P1":50,"P0":9}；status {"verified":82,"retired":26,"accepted-risk":4}；disposition {"unaffected":57,"remove":54,"offline-baseline":1}。
 
 ## 机器可读矩阵
 
 ```json
 {
   "scan": {
-    "sourceCommit": "fe4167c180b7c031a2fb8aa2ea1d8447ce9fc632",
+    "sourceCommit": "54ede4405605323ee524cd9ea194b9c7ad57ed17",
     "scanCommand": "rg -o 'scripts/[A-Za-z0-9_.-]+' .github/workflows package.json | LC_ALL=C sort -u",
-    "listHash": "f1fe52112cdba33daa0cf82affb9439a066b2df55dea93711c5d1280e50308e5",
-    "entryCount": 64,
-    "generatedAt": "2026-08-21T14:45:00.000Z"
+    "listHash": "cea01eea15b0a7160e61a8eccd3b9f8c940b6d0f4c4dc382e80d729ec6984eed",
+    "entryCount": 67,
+    "generatedAt": "2026-08-22T00:10:00.000Z"
   },
   "rows": [
     {
@@ -109,7 +110,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-askpanel.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'controller dialogs|overlay components|walking skeleton WP-08c'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 controllers-dialogs.test.ts、components-overlays.test.ts 与 interactive-overlays@v1 落地；WP-09 删除旧 renderer 时 scripts/repro-askpanel.tsx 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-007",
@@ -122,7 +123,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-clipboard.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（clipboard-paste-ui@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-008",
@@ -135,7 +136,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-collapse-shrink.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（collapse-shrink-fullredraw@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-009",
@@ -148,7 +149,7 @@
       "ciCommand": "node scripts/test-tui-v2.mjs -- --test-name-pattern 'controller commands|controller input|production wiring|lifecycle'",
       "blockDefault": false,
       "deleteCondition": "v2 controller/lifecycle coverage remains; retire the accepted risk after the stage-3 real PTY child-process stop drill",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-010",
@@ -161,19 +162,19 @@
       "ciCommand": "node --import tsx/esm scripts/repro-diff-split.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'content diff|running edit|tool diff width|trace fixtures'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 test/tui-v2/components-content.test.ts、components-transcript.test.ts 与 markdown-tool-rendering@v1 落地；WP-09 删除旧 renderer 时 scripts/repro-diff-split.tsx 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-011",
       "severity": "P2",
       "owner": "tui-v2",
       "status": "verified",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
+      "updatedAt": "2026-08-21T15:55:00.000Z",
       "traceId": "effort-route-config@v1",
       "assertion": "config: effort 配置进入实际请求配置而非仅状态栏显示",
-      "ciCommand": "node --import tsx/esm scripts/repro-effort.tsx",
+      "ciCommand": "node --import tsx/esm scripts/verify-effort-route.ts",
       "blockDefault": false,
-      "deleteCondition": "该回归不触及被迁移的渲染/插件面，原样保留；最终 gate 要求 ciCommand 在最终树仍通过；仅在入口本身被移除时删除本行",
+      "deleteCondition": "v2-neutral domain gate retained after old renderer deletion; final gate requires the current command to pass",
       "disposition": "unaffected"
     },
     {
@@ -187,7 +188,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-external-editor.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（external-editor-tty-handoff@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-013",
@@ -200,7 +201,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-inline-scrollback.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（inline-scrollback@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-014",
@@ -213,7 +214,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-inline-thirdparty.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（inline-thirdparty-output@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-015",
@@ -226,7 +227,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-model-switch-scrollback.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'WP-08d2|controller channel options|settings-routing'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 controllers-channel-options.test.ts、walking-skeleton.test.ts 与 settings-routing@v1 落地；WP-09 删除旧 renderer 时 scripts/repro-model-switch-scrollback.tsx 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-016",
@@ -239,7 +240,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-picker-windowing.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'interactive overlays|overlay components'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 controllers-interactive-overlays.test.ts、components-overlays.test.ts 与 interactive-overlays@v1 落地；WP-09 删除旧 renderer 时 scripts/repro-picker-windowing.tsx 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-017",
@@ -252,7 +253,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-pill.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（scroll-pill-decrement@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-018",
@@ -265,7 +266,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-settings.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'controller settings|settings/routing components|WP-08d2|settings-routing'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 controllers-settings-flow.test.ts、components-settings-routing-overlays.test.ts、walking-skeleton.test.ts 与 settings-routing@v1 落地；WP-09 删除旧 renderer 时 scripts/repro-settings.tsx 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-019",
@@ -278,7 +279,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-thinking.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（thinking-spinner-ghost@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-020",
@@ -291,7 +292,7 @@
       "ciCommand": "node --import tsx/esm scripts/repro-toolcards.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'tool row|tool card|running edit|expanded background|trace fixtures'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 test/tui-v2/components-transcript.test.ts 与 markdown-tool-rendering@v1 落地；WP-09 删除旧 renderer 时 scripts/repro-toolcards.tsx 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-021",
@@ -356,7 +357,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-askpanel-hide-custom-input.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'controller dialogs|overlay components'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 controllers-dialogs.test.ts、components-overlays.test.ts 与 interactive-overlays@v1 落地；WP-09 删除旧 renderer 时 scripts/verify-askpanel-hide-custom-input.tsx 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-026",
@@ -369,7 +370,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-askpanel-layout.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'surface|activity controller|width|resize'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 controllers-surfaces.test.ts、components-surfaces.test.ts 与 trajectory-goal-activity-context@v1 落地；WP-09 删除旧 renderer 时旧入口一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-027",
@@ -382,7 +383,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-askpanel-long-list.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'controller dialogs|interactive overlays|overlay components'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 controllers-dialogs.test.ts、controllers-interactive-overlays.test.ts、components-overlays.test.ts 与 interactive-overlays@v1 落地；WP-09 删除旧 renderer 时 scripts/verify-askpanel-long-list.tsx 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-028",
@@ -395,7 +396,7 @@
       "ciCommand": "node scripts/verify-batched-prompt-input.mjs",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（batched-prompt-input@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-029",
@@ -414,14 +415,14 @@
       "id": "REG-030",
       "severity": "P0",
       "owner": "tui-v2",
-      "status": "retired",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
+      "status": "verified",
+      "updatedAt": "2026-08-21T15:55:00.000Z",
       "traceId": "child-stderr-takeover@v1",
       "assertion": "cleanup: 子进程 stderr 不裸写终端破坏 alt-screen，输出去重为受控通知",
-      "ciCommand": "node --import tsx/esm scripts/verify-child-stderr.tsx",
+      "ciCommand": "node --import tsx/esm scripts/verify-child-stderr.ts",
       "blockDefault": false,
-      "deleteCondition": "v2 等价 fixture/trace（child-stderr-takeover@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "deleteCondition": "v2-neutral child-stderr capability gate retained after old renderer deletion; final gate requires the current command to pass",
+      "disposition": "unaffected"
     },
     {
       "id": "REG-031",
@@ -434,7 +435,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-cjk-truncate.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（cjk-width-truncate@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-032",
@@ -447,7 +448,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-clipboard-image.ts；node --import tsx/esm --test test/tui-v2/image-adapter-boundary.test.ts test/tui-v2/image-store.test.ts test/tui-v2/image-placement.test.ts test/tui-v2/image-writer.test.ts",
       "blockDefault": false,
       "deleteCondition": "旧 clipboard seam 与 image-fallback@v1 及 v2 image tests 均保留并通过；WP-09 删除旧入口时同步删除旧脚本行，并保留 v2 image coverage 行",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-033",
@@ -473,7 +474,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-compact.mjs",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（compact-fold-render@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-035",
@@ -499,7 +500,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-ctrl-t-scope.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'scene|trajectory|surface'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 scenes-coordinator.test.ts、components-trajectory.test.ts、controllers-surfaces.test.ts 与 trajectory-goal-activity-context@v1 落地；WP-09 删除旧 renderer 时旧入口一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-037",
@@ -525,7 +526,7 @@
       "ciCommand": "node scripts/verify-effort-slider-ui.mjs；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'controller channel options|WP-08d2|controller streaming|settings-routing'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 controllers-channel-options.test.ts、controllers-streaming.test.ts、components-settings-routing-overlays.test.ts、walking-skeleton.test.ts 与 settings-routing@v1 落地；WP-09 删除旧 renderer 时 scripts/verify-effort-slider-ui.mjs 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-039",
@@ -544,14 +545,14 @@
       "id": "REG-040",
       "severity": "P0",
       "owner": "tui-v2",
-      "status": "retired",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
+      "status": "verified",
+      "updatedAt": "2026-08-21T15:55:00.000Z",
       "traceId": "exit-resume-marker@v1",
       "assertion": "cleanup: 仅有实际消息或 pending 操作时退出才保留 resume marker",
-      "ciCommand": "node --import tsx/esm scripts/verify-exit-resume-marker.tsx",
+      "ciCommand": "node --import tsx/esm scripts/verify-exit-resume-marker.ts",
       "blockDefault": false,
-      "deleteCondition": "v2 等价 fixture/trace（exit-resume-marker@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "deleteCondition": "v2-neutral exit-resume domain gate retained after old renderer deletion; final gate requires the current command to pass",
+      "disposition": "unaffected"
     },
     {
       "id": "REG-041",
@@ -564,7 +565,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-extension-events.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（extension-events@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-042",
@@ -577,7 +578,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-extension-ui.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（extension-ui-dialog-shortcut@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-043",
@@ -616,7 +617,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-i18n-command-descriptions.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（i18n-command-descriptions@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-046",
@@ -629,7 +630,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-keys.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（key-tokenizer-modifiers@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-047",
@@ -681,7 +682,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-loaded-context-width.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'surface|context|width'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 components-surfaces.test.ts、model-surfaces.test.ts 与 trajectory-goal-activity-context@v1 落地；WP-09 删除旧 renderer 时旧入口一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-051",
@@ -694,7 +695,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-login-credentials.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（login-credentials-display@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-052",
@@ -720,7 +721,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-message-measure-depth.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（message-measure-depth@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-054",
@@ -798,7 +799,7 @@
       "ciCommand": "node scripts/verify-plain-enter-guard.mjs",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（plain-enter-guard@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-060",
@@ -889,7 +890,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-plugin-scene-boundary.tsx；v2 等价：node scripts/test-tui-v2.mjs --test-name-pattern 'scene|plugin'（test/tui-v2/scenes.test.ts + scenes-coordinator.test.ts）",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已在 WP-08a 落地（test/tui-v2/scenes*.test.ts）；WP-09 删除旧 renderer 时旧入口 scripts/verify-plugin-scene-boundary.tsx 与 PluginSceneBoundary 组件一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-067",
@@ -941,7 +942,7 @@
       "ciCommand": "node scripts/verify-prompt-history-draft.mjs；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'history navigation|interactive overlays|walking skeleton WP-08c'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 controllers-input.test.ts、controllers-interactive-overlays.test.ts、walking-skeleton.test.ts 与 interactive-overlays@v1 落地；WP-09 删除旧 renderer 时 scripts/verify-prompt-history-draft.mjs 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-071",
@@ -967,7 +968,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-resize-reflow.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（resize-reflow-equivalence@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-073",
@@ -1019,7 +1020,7 @@
       "ciCommand": "node scripts/verify-scroll.mjs",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（scroll-sticky-state@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-077",
@@ -1032,7 +1033,7 @@
       "ciCommand": "node scripts/verify-session-browser-layout.mjs；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'session/workspace overlays|session preview switches'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 test/tui-v2/components-session-workspace-overlays.test.ts 与 session-workspace@v1 落地；WP-09 删除旧 renderer 时 scripts/verify-session-browser-layout.mjs 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-078",
@@ -1045,7 +1046,7 @@
       "ciCommand": "node scripts/verify-session-browser.mjs；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'controller session catalog|inline pipeline session catalog|walking skeleton WP-08c/d1'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 test/tui-v2/controllers-session-catalog.test.ts、inline-pipeline.test.ts、walking-skeleton.test.ts 与 session-workspace@v1 落地；WP-09 删除旧 renderer 时 scripts/verify-session-browser.mjs 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-079",
@@ -1084,7 +1085,7 @@
       "ciCommand": "node scripts/verify-session-kinds.mjs；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'controller session catalog|session/workspace overlays|WP-08d1 session/workspace payloads'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 test/tui-v2/controllers-session-catalog.test.ts、components-session-workspace-overlays.test.ts 与 session-workspace@v1 落地；WP-09 删除旧 renderer 时 scripts/verify-session-kinds.mjs 一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-082",
@@ -1110,7 +1111,7 @@
       "ciCommand": "node scripts/verify-shrink.mjs",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（shrink-frame-redraw@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-084",
@@ -1123,7 +1124,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-shutdown-stderr.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（shutdown-stderr-restore@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-085",
@@ -1143,12 +1144,12 @@
       "severity": "P2",
       "owner": "tui-v2",
       "status": "verified",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
+      "updatedAt": "2026-08-21T15:55:00.000Z",
       "traceId": "subagent-model-route@v1",
       "assertion": "domain: 子代理无路由时继承 TUI 完整路由，显式路由优先",
-      "ciCommand": "node --import tsx/esm scripts/verify-subagent-model-route.tsx",
+      "ciCommand": "node --import tsx/esm scripts/verify-subagent-model-route.ts",
       "blockDefault": false,
-      "deleteCondition": "该回归不触及被迁移的渲染/插件面，原样保留；最终 gate 要求 ciCommand 在最终树仍通过；仅在入口本身被移除时删除本行",
+      "deleteCondition": "v2-neutral model-route domain gate retained after old renderer deletion; final gate requires the current command to pass",
       "disposition": "unaffected"
     },
     {
@@ -1168,14 +1169,14 @@
       "id": "REG-088",
       "severity": "P0",
       "owner": "tui-v2",
-      "status": "retired",
-      "updatedAt": "2026-08-19T08:10:02.771Z",
+      "status": "verified",
+      "updatedAt": "2026-08-21T15:55:00.000Z",
       "traceId": "teardown-exit-funnel@v1",
       "assertion": "cleanup: 上下文 teardown 不触发进程退出，退出码保持 0",
-      "ciCommand": "node --import tsx/esm scripts/verify-teardown-exit.tsx",
+      "ciCommand": "node --import tsx/esm scripts/verify-teardown-exit.ts",
       "blockDefault": false,
-      "deleteCondition": "v2 等价 fixture/trace（teardown-exit-funnel@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "deleteCondition": "v2-neutral teardown domain gate retained after old renderer deletion; final gate requires the current command to pass",
+      "disposition": "unaffected"
     },
     {
       "id": "REG-089",
@@ -1188,7 +1189,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-terminal-queries.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（terminal-query-raw-mode@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-090",
@@ -1201,7 +1202,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-text-background.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（text-background-ansi@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-091",
@@ -1240,7 +1241,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-trace-scene.tsx；v2 等价：node scripts/test-tui-v2.mjs -- --test-name-pattern 'trajectory|scene|fullscreen|width'",
       "blockDefault": false,
       "deleteCondition": "v2 等价覆盖已由 scenes-trajectory.test.ts、components-trajectory.test.ts、controllers-surfaces.test.ts 与 trajectory-goal-activity-context@v1 落地；WP-09 删除旧 renderer 时旧入口一并删除，本行转 retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-094",
@@ -1266,7 +1267,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-unseen-report-once.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（unseen-report-once@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-096",
@@ -1305,7 +1306,7 @@
       "ciCommand": "node --import tsx/esm scripts/verify-win32-input.tsx",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（win32-input-mode@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-099",
@@ -1318,7 +1319,7 @@
       "ciCommand": "node scripts/verify-word-jump.mjs",
       "blockDefault": false,
       "deleteCondition": "v2 等价 fixture/trace（word-jump-input@v1）落地且本行转 verified/retired 后，旧入口随旧 renderer 一并删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-100",
@@ -1370,7 +1371,7 @@
       "ciCommand": "node scripts/test-tui-v2.mjs -- --test-name-pattern 'surface|trajectory|replay|width' && pnpm verify:tui-v2 -- --check trace",
       "blockDefault": false,
       "deleteCondition": "WP-09 removes the old React surfaces only after this trace and the v2 component/controller tests remain green; then this row becomes retired",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-105",
@@ -1383,7 +1384,7 @@
       "ciCommand": "node --test --import tsx/esm test/tui-v2/controllers-external-actions.test.ts test/tui-v2/components-external-actions.test.ts && pnpm verify:tui-v2 -- --check trace",
       "blockDefault": false,
       "deleteCondition": "retain the v2 controller/component/trace coverage; delete only with the external-action capability layer",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-106",
@@ -1396,7 +1397,7 @@
       "ciCommand": "node --test --import tsx/esm test/tui-v2/terminal-lifecycle.test.ts test/tui-v2/controllers-external-actions.test.ts && node scripts/verify-external-editor.mjs",
       "blockDefault": false,
       "deleteCondition": "retire the accepted risk after a real PTY child editor drill is archived; keep the v2 fake-stream coverage",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-107",
@@ -1409,7 +1410,7 @@
       "ciCommand": "node --test --import tsx/esm test/tui-v2/controllers-external-actions.test.ts test/tui-v2/controllers-commands.test.ts",
       "blockDefault": false,
       "deleteCondition": "retain the v2 shell capability/controller and inline append-only assertions",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-108",
@@ -1422,7 +1423,7 @@
       "ciCommand": "node --test --import tsx/esm test/tui-v2/controllers-external-actions.test.ts test/tui-v2/components-external-actions.test.ts test/tui-v2/theme-i18n-width.test.ts test/tui-v2/renderer-cells-width.test.ts",
       "blockDefault": false,
       "deleteCondition": "retain v2 theme/i18n/notification coverage; old UI scripts are not CI authorities",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-109",
@@ -1435,7 +1436,7 @@
       "ciCommand": "node --test --import tsx/esm test/tui-v2/terminal-capabilities.test.ts test/tui-v2/mouse-controller.test.ts test/tui-v2/kitty-keyboard.test.ts test/tui-v2/osc52-capability.test.ts && pnpm verify:tui-v2 -- --check host-capabilities",
       "blockDefault": false,
       "deleteCondition": "WP-09 retains the v2 terminal capability contracts and host-capabilities check; delete only with the terminal layer",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-111",
@@ -1448,7 +1449,7 @@
       "ciCommand": "node --test --import tsx/esm test/tui-v2/production-wiring.test.ts test/tui-v2/production-host-seams.test.ts test/tui-v2/production-profile.test.ts && pnpm verify:tui-v2 -- --check v2-only",
       "blockDefault": false,
       "deleteCondition": "retire the accepted risk after the WP-09c real launcher/PTY drill; retain static and fake-stream production seams",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-112",
@@ -1461,7 +1462,7 @@
       "ciCommand": "node --test --import tsx/esm test/tui-v2/neutral-helpers.test.ts test/tui-v2/controllers-surfaces.test.ts test/tui-v2/production-wiring.test.ts && node scripts/verify-external-editor.mjs",
       "blockDefault": false,
       "deleteCondition": "保留 neutral helper tests；旧 compatibility re-export 可在阶段3删除",
-      "disposition": "rewrite-v2"
+      "disposition": "remove"
     },
     {
       "id": "REG-110",

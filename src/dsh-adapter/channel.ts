@@ -1949,7 +1949,7 @@ export function createChannel(
       for (const listener of listeners) listener()
     },
     // Frame-aligned notification for streaming deltas. LLM chunks arrive at
-    // 100-300 events/s (one per token); waking React synchronously per event
+    // 100-300 events/s (one per token); waking the coordinator synchronously per event
     // commits the whole tree per token — the render throttle only gates
     // paint, not commits, so the event loop saturates and output stutters.
     // Data + version stay synchronous (getSnapshot always reads fresh

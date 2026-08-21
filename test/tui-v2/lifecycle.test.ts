@@ -2,7 +2,7 @@
  * tui-v2 lifecycle smoke (WP-09b).
  *
  * Repeats the real v2 bootstrap/coordinator against fake stdin/streams and a
- * VirtualTerminal. The deleted React lifecycle child is intentionally not
+ * VirtualTerminal. The deleted legacy lifecycle child is intentionally not
  * recreated: startup, frame commit, input, stop, and terminal restoration are
  * all exercised through the production v2 seam in-process.
  */
@@ -84,6 +84,7 @@ async function runOnce(run: number): Promise<void> {
     theme: 'default',
     attachProcessHandlers: false,
     restartRunner: null,
+    historyPersistence: null,
   })
 
   await app.start()

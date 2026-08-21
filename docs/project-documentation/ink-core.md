@@ -1,13 +1,13 @@
-# 移植 Ink 内核架构地图
+# 历史 V1 renderer provenance（offline only）
 
-> **状态：已冻结（v2 重写离线 baseline）。** 自 `refactor/tui-render-v3` 分支起，
-> 本文描述的 `src/ink/` / Yoga 渲染内核冻结为 v2 渲染重写的离线 baseline：除 P0
-> 数据/安全修复外，不再在其上新增布局、缓存或协议能力。实施计划、基线 artifact
-> 与回归迁移台账见 `docs/tui-render-v2-development-plan.md`。
+> **状态：冻结、只读、离线 only。** 本文保留 WP-09a baseline 的来源与审计
+> 证据；旧 source 已从生产树删除，本文不描述当前 runtime，也不是实现指导。
+> 可执行的唯一 offline boundary 是 `tools/tui-v2-baseline/`，其中 artifact/hash
+> 与 `reviewed-differences.json` 受 manifest pin 保护。
 
-本文描述 `src/ink/`（103 个文件）与 `src/native-ts/yoga-layout/` 的渲染内核：
-移植来源、渲染管线、布局与测量、输入链、终端协议，以及与发布版 Ink 5.2.0
-的结构性差异。行号均以审计基线 b2f4087 为准。
+本文中的旧路径、依赖和实现名称仅用于解释 frozen provenance。当前 v2 渲染请读
+`docs/project-documentation/rendering.md`、`src/tui-v2/renderer/` 与
+`src/tui-v2/terminal/`。
 
 ## 移植来源与基线
 

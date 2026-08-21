@@ -191,10 +191,11 @@ macOS 自带 Terminal.app 会自行消费 `⌘` 快捷键，请继续使用 `Ctr
   `/preset` 切换；已产生对话的会话不可切换，空白会话立即生效。默认 preset 持久化
   在 `~/.dsh-tui/agent-preset.json`；`/model` 的选择持久化在 `~/.dsh-tui/model.json`。
   详见[配置参考](docs/configuration.md#agent-preset)。
-- **自定义主题**：`/theme` 选择器（`auto` 跟随系统/终端背景，内置 `light` / `dark` /
-  `dark-ansi`），也支持 `~/.dsh-tui/themes/<名字>.json` 自定义主题，选中即热切换
-  并持久化；`DSH_TUI_THEME` 环境变量 > 持久化选择 > OSC 11 终端背景自动检测。
-  详见[主题系统](docs/themes.md)。
+- **主题 registry**：`/theme` 选择器使用 v2 registry；生产默认提供 `default`，embedder
+  可通过 `themeDescriptors` 注入其他安全 descriptor。选中即热切换并持久化；
+  `DSH_TUI_THEME` 环境变量 > 持久化选择 > registry fallback，unknown/no truecolor host
+  会安全降级。
+  详见[主题系统](docs/project-documentation/theme-i18n.md)。
 - **MCP**：通过 `@deepseek-ai/dsh-mcp-client` 挂载服务器，工具以
   `mcp__<服务器>__<工具>` 注册；`/mcp` 查看连接状态。
   详见[配置参考](docs/configuration.md#mcp)。
@@ -208,8 +209,8 @@ dsh profile
   -> Agent preset + DSH services
   -> session/event
   -> Channel projection
-  -> React components
-  -> ported Ink/Yoga renderer
+  -> createTuiV2App / coordinator
+  -> v2 model -> frame builder -> terminal backend
   -> terminal
 ```
 

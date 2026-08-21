@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "kind": "tui-v2-reviewed-differences",
+  "baselineArtifact": {
+    "path": "tools/tui-v2-baseline/artifacts/v1-capture@v1.json",
+    "sha256": "1c0ca53cd8e3d94a656e4c02c808566f34bf59b99d00f685e4b66715a5ddfd29"
+  },
+  "policy": {
+    "acceptedSeverity": "P2",
+    "requiredSemanticAssertions": [
+      "submit-contract",
+      "grid-contract",
+      "cursor-contract",
+      "terminal-mode-contract"
+    ]
+  },
+  "semanticAssertions": [
+    {
+      "id": "submit-contract",
+      "severity": "P0",
+      "owner": "tui-v2/controllers",
+      "reason": "The user-submit trace must still journal, dispatch, render and persist the submitted prompt; visual placement cannot waive command semantics.",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "test/tui-v2/controllers-input.test.ts",
+          "testNamePattern": "submit journals, forwards, and mirrors history"
+        },
+        {
+          "kind": "test",
+          "path": "test/tui-v2/persisted-history.test.ts",
+          "testNamePattern": "controller seeds editor/search and appends submissions"
+        },
+        {
+          "kind": "test",
+          "path": "test/tui-v2/walking-skeleton.test.ts",
+          "testNamePattern": "welcome, input echo, stream growth"
+        },
+        {
+          "kind": "check",
+          "name": "controllers"
+        }
+      ]
+    },
+    {
+      "id": "grid-contract",
+      "severity": "P1",
+      "owner": "tui-v2/renderer",
+      "reason": "The v2 screen is intentionally component-native rather than a cell-for-cell copy, while width safety, full/incremental replay equivalence and no-ghosting remain mandatory.",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "test/tui-v2/fullscreen-overlay-scan.test.ts",
+          "testNamePattern": "fullscreen golden|fullscreen differential|fullscreen overlay"
+        },
+        {
+          "kind": "test",
+          "path": "test/tui-v2/frame-builder-fullscreen.test.ts",
+          "testNamePattern": "writer SGR/OSC8 bytes reproduce the frame"
+        },
+        {
+          "kind": "check",
+          "name": "fullscreen"
+        },
+        {
+          "kind": "check",
+          "name": "trace"
+        }
+      ]
+    },
+    {
+      "id": "cursor-contract",
+      "severity": "P0",
+      "owner": "tui-v2/terminal",
+      "reason": "The v2 editor owns the hardware cursor and bounds it independently of the retired renderer's resting coordinate.",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "test/tui-v2/frame-builder-fullscreen.test.ts",
+          "testNamePattern": "visible cursor is bounds-checked"
+        },
+        {
+          "kind": "test",
+          "path": "test/tui-v2/controllers-input.test.ts",
+          "testNamePattern": "true UTF-16 cursor offset"
+        },
+        {
+          "kind": "check",
+          "name": "fullscreen"
+        }
+      ]
+    },
+    {
+      "id": "terminal-mode-contract",
+      "severity": "P0",
+      "owner": "tui-v2/lifecycle",
+      "reason": "The final snapshot is taken after v2 lifecycle cleanup, so mode parity is asserted by enter/stop/restore tests instead of copying the retired capture's pre-cleanup mode bits.",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "test/tui-v2/lifecycle.test.ts",
+          "testNamePattern": "lifecycle"
+        },
+        {
+          "kind": "test",
+          "path": "test/tui-v2/terminal-lifecycle.test.ts",
+          "testNamePattern": "lifecycle"
+        },
+        {
+          "kind": "test",
+          "path": "test/tui-v2/fullscreen-triggers.test.ts",
+          "testNamePattern": "fullscreen trigger: initial frame"
+        },
+        {
+          "kind": "check",
+          "name": "host-capabilities"
+        }
+      ]
+    }
+  ],
+  "differences": [
+    {
+      "id": "user-submit-v1-v2-layout",
+      "traceId": "user-submit",
+      "profile": "unicode-ambiguous-narrow",
+      "severity": "P2",
+      "owner": "tui-v2/renderer",
+      "reason": "Approved v2 component layout, editor cursor ownership and lifecycle cleanup replace the retired renderer's exact visual grid, resting cursor and pre-cleanup mode snapshot; geometry, width safety and all P0/P1 semantics remain independently asserted.",
+      "approvedAt": "2026-08-21T00:00:00Z",
+      "differenceKinds": [
+        "grid",
+        "cursor",
+        "modes"
+      ],
+      "reviewFingerprint": "dbf6f3b41371333ea26ae74a6869b4c301ca0458617d644b3af48a986122d627",
+      "approvedReplacementAssertions": [
+        "submit-contract",
+        "grid-contract",
+        "cursor-contract",
+        "terminal-mode-contract"
+      ]
+    }
+  ]
+}

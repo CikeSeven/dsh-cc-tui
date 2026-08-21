@@ -185,11 +185,11 @@ The complete bilingual index is [`docs/README.md`](docs/README.md).
   blank sessions take effect immediately. The default preset persists in
   `~/.dsh-tui/agent-preset.json`; `/model` selections persist in `~/.dsh-tui/model.json`.
   See [Configuration](docs/configuration.en.md#agent-preset).
-- **Custom themes**: the `/theme` picker (`auto` follows the system/terminal background,
-  built-in `light` / `dark` / `dark-ansi`) also accepts custom themes from
-  `~/.dsh-tui/themes/<name>.json` — selecting one hot-swaps and persists it; precedence is
-  `DSH_TUI_THEME` env var > persisted selection > OSC 11 terminal-background auto-detection.
-  See [Themes](docs/themes.en.md).
+- **Theme registry**: the `/theme` picker uses the v2 registry. Production provides
+  `default`; embedders may add safe descriptors through `themeDescriptors`. Selection
+  hot-swaps and persists; precedence is `DSH_TUI_THEME` > persisted selection > registry
+  fallback, with safe degradation on unknown/no-truecolor hosts. See
+  [theme and i18n notes](docs/project-documentation/theme-i18n.md).
 - **MCP**: servers are mounted via `@deepseek-ai/dsh-mcp-client`, with tools registered as
   `mcp__<server>__<tool>`; `/mcp` shows connection status.
   See [Configuration](docs/configuration.en.md#mcp).
@@ -203,8 +203,8 @@ dsh profile
   -> agent preset + DSH services
   -> session/event
   -> Channel projection
-  -> React components
-  -> ported Ink/Yoga renderer
+  -> createTuiV2App / coordinator
+  -> v2 model -> frame builder -> terminal backend
   -> terminal
 ```
 

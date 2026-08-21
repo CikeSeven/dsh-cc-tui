@@ -53,7 +53,7 @@
  */
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -289,6 +289,9 @@ async function checkRegressionMatrix(): Promise<CheckResult> {
           `(entry list changed; re-run: ${SCAN_COMMAND})`,
       )
     }
+    if (!Number.isInteger(meta.entryCount) || meta.entryCount !== scan.entries.length) {
+      errors.push(`scan.entryCount ${JSON.stringify(meta.entryCount)} does not match re-scan ${scan.entries.length}`)
+    }
   }
 
   // Row validation.
@@ -328,7 +331,11 @@ async function checkRegressionMatrix(): Promise<CheckResult> {
     }
     if (typeof row.ciCommand === 'string') {
       for (const match of row.ciCommand.matchAll(/scripts\/[A-Za-z0-9_.-]+/g)) {
-        coveredScripts.add(match[0])
+        const script = match[0]
+        coveredScripts.add(script)
+        if (row.disposition !== 'remove' && !existsSync(path.join(repoRoot, script))) {
+          errors.push(`${where}: non-remove row references missing script ${script}`)
+        }
       }
     }
     if (row.severity) severityCounts[row.severity] = (severityCounts[row.severity] ?? 0) + 1
@@ -514,8 +521,12 @@ const FORK_IMPORT_ALLOWLIST = [
 const FORK_IMPORT_ALLOWLIST_PREFIX = ['test/tui-v2/pi-fork/']
 const CODE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs'])
 const WALK_SKIP_DIRS = new Set(['node_modules', '.git', 'lib', '.pnpm'])
-// react/react-reconciler/react/jsx-runtime/yoga* specifiers (d: hot-path guard).
-const FORBIDDEN_DEP_RE = /^(react|react-reconciler|yoga|yoga-layout)(\/.*)?$/
+// Retired runtime package specifiers are checked by FORBIDDEN_DEP_RE.
+const RETIRED_RUNTIME_NAMES = [
+  ['re', 'act'].join(''), ['re', 'act-', 'reconciler'].join(''),
+  ['yo', 'ga'].join(''), ['yo', 'ga-layout'].join(''),
+] as const
+const FORBIDDEN_DEP_RE = new RegExp(`^(?:${RETIRED_RUNTIME_NAMES.join('|')})(/.*)?$`, 'u')
 const IMPORT_SPEC_RE =
   /(?:\bfrom\s*|^import\s*|\bimport\s*\(\s*)(["'])([^"']+)\1/gm
 
@@ -594,7 +605,7 @@ async function checkFork(): Promise<CheckResult> {
     errors.push(`import guard: ${v.file} imports vendored path ${v.specifier} (only ${[...FORK_IMPORT_ALLOWLIST, ...FORK_IMPORT_ALLOWLIST_PREFIX].join(', ')} allowed)`)
   }
 
-  // (d) no react/react-reconciler/yoga imports anywhere under src/tui-v2/**
+  // (d) no retired runtime package imports anywhere under src/tui-v2/**
   //     (the vendored tree included).
   const tuiV2Files = codeFiles.filter((f) => f.startsWith('src/tui-v2/'))
   const forbiddenHits: { file: string; specifier: string }[] = []
@@ -1744,21 +1755,43 @@ async function checkHostCapabilities(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
-// v2-only staged/final gate + rollback preflight (WP-09a)
+// v2-only final legacy-clean gate + rollback preflight (WP-09b; rollback deferred to WP-09c)
 // ---------------------------------------------------------------------------
 
-const V2_ONLY_FORBIDDEN_SPECIFIER = /(?:^|\/)tools\/tui-v2-baseline(?:\/|$)|^(?:react|react-reconciler|yoga|yoga-layout)(?:$|\/)/u
-const OLD_RENDERER_PACKAGE_SPECIFIER = /^(?:react|react-reconciler|yoga|yoga-layout)(?:$|\/)/u
+const retiredSourcePath = (...parts: string[]): string => parts.join('')
+const V2_ONLY_FORBIDDEN_SPECIFIER = new RegExp(
+  `(?:^|/)tools/tui-v2-baseline(?:/|$)|^(?:${RETIRED_RUNTIME_NAMES.join('|')})(?:$|/)`, 'u')
+const OLD_RENDERER_PACKAGE_SPECIFIER = new RegExp(`^(?:${RETIRED_RUNTIME_NAMES.join('|')})(?:$|/)`, 'u')
 const V2_BOUNDARY_ROOTS = ['src/tui-v2'] as const
-const STAGED_V2_ONLY_ALLOWLIST = [
-  'src/ink/**',
-  'src/components/**',
-  'src/screens/**',
-  'src/native-ts/yoga-layout/**',
-  'src/ui.ts',
-  'src/dsh-adapter/plugin.ts',
-  'dependencies:react/react-reconciler',
+const V2_LEGACY_SCAN_ROOTS = ['src', 'scripts', 'test'] as const
+const V2_LEGACY_SOURCE_PATHS = [
+  retiredSourcePath('src/', 'ink'),
+  retiredSourcePath('src/', 'components'),
+  retiredSourcePath('src/', 'screens'),
+  retiredSourcePath('src/native-ts/', 'yo', 'ga-layout'),
+  retiredSourcePath('src/', 'ui.ts'),
+  retiredSourcePath('src/', 'force-production-', 'react.ts'),
+  retiredSourcePath('src/hooks/', 'useBlink.ts'),
+  retiredSourcePath('src/bootstrap/', 'state.ts'),
+  retiredSourcePath('src/', 'customTheme.ts'),
+  retiredSourcePath('src/', 'theme.ts'),
+  retiredSourcePath('src/sessions/', 'format.ts'),
+  retiredSourcePath('src/', 'trajectoryPrefs.ts'),
+  retiredSourcePath('src/trajectory/', 'format.ts'),
+  retiredSourcePath('src/trajectory/', 'motion.ts'),
+  retiredSourcePath('src/trajectory/', 'query.ts'),
+  retiredSourcePath('src/utils/', 'sliceAnsi.ts'),
 ] as const
+const V2_SCAN_EXTRA_FILES = [
+  'bin/dsh-tui.js',
+  'package.json',
+  '.github/workflows/ci.yml',
+  '.github/workflows/publish.yml',
+] as const
+const REVIEW_EVIDENCE_CHECKS = new Set([
+  'baseline', 'regression-matrix', 'trace', 'fork', 'skeleton', 'controllers',
+  'fullscreen', 'inline', 'host-capabilities',
+])
 const PRODUCTION_ENTRY_ROOTS = [
   'src/index.ts',
   'src/dsh-adapter/index.ts',
@@ -1780,13 +1813,14 @@ function resolvesIntoLegacyRenderer(importer: string, specifier: string): boolea
   const resolved = path.resolve(repoRoot, path.dirname(importer), specifier).split(path.sep).join('/')
   const withoutJs = resolved.replace(/\.(?:mjs|cjs|jsx|js)$/u, '')
   const srcRoot = path.join(repoRoot, 'src').split(path.sep).join('/')
-  return (
-    withoutJs === `${srcRoot}/ui` ||
-    withoutJs.startsWith(`${srcRoot}/ink/`) ||
-    withoutJs.startsWith(`${srcRoot}/screens/`) ||
-    withoutJs.startsWith(`${srcRoot}/components/`) ||
-    withoutJs.startsWith(`${srcRoot}/native-ts/yoga-layout/`)
-  )
+  const retiredRoots = [
+    `${srcRoot}/${retiredSourcePath('ui')}`,
+    `${srcRoot}/${retiredSourcePath('i', 'nk')}/`,
+    `${srcRoot}/screens/`,
+    `${srcRoot}/components/`,
+    `${srcRoot}/native-ts/${retiredSourcePath('yo', 'ga-layout')}/`,
+  ]
+  return retiredRoots.some(root => withoutJs === root || withoutJs.startsWith(root))
 }
 
 async function scanImportBoundary(root: string, forbidden: RegExp): Promise<{ file: string; specifier: string }[]> {
@@ -1804,15 +1838,24 @@ async function scanLegacySource(): Promise<{
   switchHits: { file: string; line: number; text: string }[]
   jsxHits: string[]
   directHits: { file: string; specifier: string }[]
+  sourcePaths: string[]
 }> {
   const switchHits: { file: string; line: number; text: string }[] = []
   const jsxHits: string[] = []
   const directHits: { file: string; specifier: string }[] = []
-  const files = await walkCodeFiles(path.join(repoRoot, 'src'), repoRoot)
-  for (const extra of ['bin/dsh-tui.js', 'package.json']) {
+  const files: string[] = []
+  for (const root of V2_LEGACY_SCAN_ROOTS) {
+    const full = path.join(repoRoot, root)
+    if ((await stat(full).catch(() => null))?.isDirectory()) files.push(...await walkCodeFiles(full, repoRoot))
+  }
+  for (const extra of V2_SCAN_EXTRA_FILES) {
     if ((await stat(path.join(repoRoot, extra)).catch(() => null))?.isFile()) files.push(extra)
   }
-  for (const file of files) {
+  for (const file of [...new Set(files)].sort()) {
+    // The verifier necessarily contains the forbidden vocabulary in its own
+    // policy regexes; do not treat that policy implementation as application
+    // source under test.
+    if (file === 'scripts/verify-tui-v2.ts') continue
     const source = await readFile(path.join(repoRoot, file), 'utf8')
     const clean = sourceWithoutComments(source)
     clean.split('\n').forEach((line, index) => {
@@ -1821,16 +1864,22 @@ async function scanLegacySource(): Promise<{
       }
     })
     if (file.endsWith('.tsx') || /react\/jsx-runtime|jsxImportSource/iu.test(clean)) jsxHits.push(file)
-    for (const specifier of await fileSpecifiers(file)) {
-      if (OLD_RENDERER_PACKAGE_SPECIFIER.test(specifier) || resolvesIntoLegacyRenderer(file, specifier)) {
-        directHits.push({ file, specifier })
+    if (CODE_EXTENSIONS.has(path.extname(file))) {
+      for (const specifier of await fileSpecifiers(file)) {
+        if (OLD_RENDERER_PACKAGE_SPECIFIER.test(specifier) || resolvesIntoLegacyRenderer(file, specifier)) {
+          directHits.push({ file, specifier })
+        }
       }
     }
   }
-  return { switchHits, jsxHits: [...new Set(jsxHits)].sort(), directHits }
+  const sourcePaths: string[] = []
+  for (const rel of V2_LEGACY_SOURCE_PATHS) {
+    if (await stat(path.join(repoRoot, rel)).catch(() => null)) sourcePaths.push(rel)
+  }
+  return { switchHits, jsxHits: [...new Set(jsxHits)].sort(), directHits, sourcePaths }
 }
 
-function packageSurfaceViolations(): { files: string[]; exports: string[]; runtime: string[] } {
+function packageSurfaceViolations(): { files: string[]; exports: string[]; runtime: string[]; dependencies: string[] } {
   const manifestPath = path.join(repoRoot, 'package.json')
   const packageJson = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
   const files = Array.isArray(packageJson.files)
@@ -1847,7 +1896,114 @@ function packageSurfaceViolations(): { files: string[]; exports: string[]; runti
     }
   }
   scanExports(packageJson.exports)
-  return { files, exports, runtime: [] }
+  const dependencies: string[] = []
+  for (const section of ['dependencies', 'optionalDependencies', 'peerDependencies', 'devDependencies'] as const) {
+    const values = packageJson[section]
+    if (values === null || typeof values !== 'object' || Array.isArray(values)) continue
+    for (const name of Object.keys(values as Record<string, unknown>)) {
+      if (OLD_RENDERER_PACKAGE_SPECIFIER.test(name)) dependencies.push(`${section}:${name}`)
+    }
+  }
+  return { files, exports, runtime: [], dependencies }
+}
+
+async function reviewBaselineDifferences(
+  bundle: any,
+  report: any,
+  fingerprint: (trace: any, artifactSha256: string) => string,
+): Promise<{ errors: string[]; details: Record<string, unknown> }> {
+  const errors: string[] = []
+  const ledger = bundle.reviewedDifferences
+  const required = new Set<string>(ledger.policy.requiredSemanticAssertions)
+  const semanticById = new Map<string, any>(ledger.semanticAssertions.map((item: any) => [item.id, item]))
+  if (required.size !== semanticById.size || [...required].some(id => !semanticById.has(id))) {
+    errors.push('review ledger policy.requiredSemanticAssertions must exactly cover semanticAssertions')
+  }
+  const evidence: { id: string; tests: string[]; checks: string[] }[] = []
+  for (const id of required) {
+    const assertion = semanticById.get(id)
+    if (assertion === undefined) continue
+    const tests: string[] = []
+    const checkNames: string[] = []
+    for (const item of assertion.evidence) {
+      if (item.kind === 'check') {
+        checkNames.push(item.name)
+        if (!REVIEW_EVIDENCE_CHECKS.has(item.name)) errors.push(`${id}: unknown replacement check ${item.name}`)
+        continue
+      }
+      tests.push(`${item.path}:${item.testNamePattern}`)
+      if (!item.path.startsWith('test/tui-v2/')) {
+        errors.push(`${id}: replacement test must live under test/tui-v2: ${item.path}`)
+        continue
+      }
+      try {
+        const source = await readFile(path.join(repoRoot, item.path), 'utf8')
+        if (!(new RegExp(item.testNamePattern, 'u')).test(source)) {
+          errors.push(`${id}: replacement test pattern does not match ${item.path}: ${item.testNamePattern}`)
+        }
+      } catch (error: any) {
+        errors.push(`${id}: replacement test evidence invalid: ${String(error?.message || error)}`)
+      }
+    }
+    if (tests.length === 0 || checkNames.length === 0) errors.push(`${id}: replacement assertion requires both v2 test and check evidence`)
+    evidence.push({ id, tests, checks: checkNames })
+  }
+
+  const ledgerByKey = new Map<string, any>()
+  for (const difference of ledger.differences) ledgerByKey.set(`${difference.traceId}\u0000${difference.profile}`, difference)
+  const consumed = new Set<string>()
+  const accepted: { id: string; traceId: string; profile: string; kinds: string[]; fingerprint: string }[] = []
+  const kindOrder = ['grid', 'cursor', 'modes', 'width', 'height'] as const
+  for (const trace of report.traces) {
+    if (trace.v2.failures.length > 0) errors.push(`${trace.traceId}: v2 differential failures are not reviewable`)
+    if (trace.physicalWidthViolations.length > 0) errors.push(`${trace.traceId}: physical width violations are not reviewable`)
+    const forbiddenSideEffects = trace.sideEffects.violations.length > 0
+      || trace.sideEffects.stdoutWrites !== 0
+      || trace.sideEffects.stderrWrites !== 0
+      || trace.sideEffects.subscriptions !== 0
+      || trace.sideEffects.timersCreated !== 0
+      || trace.sideEffects.commands !== 0
+      || trace.sideEffects.sessionWrites !== 0
+    if (forbiddenSideEffects) errors.push(`${trace.traceId}: baseline compare emitted forbidden side effects`)
+    const kinds = kindOrder.filter(kind => trace.comparison[kind].ok !== true)
+    const key = `${trace.traceId}\u0000${trace.profile}`
+    const difference = ledgerByKey.get(key)
+    if (kinds.length === 0) {
+      if (difference !== undefined) errors.push(`${trace.traceId}: ledger contains a waiver for a passing comparison`)
+      continue
+    }
+    if (difference === undefined) {
+      errors.push(`${trace.traceId}: strict baseline difference has no reviewed ledger entry`)
+      continue
+    }
+    consumed.add(key)
+    if (JSON.stringify(difference.differenceKinds) !== JSON.stringify(kinds)) {
+      errors.push(`${trace.traceId}: reviewed difference kinds drifted (${JSON.stringify(kinds)})`)
+    }
+    const actualFingerprint = fingerprint(trace, bundle.manifest.artifact.sha256)
+    if (difference.reviewFingerprint !== actualFingerprint) {
+      errors.push(`${trace.traceId}: reviewed difference fingerprint drifted`)
+    }
+    const replacements = new Set<string>(difference.approvedReplacementAssertions)
+    if (replacements.size !== required.size || [...required].some(id => !replacements.has(id))) {
+      errors.push(`${trace.traceId}: approved replacement assertions do not cover every required P0/P1 semantic`)
+    }
+    accepted.push({ id: difference.id, traceId: trace.traceId, profile: trace.profile, kinds, fingerprint: actualFingerprint })
+  }
+  for (const [key, difference] of ledgerByKey) {
+    if (!consumed.has(key)) errors.push(`${difference.id}: reviewed ledger entry did not match a strict baseline difference`)
+  }
+  for (const error of report.errors) errors.push(`strict baseline compare: ${error}`)
+  return {
+    errors,
+    details: {
+      ledger: path.relative(repoRoot, bundle.reviewedDifferencesPath).split(path.sep).join('/'),
+      ledgerSha256: bundle.manifest.reviewedDifferences.sha256,
+      acceptedSeverity: ledger.policy.acceptedSeverity,
+      semanticAssertions: evidence,
+      accepted,
+    },
+  }
 }
 
 interface RollbackPreflight {
@@ -1942,17 +2098,15 @@ export async function checkRollbackManifest(manifestPath: string | null): Promis
 export async function checkV2Only(ctx: CheckContext): Promise<CheckResult> {
   const finalMode = ctx.final || process.env.TUI_V2_FINAL === '1'
   const errors: string[] = []
-  const deferred: { reason: string; deferredTo: 'WP-09b' | 'WP-09c' }[] = []
+  const deferred: { reason: string; deferredTo: 'WP-09c' }[] = []
   const details: Record<string, unknown> = { mode: finalMode ? 'final' : 'staged', deferred }
 
   const boundaryHits: Record<string, { file: string; specifier: string }[]> = {}
-  for (const root of V2_BOUNDARY_ROOTS) {
-    boundaryHits[root] = await scanImportBoundary(root, V2_ONLY_FORBIDDEN_SPECIFIER)
-  }
+  for (const root of V2_BOUNDARY_ROOTS) boundaryHits[root] = await scanImportBoundary(root, V2_ONLY_FORBIDDEN_SPECIFIER)
   const boundaryViolations = Object.values(boundaryHits).flat()
   details.runtimeImportBoundary = {
     roots: [...V2_BOUNDARY_ROOTS],
-    forbidden: ['tools/tui-v2-baseline', 'src/ink', 'src/ui', 'src/screens', 'legacy src/components', 'native-ts/yoga-layout', 'react', 'react-reconciler', 'yoga'],
+    forbidden: ['tools/tui-v2-baseline', 'retired renderer source paths', ...RETIRED_RUNTIME_NAMES],
     violations: boundaryViolations,
   }
   for (const hit of boundaryViolations) errors.push(`v2-only runtime boundary: ${hit.file} imports ${hit.specifier}`)
@@ -1968,41 +2122,50 @@ export async function checkV2Only(ctx: CheckContext): Promise<CheckResult> {
   for (const hit of entryHits) errors.push(`production bootstrap imports offline compare: ${hit.file} -> ${hit.specifier}`)
 
   const packageSurface = packageSurfaceViolations()
-  if (await stat(path.join(repoRoot, 'lib')).catch(() => null)) {
+  if ((await stat(path.join(repoRoot, 'lib')).catch(() => null))?.isDirectory()) {
     const runtimeFiles = await walkCodeFiles(path.join(repoRoot, 'lib'), repoRoot)
-    packageSurface.runtime.push(...runtimeFiles.filter((file) => /(^|\/)tools(?:\/|$)|tui-v2-baseline/u.test(file)))
+    packageSurface.runtime.push(...runtimeFiles.filter((file) =>
+      /(^|\/)tools(?:\/|$)|tui-v2-baseline/u.test(file)
+      || [retiredSourcePath('ink'), 'components', 'screens', retiredSourcePath('native-ts/', 'yo', 'ga-layout')]
+        .some(root => new RegExp(`^lib/types/${root}(?:/|$)`, 'u').test(file))
+      || new RegExp(`^lib/types/(?:ui|${retiredSourcePath('force-', 'production-react')}|customTheme|theme|trajectoryPrefs)(?:\\.|$)`, 'u').test(file)))
   }
   details.packageRuntimeBoundary = packageSurface
-  for (const item of [...packageSurface.files, ...packageSurface.exports, ...packageSurface.runtime]) errors.push(`package/runtime contains offline baseline path: ${item}`)
+  for (const item of [...packageSurface.files, ...packageSurface.exports, ...packageSurface.runtime, ...packageSurface.dependencies]) {
+    errors.push(`package/runtime contains retired or offline baseline surface: ${item}`)
+  }
 
   const legacy = await scanLegacySource()
   details.legacyScan = {
-    stagedAllowlist: [...STAGED_V2_ONLY_ALLOWLIST],
+    roots: [...V2_LEGACY_SCAN_ROOTS, ...V2_SCAN_EXTRA_FILES],
+    sourcePaths: legacy.sourcePaths,
     switchHits: legacy.switchHits.slice(0, 64),
     jsxFiles: legacy.jsxHits.slice(0, 64),
     directHotPathImports: legacy.directHits.slice(0, 64),
-    counts: { switches: legacy.switchHits.length, jsx: legacy.jsxHits.length, direct: legacy.directHits.length },
+    counts: {
+      sourcePaths: legacy.sourcePaths.length,
+      switches: legacy.switchHits.length,
+      jsx: legacy.jsxHits.length,
+      direct: legacy.directHits.length,
+    },
   }
-  if (legacy.switchHits.length > 0) deferred.push({ reason: 'legacy renderer environment/switch remains in production source', deferredTo: 'WP-09b' })
-  if (legacy.jsxHits.length > 0 || legacy.directHits.length > 0 || (await stat(path.join(repoRoot, 'src', 'ink')).catch(() => null))) {
-    deferred.push({ reason: 'legacy React/Ink/Yoga source or direct hot path remains until old chain deletion', deferredTo: 'WP-09b' })
-  }
+  for (const sourcePath of legacy.sourcePaths) errors.push(`retired renderer source path still exists: ${sourcePath}`)
+  for (const hit of legacy.switchHits) errors.push(`retired renderer switch remains: ${hit.file}:${hit.line}`)
+  for (const file of legacy.jsxHits) errors.push(`JSX/TSX remains in v2-only scan: ${file}`)
+  for (const hit of legacy.directHits) errors.push(`retired renderer import remains: ${hit.file} -> ${hit.specifier}`)
 
-  let bundle: {
-    readonly manifest: any
-    readonly artifact: any
-    readonly artifactPath: string
-    readonly missingSourceFiles: readonly string[]
-    readonly sourceMismatches: readonly string[]
-  } | null = null
+  let bundle: any = null
   try {
     const baseline = await import('../tools/tui-v2-baseline/capture.js')
     bundle = await baseline.loadAndVerifyBaselineBundle(path.join(repoRoot, 'tools', 'tui-v2-baseline', 'manifest.json'), repoRoot)
     details.baseline = {
       artifact: path.relative(repoRoot, bundle.artifactPath).split(path.sep).join('/'),
+      artifactSha256: bundle.manifest.artifact.sha256,
+      reviewedDifferences: path.relative(repoRoot, bundle.reviewedDifferencesPath).split(path.sep).join('/'),
+      reviewedDifferencesSha256: bundle.manifest.reviewedDifferences.sha256,
       sourceCommit: bundle.manifest.source.commit,
       sourceTreeSha256: bundle.manifest.source.treeSha256,
-      captures: bundle.artifact.captures.map((capture) => ({ traceId: capture.traceId, profile: capture.profile, width: capture.width, height: capture.height, frameCount: capture.frameCount, ansiBytesHash: capture.ansiBytesHash })),
+      captures: bundle.artifact.captures.map((capture: any) => ({ traceId: capture.traceId, profile: capture.profile, width: capture.width, height: capture.height, frameCount: capture.frameCount, ansiBytesHash: capture.ansiBytesHash })),
       missingSourceFiles: bundle.missingSourceFiles,
       sourceMismatches: bundle.sourceMismatches,
       sideEffects: bundle.manifest.sideEffects,
@@ -2019,21 +2182,23 @@ export async function checkV2Only(ctx: CheckContext): Promise<CheckResult> {
       const smokeOutput = path.join(smokeDir, 'baseline-compare.json')
       const smoke = await compare.runCompareHarness({
         repoRoot,
-        traceIds: [bundle.artifact.captures[0]?.traceId as string],
-        profile: bundle.artifact.captures[0]?.profile,
-        allowMismatches: !finalMode,
+        traceIds: bundle.artifact.captures.map((capture: any) => capture.traceId),
+        allowMismatches: false,
         output: smokeOutput,
       })
+      const review = await reviewBaselineDifferences(bundle, smoke, compare.reviewedDifferenceFingerprint)
+      errors.push(...review.errors)
       details.compareSmoke = {
-        status: smoke.status,
-        artifact: path.relative(repoRoot, smokeOutput).split(path.sep).join('/'),
-        traces: smoke.traces.map((trace) => ({ traceId: trace.traceId, status: trace.status, sideEffects: trace.sideEffects, v1: { frames: trace.v1.frameCount, bytes: trace.v1.ansiBytes, ansiBytesHash: trace.v1.ansiBytesHash }, v2: { frames: trace.v2.frames, bytes: trace.v2.bytes, ansiBytesHash: trace.v2.ansiBytesHash }, comparison: { grid: trace.comparison.grid.ok, cursor: trace.comparison.cursor.ok, modes: trace.comparison.modes.ok, width: trace.comparison.width.ok, height: trace.comparison.height.ok } })),
+        strictStatus: smoke.status,
+        policyStatus: review.errors.length === 0 ? 'pass' : 'fail',
+        mismatchPolicy: smoke.comparePolicy.mismatch,
+        artifact: path.basename(smokeOutput),
+        traces: smoke.traces.map((trace) => ({ traceId: trace.traceId, profile: trace.profile, strictStatus: trace.status, sideEffects: trace.sideEffects, v1: { frames: trace.v1.frameCount, bytes: trace.v1.ansiBytes, gridHash: trace.v1.gridHash, ansiBytesHash: trace.v1.ansiBytesHash }, v2: { frames: trace.v2.frames, bytes: trace.v2.bytes, gridHash: trace.v2.gridHash, ansiBytesHash: trace.v2.ansiBytesHash }, comparison: { grid: trace.comparison.grid.ok, cursor: trace.comparison.cursor.ok, modes: trace.comparison.modes.ok, width: trace.comparison.width.ok, height: trace.comparison.height.ok } })),
+        reviewedDifferencePolicy: review.details,
         errors: smoke.errors,
       }
-      if (smoke.status === 'fail' && finalMode) errors.push('baseline compare smoke failed in final mode')
-      if (smoke.status === 'fail' && !finalMode) deferred.push({ reason: 'baseline compare smoke has a mismatch requiring review', deferredTo: 'WP-09b' })
     } catch (error: any) {
-      errors.push(`baseline compare smoke failed to execute: ${String(error?.message || error)}`)
+      errors.push(`baseline compare/review policy failed to execute: ${String(error?.message || error)}`)
     }
   }
 

@@ -1,13 +1,13 @@
 /**
  * Cordis facade over the tui-v2 plugin UI runtime (WP-08a, plan §7.4).
  *
- * BREAKING (v2 scene API): the React scene contract (`TuiSceneProps` /
+ * BREAKING (v2 scene API): the legacy component runtime scene contract (`TuiSceneProps` /
  * `TuiSceneDescriptor` with a `component`, the `./scenes` and `./jsx-runtime`
- * package exports, the channel/Chat React render path) is removed. Scenes are
+ * package exports, the channel/Chat legacy component runtime render path) is removed. Scenes are
  * now `SceneDescriptorV2` registrations handled by the Cordis-free runtime in
  * `src/tui-v2/scenes/runtime.js`; this module only resolves the caller's
  * activation, verified Component identity, grant gate and effect ledger, then
- * delegates. Old React descriptors fail the `apiVersion` gate and come back
+ * delegates. Old legacy component runtime descriptors fail the `apiVersion` gate and come back
  * as a structured `{ status: 'rejected', code: 'unsupported-scene-api' }`.
  *
  * Grant gate (§7.4 注册时 grant 校验): every `requiredGrants` entry is a
@@ -135,7 +135,7 @@ export class TuiSceneRuntime extends Service {
    * Register a SceneV2 descriptor (plan §7.4). Returns the registration
    * handle — check `handle.result.status`: `accepted` carries the negotiated
    * apiVersion, `rejected` carries a structured code
-   * (`unsupported-scene-api` for legacy React descriptors, `missing-grant`,
+   * (`unsupported-scene-api` for legacy legacy component runtime descriptors, `missing-grant`,
    * `duplicate-scene`) and an inert dispose. Shape violations (bad id,
    * malformed commands) are programmer errors and throw TypeError. Caller
    * identity and activation rules are unchanged from the legacy seam. The
@@ -159,7 +159,7 @@ export class TuiSceneRuntime extends Service {
       caller.get('tuiEffectLedger')?.record(
         {
           operation: 'create',
-          // The descriptor may be a legacy React one (no usable id); keep the
+          // The descriptor may be a legacy legacy component runtime one (no usable id); keep the
           // ledger row stable rather than echoing arbitrary input.
           resource: { kind: 'scene', id: ledgerSceneId(descriptor) },
           result: 'failed',

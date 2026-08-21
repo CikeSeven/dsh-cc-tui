@@ -7,13 +7,11 @@
 ```text
 Cordis profile
   -> src/index.ts（插件契约与 Schema）
-  -> src/plugin.ts（服务、Agent、React 生命周期）
+  -> src/dsh-adapter/plugin.ts（服务、Agent、v2 生命周期）
   -> DSH Agent / session / tool services
-  -> src/channel.ts（session/event -> Channel）
-  -> src/screens/Chat.tsx（键盘与模式编排）
-  -> src/components/*（视图）
-  -> src/ui.ts（主题化 renderer facade）
-  -> src/ink/* + Yoga（布局、终端协议、差分输出）
+  -> src/dsh-adapter/channel.ts（session/event -> Channel）
+  -> createTuiV2App / src/tui-v2/app/coordinator.ts
+  -> v2 model -> frame builder -> inline/fullscreen terminal backend
   -> ANSI terminal
 ```
 
@@ -22,14 +20,14 @@ Cordis profile
 | 模块 | 所有权 |
 | --- | --- |
 | `src/index.ts` | Cordis 插件名称、注入声明、配置接口与 Schema；保持入口轻量并延迟加载 runtime |
-| `src/plugin.ts` | TTY 检查、问卷与 Skills 注册、Agent 创建/恢复、React 挂载、统一退出清理 |
-| `src/channel.ts` | 将 DSH 持久化事件投影为 transcript；提供 submit、steer、resume、rewind、model/preset 等动作 |
-| `src/workspaces.ts` | 本地路径 fallback 与通用工作区 provider registry；不得包含任何 provider 的协议、文案或依赖 |
-| `src/screens/Chat.tsx` | modal 优先级、全局按键、滚动/搜索/选择状态、slash command 分发 |
-| `src/components/` | 用户界面和 design-system；不直接拥有 Agent 或 session 真相 |
-| `src/ui.ts` | 主题化 `Box`/`Text`、render、选择、滚动等公共 facade |
-| `src/ink/` | 移植的 Ink renderer、终端协议、事件、选择与 Yoga 桥接；属于敏感底层设施 |
-| `src/native-ts/yoga-layout/` | 纯 JS/TS 布局实现 |
+| `src/dsh-adapter/plugin.ts` | TTY 检查、问卷与 Skills 注册、Agent 创建/恢复、v2 app 启动与统一退出清理 |
+| `src/dsh-adapter/channel.ts` | 将 DSH 持久化事件投影为 transcript；提供 submit、steer、resume、rewind、model/preset 等动作 |
+| `src/sessions/view.ts` | 与 renderer 无关的 session catalog 过滤、分组、窗口和选择模型 |
+| `src/tui-v2/app/` | 单一 v2 coordinator/bootstrap；装配 input、dialog、surface、lifecycle 与 terminal backend |
+| `src/tui-v2/model/` | 可序列化 UI state、reducer、selectors、event/trace contract |
+| `src/tui-v2/renderer/` | model snapshot 到 bounded frame/cell 的纯 v2 渲染组件 |
+| `src/tui-v2/terminal/` | inline/fullscreen backend、输入、能力探测、模式恢复与 writer |
+| `src/utils/` | renderer-neutral 的持久化、宽度、活动帧、编辑器和路径 helper |
 | `cordis.patch.yml` | profile bundle 层；决定服务行、覆盖关系与挂载顺序 |
 
 不要在组件中复制 DSH Agent、session 或 tool 服务。需要新能力时，优先通过已有
@@ -41,7 +39,7 @@ service、registry 或 channel seam 接入。
 
 ## Session 是真源
 
-`channel.ts` 不把 React 本地数组当作对话真相。DSH `session/event` 日志负责：
+`channel.ts` 不把 UI 本地数组当作对话真相。DSH `session/event` 日志负责：
 
 - 初始历史回放与增量流式事件；
 - assistant/reasoning/tool 行的关联与 sequence anchor；
@@ -62,9 +60,10 @@ Channel 只保留适合当前 TUI 的投影。长会话超过窗口后，旧行�
 - **显示宽度**：ANSI、组合字符、emoji 和东亚宽字符都按 terminal cell width 处理，
   不能用普通 JavaScript `string.length` 代替。
 
-改动 `src/ink/` 或 Yoga 时，至少运行 CI 的问卷/工具卡回归，并按影响范围运行
-scroll、resize、copy-on-select 或 PTY 脚本。不要用普通 `console.log` 向活动 TUI 的
-stdout 打印诊断；使用 stderr 的 `DSH_TUI_DEBUG` 或 `DSH_TUI_RENDER_LOG`。
+改动 `src/tui-v2/` 的 model、renderer 或 terminal backend 时，至少运行
+`pnpm test:tui-v2` 对应 pattern 与 `pnpm verify:tui-v2` 的 trace/fullscreen/inline 检查。
+不要用普通 `console.log` 向活动 TUI 的 stdout 打印诊断；使用 stderr 的
+`DSH_TUI_DEBUG` 或结构化 verifier artifact。
 
 ## Inline 与 fullscreen
 
@@ -72,8 +71,8 @@ stdout 打印诊断；使用 stderr 的 `DSH_TUI_DEBUG` 或 `DSH_TUI_RENDER_LOG`
 - **Fullscreen**：`AlternateScreen` 切换到备用屏，TUI 自己管理滚动、鼠标选区、OSC 52
   复制和退出时的屏幕恢复。
 
-两种模式共享 Channel 与 React 视图，但终端协议路径不同。涉及输入、滚动、鼠标、
-光标、resize 或清理的改动必须分别验证，尤其要覆盖窄终端和 Windows ConPTY。
+两种模式共享 Channel 与 v2 model/components，但终端协议路径不同。涉及输入、滚动、
+鼠标、光标、resize 或清理的改动必须分别验证，尤其要覆盖窄终端和 Windows ConPTY。
 
 ## 持久化位置
 
@@ -83,8 +82,8 @@ stdout 打印诊断；使用 stderr 的 `DSH_TUI_DEBUG` 或 `DSH_TUI_RENDER_LOG`
 | `~/.dsh-tui/sessions/` | 直接运行 `cordis.yml` 时的 JSONL 会话事件 |
 | `~/.dsh-tui/resume.txt` | Windows 启动器和退出提示使用的最近 session ID |
 | `~/.dsh-tui/last-used.json` | `/resume` 最近使用排序元数据 |
-| `~/.dsh-tui/theme.json` | 当前主题选择 |
-| `~/.dsh-tui/themes/` | 用户自定义主题 JSON |
+| `~/.dsh-tui/theme.json` | 当前 v2 registry 主题 ID |
+| `~/.dsh-tui/history.jsonl` | 跨进程 prompt history（最多 200 条） |
 | `~/.dsh-tui/working-activity.json` | 工作状态动画选择 |
 | `~/.dsh-tui/agent-preset.json` | 新会话默认 Agent preset |
 

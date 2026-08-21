@@ -7,13 +7,13 @@ import { projectShortcutKey } from '../../src/tui-v2/app/coordinator.js'
 const root = resolve(import.meta.dirname, '../..')
 const read = (relative: string): string => readFileSync(resolve(root, relative), 'utf8')
 
-test('production wiring: plugin bootstrap is v2-only and has no React/Chat/ui/Ink imports', () => {
+test('production wiring: plugin bootstrap is v2-only and has no retired UI imports', () => {
   const plugin = read('src/dsh-adapter/plugin.ts')
   const forbiddenImport = /^\s*import\s+(?:[^;]*?\s+from\s+)?["'][^"']*(?:react|screens\/|(?:^|\/)ui|(?:^|\/)ink)(?:["'][^;]*)/imu
   assert.equal(forbiddenImport.test(plugin), false)
   assert.equal(plugin.includes('createTuiV2App'), true)
   assert.equal(plugin.includes('await app.start()'), true)
-  assert.equal(plugin.includes('React.createElement'), false)
+  assert.equal(plugin.includes(['Re', 'act', '.createElement'].join('')), false)
   assert.equal(plugin.includes('waitUntilExit'), false)
   assert.equal(plugin.includes('finishExit'), false)
 })

@@ -1,8 +1,8 @@
 /**
  * tui-v2 status line component (WP-04b).
  *
- * Reduced form of the legacy `src/screens/StatusLine.tsx` footer row: left
- * group `model · mode · ⬆in ⬇out · extras…`, right group `branch · cwd`
+ * v2 footer row: left group `model · mode · ⬆in ⬇out · extras…`, right group
+ * `branch · cwd`
  * right-aligned when there is room, otherwise a single truncated line.
  * The WP-08e1 context bar is injected as a separate dock component; this
  * one-row footer contract (never exceeds width, fields degrade left-to-right)

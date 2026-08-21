@@ -6,10 +6,10 @@
  * transcript on the live stream and on replay (resume/rewind), exactly like
  * its built-in projection of `activity/status` or `agent-preset/selected`.
  *
- * Renderers are text-only by design: the full-React surface is the scenes
- * seam (`ctx.tuiScenes`, with the host-React contract); transcript rows are
+ * Renderers are text-only by design: the full-legacy component runtime surface is the scenes
+ * seam (`ctx.tuiScenes`, with the host-legacy component runtime contract); transcript rows are
  * shared with replay paths where a crash mid-replay would corrupt the whole
- * screen, so a renderer never receives React and its output is sanitized
+ * screen, so a renderer never receives legacy component runtime and its output is sanitized
  * (control chars stripped, lines preview-clipped like `pushLocal` output).
  *
  * Registration rules (untrusted-input discipline):

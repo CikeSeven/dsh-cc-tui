@@ -9,12 +9,11 @@
  */
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { Chalk } from "chalk";
 import { TruncatedText } from "../../../src/tui-v2/vendor/pi-tui/src/components/truncated-text.js";
 import { visibleWidth } from "../../../src/tui-v2/vendor/pi-tui/src/utils.js";
 
-// Force full color in CI so ANSI assertions are deterministic
-const chalk = new Chalk({ level: 3 });
+const red = (text: string): string => `\x1b[31m${text}\x1b[39m`;
+const blue = (text: string): string => `\x1b[34m${text}\x1b[39m`;
 
 describe("pi fork: TruncatedText component", () => {
 	it("pads output lines to exactly match width", () => {
@@ -58,7 +57,7 @@ describe("pi fork: TruncatedText component", () => {
 	});
 
 	it("preserves ANSI codes in output and pads correctly", () => {
-		const styledText = `${chalk.red("Hello")} ${chalk.blue("world")}`;
+		const styledText = `${red("Hello")} ${blue("world")}`;
 		const text = new TruncatedText(styledText, 1, 0);
 		const lines = text.render(40);
 
@@ -72,7 +71,7 @@ describe("pi fork: TruncatedText component", () => {
 	});
 
 	it("truncates styled text and adds reset code before ellipsis", () => {
-		const longStyledText = chalk.red("This is a very long red text that will be truncated");
+		const longStyledText = red("This is a very long red text that will be truncated");
 		const text = new TruncatedText(longStyledText, 1, 0);
 		const lines = text.render(20);
 

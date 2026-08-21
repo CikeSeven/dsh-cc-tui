@@ -1,14 +1,15 @@
 /** Safe v2 theme registry (WP-08f).
  *
- * This module is pure registry state: it does not read environment, files or
- * legacy global theme preferences. Hosts convert persisted theme files into
- * validated descriptors before registering them.
+ * This module is pure registry state: it does not read environment or files.
+ * Hosts convert persisted theme files into validated descriptors before
+ * registering them.
  */
+import { SAFE_THEME_NAME_RE } from '../../utils/themeName.js'
 import { lineStyle, type LineStyle } from '../renderer/lines.js'
 import type { ComponentTheme } from '../components/theme.js'
 import type { TerminalProfile } from '../terminal/profile.js'
 
-export const THEME_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+export const THEME_NAME_RE = SAFE_THEME_NAME_RE
 export type ThemeBase = 'default' | 'dark' | 'light' | 'ansi'
 
 export interface ThemeDescriptor {

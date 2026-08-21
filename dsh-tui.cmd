@@ -10,11 +10,8 @@ rem Prereq: dsh CLI on PATH (npm install -g @deepseek-ai/dsh). The profile
 rem         is created by `dsh plugin --profile dsh-tui add @deepseek-harness-tui/dsh-tui`
 rem         under $DSH_HOME/profiles/dsh-tui (default ~/.dsh), so this
 rem         launcher must NOT pin DSH_HOME.
-rem NODE_ENV defaults to production: the React renderer's development build
-rem records unbounded performance.measure() entries and OOMs long sessions.
 rem WORKSPACE: 工作目录（默认当前目录；可用 DSH_TUI_WORKSPACE 环境变量覆盖）。
 setlocal
-if not defined NODE_ENV set "NODE_ENV=production"
 set "WORKSPACE=%DSH_TUI_WORKSPACE%"
 if "%WORKSPACE%"=="" set "WORKSPACE=%CD%"
 cd /d "%WORKSPACE%"

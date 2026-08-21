@@ -60,7 +60,7 @@ jobs:
 
       # Renderer-neutral domain gates stay live. Plugin-spec/preset batteries are
       # already included by verify:build; these cover the remaining standalone
-      # channel/session/config/host helpers without mounting the legacy UI.
+      # channel/session/config/host helpers through the v2-only build.
       - name: Run renderer-neutral domain gates
         run: |
           node --import tsx/esm scripts/verify-plugin-negotiation.ts
@@ -86,8 +86,11 @@ jobs:
           node scripts/verify-empty-assistant-row.mjs
           node scripts/verify-skill-commands.mjs
           node scripts/verify-trace-projection.mjs
-          node --import tsx/esm scripts/repro-effort.tsx
-          node --import tsx/esm scripts/verify-subagent-model-route.tsx
+          node --import tsx/esm scripts/verify-effort-route.ts
+          node --import tsx/esm scripts/verify-subagent-model-route.ts
+          node --import tsx/esm scripts/verify-child-stderr.ts
+          node --import tsx/esm scripts/verify-exit-resume-marker.ts
+          node --import tsx/esm scripts/verify-teardown-exit.ts
           node scripts/verify-model-route.mjs
           node --import tsx/esm scripts/verify-themes.mjs
           node scripts/verify-provider-wizard.mjs

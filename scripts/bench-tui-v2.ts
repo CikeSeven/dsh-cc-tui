@@ -1,7 +1,7 @@
 /**
  * tui-v2 benchmark runner (WP-09b): coordinator/frame/VirtualTerminal path.
  *
- * The benchmark is live v2 only. It does not import the legacy React harness or
+ * The benchmark is live v2 only. It does not import any retired renderer harness or
  * the offline baseline tools. Every terminal write is routed to an injected
  * VirtualTerminal-backed stream; process.stdout is never used as the terminal.
  *
@@ -124,6 +124,7 @@ function createRig(): V2Rig {
     welcomeText: 'v2-benchmark',
     attachProcessHandlers: false,
     restartRunner: null,
+    historyPersistence: null,
   })
   return { app, channel, stdin, stdout, stderr, virtualTerminal }
 }

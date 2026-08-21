@@ -215,7 +215,7 @@ export class TuiDialogStore {
    * key of the snapshot IT rendered; a mismatched key is a stale callback
    * and ignored. This is not paranoia: ConPTY can deliver one Enter as a
    * same-batch CR+LF pair, firing the old panel's handler twice before
-   * React unmounts it — an unkeyed decide would settle the active dialog
+   * the overlay is replaced — an unkeyed decide would settle the active dialog
    * AND the successor the first call just promoted (one Enter answering two
    * consecutive dialogs).
    */

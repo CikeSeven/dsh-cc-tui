@@ -18,8 +18,8 @@ export interface ExecFileNoThrowOptions {
   timeout?: number
   /**
    * Accepted for call-site compatibility with the original execa-based
-   * implementation; `false` (the only value the Ink core passes) matches this
-   * shim's behavior of running in the current working directory.
+   * implementation; `false` matches this shim's behavior of running in the
+   * current working directory.
    */
   useCwd?: boolean
   /** Working directory for the child; defaults to the parent's cwd. */

@@ -14,8 +14,8 @@ record. Its provenance is locked in `manifest.json`:
 - redaction version: `1`
 
 `capture.ts` replays bytes from the artifact into an injected
-`FakeTerminalWriter` and `VirtualTerminal`. It does not create an Ink/React
-root, subscribe to a live Channel, execute commands, write a session, access
+`FakeTerminalWriter` and `VirtualTerminal`. It does not create a production
+runtime, subscribe to a live Channel, execute commands, write a session, access
 real stdout/stderr, or start a timer. `side-effect-spy.ts` records those
 categories and the capture contract permits only fake-writer activity. Every
 scope restores patched functions in `finally`.
@@ -27,5 +27,7 @@ cursor, modes, width, bytes, frame counts, and bounded memory fields remain
 separate report projections.
 
 The artifact is an offline migration reference, not a production fallback.
-WP-09b may delete the old runtime source without invalidating this artifact;
-WP-09c owns release tarball/launcher rollback verification.
+`reviewed-differences.json` is a versioned, hash-pinned ledger: only explicit P2
+visual differences may be accepted, while P0/P1 semantics require named v2 test
+and verifier evidence. WP-09b may delete the captured source files without
+invalidating provenance; WP-09c owns release tarball/launcher rollback verification.

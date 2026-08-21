@@ -4,7 +4,6 @@ import { join } from 'node:path'
 import { DATA_DIR } from './utils/paths.js'
 
 const HISTORY_DIR = DATA_DIR
-const HISTORY_FILE = join(HISTORY_DIR, 'history.jsonl')
 
 /** One persisted input-history entry. */
 export type HistoryEntry = {
@@ -15,11 +14,16 @@ export type HistoryEntry = {
 
 const HISTORY_LIMIT = 200
 
-function loadRaw(): HistoryEntry[] {
-  if (!existsSync(HISTORY_FILE)) return []
+function historyFile(dir: string): string {
+  return join(dir, 'history.jsonl')
+}
+
+function loadRaw(dir: string): HistoryEntry[] {
+  const file = historyFile(dir)
+  if (!existsSync(file)) return []
   const entries: HistoryEntry[] = []
   try {
-    for (const line of readFileSync(HISTORY_FILE, 'utf8').split('\n')) {
+    for (const line of readFileSync(file, 'utf8').split('\n')) {
       const trimmed = line.trim()
       if (!trimmed) continue
       try {
@@ -38,16 +42,15 @@ function loadRaw(): HistoryEntry[] {
 }
 
 /**
- * Append an input to the persisted history, deduping the immediately
- * previous entry and capping the file at 200 entries.
+ * Append an input to persisted history, deduping the immediately previous
+ * entry and capping the file at 200 entries.
  * @param text - Input to persist; blank inputs are ignored.
+ * @param dir - History directory (injectable for tests).
  */
-export function appendHistory(text: string): void {
+export function appendHistory(text: string, dir: string = HISTORY_DIR): void {
   const trimmed = text.trim()
   if (!trimmed) return
-  const entries = loadRaw()
-  // Skip consecutive duplicates (CC behavior: repeated submits of the same
-  // command only advance the existing entry's timestamp).
+  const entries = loadRaw(dir)
   const last = entries[entries.length - 1]
   if (last && last.text === trimmed) {
     last.ts = Date.now()
@@ -56,30 +59,27 @@ export function appendHistory(text: string): void {
   }
   const sliced = entries.slice(-HISTORY_LIMIT)
   try {
-    mkdirSync(HISTORY_DIR, { recursive: true })
+    mkdirSync(dir, { recursive: true })
     writeFileSync(
-      HISTORY_FILE,
+      historyFile(dir),
       sliced.map(e => JSON.stringify(e)).join('\n') + '\n',
       'utf8',
     )
   } catch {
-    // Best-effort persistence; history still works for the session.
+    // Best-effort persistence; in-process history remains available.
   }
 }
 
 /**
- * Read the persisted history, newest first.
+ * Read persisted history, newest first.
+ * @param dir - History directory (injectable for tests).
  * @returns The persisted entries in reverse-chronological order.
  */
-export function loadHistory(): HistoryEntry[] {
-  return loadRaw().reverse()
+export function loadHistory(dir: string = HISTORY_DIR): HistoryEntry[] {
+  return loadRaw(dir).reverse()
 }
 
-/**
- * Stable id for a history entry (dedupes React keys across identical texts).
- * @param entry - The history entry to hash.
- * @returns A 12-char hex id derived from the entry text.
- */
+/** Stable id derived from entry text for list identity and deduplication. */
 export function historyEntryId(entry: HistoryEntry): string {
   return createHash('sha1').update(entry.text).digest('hex').slice(0, 12)
 }

@@ -2,21 +2,14 @@
 
 ## 项目定位
 
-dsh-cc-tui 是一个 Cordis 插件，为 DeepSeek Harness 的 agent 提供 Claude Code
-风格的终端 TUI 前门。插件自身的自述（`src/plugin.ts:26-27`）：
-
-> Claude Code style interactive TUI front door for DeepSeek Harness agents.
-
+dsh-TUI 是一个 Cordis 插件，为 DeepSeek Harness 的 agent 提供 v2 终端 TUI 前门。
 它不拥有 Agent、会话、模型、工具、持久化与策略域——这些由 DeepSeek Harness
-（DSH）提供，TUI 只消费它们（`docs/contributing.md:18-21` 同口径）。插件
-"attaches to (or creates) one agent, renders a chat transcript from the agent's
-session log and live `session/event` records, and submits user turns through
-`Agent.followup`"（`src/plugin.ts:29-33`），与 `dsh-jsonrpc` 属于同一类
-client-driver 前门。
+（DSH）提供，TUI 只消费它们。插件 attach/create 一个 agent，从 session/event
+记录投影 transcript，并通过 `Agent.followup` 提交用户 turn。
 
-插件自带 TUI、本地命令面、打包技能以及移植的 Ink/Yoga 渲染器；渲染内核
-`src/ink/` 是 Claude Code 内部 ink fork 的移植（归属证据见
-[origin.md](origin.md)，结构地图见 [ink-core.md](ink-core.md)）。
+插件自带 TUI、本地命令面、打包技能以及 v2 model/controller/frame/terminal
+backend。旧 renderer 的来源证据见 [ink-core.md](ink-core.md)，仅为 frozen offline
+provenance；当前实现从 `src/tui-v2/` 开始。
 
 ## 运行链路
 
@@ -25,19 +18,16 @@ client-driver 前门。
 ```text
 cordis.yml / cordis.patch.yml（组合层）
   -> src/index.ts（插件契约与 Schema，入口保持轻量）
-  -> src/plugin.ts（TTY 检查、语言解析、服务装配、Agent 创建/恢复、React 挂载、退出清理）
+  -> src/dsh-adapter/plugin.ts（TTY、语言、服务、Agent、v2 app、退出清理）
   -> DSH agent / session / tool services（@deepseek-ai/dsh-* 官方包）
-  -> src/channel.ts（session/event 投影为 transcript；submit/steer/resume/rewind/model 动作面）
-  -> src/screens/Chat.tsx（键盘与模式编排、slash 命令分发）
-  -> src/components/*（视图与 design-system）
-  -> src/ui.ts（主题化 renderer facade）
-  -> src/ink/* + src/native-ts/yoga-layout（布局、终端协议、差分输出）
+  -> src/dsh-adapter/channel.ts（session/event -> Channel projection + actions）
+  -> createTuiV2App / src/tui-v2/app/coordinator.ts
+  -> src/tui-v2/model -> renderer -> inline/fullscreen terminal backend
   -> ANSI 终端
 ```
 
-该链路与 `docs/architecture.md:5-18` 的旧描述一致，且已在基线代码中重新验证：
-入口 `src/index.ts` 导出插件契约并动态委托 `src/plugin.ts` 的 `apply`
-（[lifecycle.md](lifecycle.md)）。
+`src/index.ts` 只导出 adapter contract；生产 UI 只有一条 v2 bootstrap/coordinator
+路径，旧 source、switch 和 fallback 均由 `v2-only` strict gate 拒绝。
 
 ## 分层与模块边界
 

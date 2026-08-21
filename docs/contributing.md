@@ -19,8 +19,8 @@
 适用于在本仓库工作的所有人与编码 Agent。
 
 `@deepseek-harness-tui/dsh-tui` 是单包、纯 ESM 的 TypeScript 项目：为 DeepSeek Harness 提供
-React 终端 UI 前门（通过 Cordis 挂载）。包内拥有 TUI、本地命令面、打包技能
-以及移植的 Ink/Yoga 渲染器；Agent、会话、模型、工具、持久化与策略域由
+v2 终端 UI 前门（通过 Cordis 挂载）。包内拥有 TUI、本地命令面、打包技能以及
+model/controller/frame/terminal backend；Agent、会话、模型、工具、持久化与策略域由
 DeepSeek Harness 拥有，TUI 只消费它们。
 
 做大改动前，先读 `package.json`、相关 README 章节和你将要编辑的每个源文件。
@@ -29,25 +29,20 @@ DeepSeek Harness 拥有，TUI 只消费它们。
 ## 仓库地图（Repository Map）
 
 - `src/index.ts`：公共 Cordis 插件入口、配置 Schema，与对运行时插件的惰性移交。
-- `src/plugin.ts`：TTY 校验、服务注册、Agent 创建/恢复、React 树挂载，以及
+- `src/dsh-adapter/plugin.ts`：TTY 校验、服务注册、Agent 创建/恢复、v2 app 启动，以及
   终端/进程的收尾清理。
-- `src/channel.ts`：事件到视图的投影 + 非 React 的动作面。把 DSH 会话事件
+- `src/dsh-adapter/channel.ts`：事件到 v2 projection 的动作面。把 DSH 会话事件
   翻译成 transcript 行，实现 submit、steer、rewind、resume、模型/preset 切换、
   本地报告及相关状态迁移。
-- `src/screens/Chat.tsx`：顶层交互协调器。负责模态优先级、全局键盘、滚动/
-  搜索/选区状态、slash 命令分发与聊天屏组装。
-- `src/screens/StatusLine.tsx` 与 `src/screens/StatusMetrics.ts`：底部状态栏
-  呈现与指标推导。
-- `src/components/`：功能组件。`components/design-system/` 是主题感知原语；
-  `components/messages/` 是 transcript 行；`components/questions/` 是
-  `ask_user_question` 的 UI。
-- `src/ui.ts`：本地渲染器、主题化 `Box`/`Text`、hooks 与公共 TUI 原语的
-  首选门面。
-- `src/ink/`：移植的低层 Ink 渲染器与终端实现。**敏感基础设施**：改动要聚焦，
-  并附渲染器专用回归覆盖。
-- `src/native-ts/yoga-layout/`：渲染器使用的移植布局引擎。
-- `src/cc/`：为 Claude Code 风格 UI 适配的终端格式化与呈现辅助。
-- `src/*Prefs.ts`、`src/customTheme.ts`、`src/sessionHistory.ts`：持久化的
+- `src/tui-v2/app/`：唯一的 bootstrap/coordinator，装配 input、dialogs、surfaces、
+  lifecycle 与 inline/fullscreen backend。
+- `src/tui-v2/model/`：可序列化 state/reducer/selectors/event contract。
+- `src/tui-v2/components/` 与 `src/tui-v2/renderer/`：纯 v2 transcript、overlay、
+  chrome 和 frame 组件。
+- `src/tui-v2/terminal/`：输入、能力探测、writer、inline/fullscreen 与恢复协议。
+- `src/sessions/view.ts`：renderer-neutral session catalog 视图模型。
+- `src/utils/`：renderer-neutral 的偏好、历史、宽度和外部编辑器 helper。
+- `src/*Prefs.ts`、`src/history.ts`、`src/sessionHistory.ts`：持久化的
   用户偏好与 `~/.dsh-tui` 下的本地会话元数据。
 - `skills/*/SKILL.md`：随 npm 包分发的技能，由 `src/packaged-skills.ts` 注册。
 - `cordis.patch.yml`：profile 安装时使用的包级 bundle 覆盖层。行的顺序、行 ID、
@@ -66,23 +61,21 @@ DeepSeek Harness 拥有，TUI 只消费它们。
 ```text
 Cordis config
   -> src/index.ts
-  -> src/plugin.ts
+  -> src/dsh-adapter/plugin.ts
   -> DSH agent/session services
-  -> src/channel.ts (session events -> Channel snapshot)
-  -> src/screens/Chat.tsx
-  -> src/components/*
-  -> src/ui.ts
-  -> src/ink/* + Yoga layout
+  -> src/dsh-adapter/channel.ts (session events -> Channel snapshot)
+  -> createTuiV2App / src/tui-v2/app/coordinator.ts
+  -> v2 model -> frame builder -> inline/fullscreen backend
   -> terminal ANSI output
 ```
 
 职责归属在各层，不要越权：
 
 - Agent/会话/工具事实来自 DSH 服务与持久化会话事件。
-- 投影与 TUI 动作属于 `channel.ts`，不属于呈现组件。
-- 交互模式与按键优先级属于 `Chat.tsx` 或当前聚焦的模态/输入组件。
-- 可复用的视觉行为属于 `components/` 与主题感知原语。
-- 终端协议、布局、命中测试、选区与帧差分行为属于 `ink/`。
+- 投影与 TUI 动作属于 `dsh-adapter/channel.ts`，不属于呈现组件。
+- 交互模式与按键优先级属于 v2 input/dialog controllers。
+- 可复用的视觉行为属于 `src/tui-v2/components/` 与 renderer helpers。
+- 终端协议、能力、模式恢复与帧差分行为属于 `src/tui-v2/terminal/`。
 
 不要仅仅为了让某个界面更好写，就在 TUI 里重新实现 DSH 域服务。通过 channel
 或既有注册表缝隙去适配服务。

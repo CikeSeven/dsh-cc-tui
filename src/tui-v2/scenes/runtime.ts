@@ -7,7 +7,7 @@
  * (`src/dsh-adapter/scenes.ts`) resolves the caller's activation, verified
  * identity and effect ledger, then delegates to this runtime; the v2
  * coordinator attaches via `attach(hooks)` and drives render/input. A scene
- * never sees React, the Channel, the Cordis context, the TerminalWriter or
+ * never sees legacy component runtime, the Channel, the Cordis context, the TerminalWriter or
  * stdout — its only host handle is the minted `SceneCapabilityContext`
  * (§7.4 capability rules).
  *
@@ -259,7 +259,7 @@ export function createPluginUIRuntime(options: PluginUIRuntimeOptions = {}): Plu
   }
 
   const register = (descriptor: SceneDescriptorV2, identity?: unknown): SceneRegistrationHandle => {
-    // apiVersion gate first (§7.4): old React descriptors (a `component`
+    // apiVersion gate first (§7.4): old legacy component runtime descriptors (a `component`
     // field, no apiVersion) land here, as does any future version skew.
     const apiVersion = (descriptor as { apiVersion?: unknown } | null | undefined)?.apiVersion
     if (apiVersion !== SCENE_API_VERSION) {

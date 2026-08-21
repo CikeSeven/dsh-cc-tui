@@ -24,10 +24,10 @@ This file applies to the entire repository. It is the shared development
 contract for humans and coding agents working on `@deepseek-harness-tui/dsh-tui`.
 
 `@deepseek-harness-tui/dsh-tui` is a single-package, ESM-only TypeScript project. It provides a
-React terminal UI front door for DeepSeek Harness through Cordis. The package
-owns the TUI, its local command surface, packaged skills, and a ported Ink/Yoga
-renderer. DeepSeek Harness owns the agent, session, model, tool, persistence,
-and policy domains that the TUI consumes.
+v2 terminal UI front door for DeepSeek Harness through Cordis. The package owns
+the TUI, its local command surface, packaged skills, and the v2
+model/controller/frame/terminal backend. DeepSeek Harness owns the agent,
+session, model, tool, persistence, and policy domains that the TUI consumes.
 
 Before making a broad change, read `package.json`, the relevant README section,
 and every source file being edited. Prefer the repository's existing service
@@ -37,29 +37,22 @@ boundaries and helpers over introducing parallel abstractions.
 
 - `src/index.ts`: public Cordis plugin entry point, configuration schema, and
   lazy handoff to the runtime plugin.
-- `src/plugin.ts`: TTY validation, service registration, agent creation/resume,
-  React tree mounting, and terminal/process teardown.
-- `src/channel.ts`: event-to-view projection and the non-React action surface.
-  It translates DSH session events into transcript rows and implements submit,
+- `src/dsh-adapter/plugin.ts`: TTY validation, service registration, agent
+  creation/resume, v2 app startup, and terminal/process teardown.
+- `src/dsh-adapter/channel.ts`: event-to-v2 projection and action surface. It
+  translates DSH session events into transcript rows and implements submit,
   steering, rewind, resume, model/preset switching, local reports, and related
   state transitions.
-- `src/screens/Chat.tsx`: top-level interaction coordinator. It owns modal
-  precedence, global keyboard handling, scroll/search/selection state, slash
-  command dispatch, and composition of the chat screen.
-- `src/screens/StatusLine.tsx` and `src/screens/StatusMetrics.ts`: terminal
-  status presentation and metric derivation.
-- `src/components/`: feature components. `components/design-system/` contains
-  theme-aware primitives; `components/messages/` contains transcript rows;
-  `components/questions/` contains the `ask_user_question` UI.
-- `src/ui.ts`: preferred facade for the local renderer, themed `Box`/`Text`,
-  hooks, and public TUI primitives.
-- `src/ink/`: ported, low-level Ink renderer and terminal implementation.
-  Treat it as sensitive infrastructure: keep changes focused and accompany
-  them with renderer-specific regression coverage.
-- `src/native-ts/yoga-layout/`: ported layout engine used by the renderer.
-- `src/cc/`: terminal formatting and presentation helpers adapted for the
-  Claude Code-style UI.
-- `src/*Prefs.ts`, `src/customTheme.ts`, and `src/sessionHistory.ts`: persisted
+- `src/tui-v2/app/`: the single bootstrap/coordinator assembling input, dialogs,
+  surfaces, lifecycle, and inline/fullscreen backends.
+- `src/tui-v2/model/`: serializable state, reducer, selectors, and event contracts.
+- `src/tui-v2/components/` and `src/tui-v2/renderer/`: pure v2 transcript,
+  overlay, chrome, and frame components.
+- `src/tui-v2/terminal/`: input, capability detection, writer, inline/fullscreen,
+  and restoration protocol.
+- `src/sessions/view.ts`: renderer-neutral session catalog view model.
+- `src/utils/`: renderer-neutral preference, history, width, and editor helpers.
+- `src/*Prefs.ts`, `src/history.ts`, and `src/sessionHistory.ts`: persisted
   user preferences and local session metadata under `~/.dsh-tui`.
 - `skills/*/SKILL.md`: skills shipped in the npm package and registered by
   `src/packaged-skills.ts`.
@@ -82,26 +75,23 @@ The central runtime path is:
 ```text
 Cordis config
   -> src/index.ts
-  -> src/plugin.ts
+  -> src/dsh-adapter/plugin.ts
   -> DSH agent/session services
-  -> src/channel.ts (session events -> Channel snapshot)
-  -> src/screens/Chat.tsx
-  -> src/components/*
-  -> src/ui.ts
-  -> src/ink/* + Yoga layout
+  -> src/dsh-adapter/channel.ts (session events -> Channel snapshot)
+  -> createTuiV2App / src/tui-v2/app/coordinator.ts
+  -> v2 model -> frame builder -> inline/fullscreen backend
   -> terminal ANSI output
 ```
 
 Keep ownership in the layer where it belongs:
 
 - Agent/session/tool facts come from DSH services and durable session events.
-- Projection and TUI actions belong in `channel.ts`, not in presentation
-  components.
-- Interaction modes and key precedence belong in `Chat.tsx` or the focused
-  modal/input component.
-- Reusable visual behavior belongs in `components/` and theme-aware primitives.
-- Terminal protocol, layout, hit-testing, selection, and frame-diff behavior
-  belong in `ink/`.
+- Projection and TUI actions belong in `dsh-adapter/channel.ts`, not in
+  presentation components.
+- Interaction modes and key precedence belong in v2 input/dialog controllers.
+- Reusable visual behavior belongs in `src/tui-v2/components/` and renderer helpers.
+- Terminal protocol, capabilities, restoration, and frame-diff behavior belong
+  in `src/tui-v2/terminal/`.
 
 Do not reimplement a DSH domain service in the TUI merely to make a screen
 easier to build. Adapt the service through the channel or an existing registry

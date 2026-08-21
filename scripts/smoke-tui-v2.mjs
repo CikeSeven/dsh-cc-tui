@@ -92,6 +92,7 @@ const app = createTuiV2App({
   welcomeText: 'v2-smoke-started',
   attachProcessHandlers: false,
   restartRunner: null,
+  historyPersistence: null,
 })
 
 try {

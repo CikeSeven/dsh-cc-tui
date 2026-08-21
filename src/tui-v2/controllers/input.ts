@@ -107,6 +107,10 @@ export interface InputControllerOptions {
   readonly onPasteRequest?: () => void;
   /** Ctrl+X opens the injected external editor. */
   readonly onExternalEditorRequest?: () => void;
+  /** Persisted submissions, newest first, used to seed search and navigation. */
+  readonly initialHistory?: readonly string[];
+  /** Best-effort cross-process append seam. */
+  readonly onHistoryAppend?: (text: string) => void;
   /** Arming window for the double Ctrl+C/Ctrl+D exit. Default 2000ms. */
   readonly ctrlCArmMs?: number;
 }
@@ -163,6 +167,14 @@ export function createInputController(options: InputControllerOptions): InputCon
   };
   /** Submission history mirror: newest first, consecutive duplicates merged. */
   const historyMirror: string[] = [];
+  for (const candidate of options.initialHistory ?? []) {
+    const text = candidate.trim();
+    if (text.length === 0 || historyMirror.at(-1) === text) continue;
+    historyMirror.push(text);
+    if (historyMirror.length === HISTORY_CAP) break;
+  }
+  // The vendored editor inserts history at the front, so seed oldest first.
+  for (const text of [...historyMirror].reverse()) options.editor.addToHistory?.(text);
 
   const journal = (command: InputCommand): void => {
     journalSeq += 1;
@@ -312,15 +324,20 @@ export function createInputController(options: InputControllerOptions): InputCon
   const handleEditorCommand = (command: InputCommand): void => {
     journal(command);
     if (command.type === 'editor' && command.command === 'submit') {
-      const text = (command.text ?? '').trim();
+      const raw = command.text ?? '';
+      const text = raw.trim();
       if (text.length > 0) {
         counts.submittedCommands += 1;
-        const raw = command.text ?? '';
-        if (historyMirror[0] !== raw) {
-          historyMirror.unshift(raw);
+        if (historyMirror[0] !== text) {
+          historyMirror.unshift(text);
           if (historyMirror.length > HISTORY_CAP) historyMirror.length = HISTORY_CAP;
         }
-        options.editor.addToHistory?.(raw);
+        options.editor.addToHistory?.(text);
+        try {
+          options.onHistoryAppend?.(text);
+        } catch {
+          // Persistence is best effort and must never break input dispatch.
+        }
         options.commands.submit(raw);
       }
     }

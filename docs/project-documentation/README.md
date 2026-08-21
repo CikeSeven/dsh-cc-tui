@@ -1,6 +1,6 @@
-# dsh-cc-tui 架构文档
+# dsh-TUI 架构文档
 
-本目录是 dsh-cc-tui（`@deepseek-ai/dsh-cc-tui`）的架构文档集，与 `docs/` 下
+本目录是 dsh-TUI（`@deepseek-harness-tui/dsh-tui`）的架构文档集，与 `docs/` 下
 的用户指南（getting-started / configuration / interaction / themes /
 architecture / contributing）互补：用户指南面向使用与配置，本目录面向源码
 结构、运行链路与来源归属审计。
@@ -20,8 +20,8 @@ architecture / contributing）互补：用户指南面向使用与配置，本�
 | --- | --- |
 | [overview.md](overview.md) | 总览：项目定位、运行链路、分层与模块边界 |
 | [lifecycle.md](lifecycle.md) | 插件生命周期与装配：cordis 配置、启动顺序、命令注册、退出漏斗 |
-| [ink-core.md](ink-core.md) | 移植 Ink/Yoga 渲染内核：渲染管线、布局引擎、终端协议、组件与 hooks 地图 |
-| [rendering.md](rendering.md) | 渲染链路与性能：双层节流、虚拟化、残影修复、CJK 截断与文本测量 |
+| [ink-core.md](ink-core.md) | 历史 V1 renderer provenance（frozen offline only；不属于 runtime） |
+| [rendering.md](rendering.md) | v2 渲染链路与性能：帧调度、窗口化、差分输出、CJK cell width |
 | [input-commands.md](input-commands.md) | 输入处理、IME 避让与命令系统（/rewind、/new、/compact 等） |
 | [model-route.md](model-route.md) | 模型路由与状态栏：原子解析、resume 跟随、/model 命令 |
 | [session-context.md](session-context.md) | 会话持久化与上下文：resume 契约、JSONL/SQLite 文档冲突、teardown |

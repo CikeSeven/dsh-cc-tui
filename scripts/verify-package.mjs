@@ -21,6 +21,26 @@ const offlineBaselineFiles = [...packed].filter(path => path === 'tools' || path
 if (offlineBaselineFiles.length > 0) {
   throw new Error(`package unexpectedly contains offline baseline tools: ${offlineBaselineFiles.join(', ')}`)
 }
+const retiredPathToken = (...parts) => parts.join('')
+const retiredRuntimePaths = [...packed].filter(path => {
+  const roots = [retiredPathToken('i', 'nk'), 'components', 'screens', retiredPathToken('native-ts/', 'yo', 'ga-layout')]
+  return roots.some(root => new RegExp(`^(?:lib/types/)?${root}(?:/|$)`, 'u').test(path))
+    || new RegExp(`^lib/types/(?:ui|${retiredPathToken('force-', 'production-react')}|customTheme|theme|trajectoryPrefs)(?:\\.|$)`, 'u').test(path)
+    || /^lib\/types\/(?:bootstrap\/state|hooks\/useBlink|sessions\/format|utils\/sliceAnsi)(?:\.|$)/u.test(path)
+    || /^lib\/types\/(?:cc\/(?:markdown|cliHighlight|hyperlink|terminal|figures|format|spinnerVerbs)|trajectory\/(?:format|motion|query))(?:\.|$)/u.test(path)
+})
+if (retiredRuntimePaths.length > 0) {
+  throw new Error(`package unexpectedly contains retired renderer paths: ${retiredRuntimePaths.join(', ')}`)
+}
+const retiredDependencies = new Set([
+  retiredPathToken('re', 'act'), retiredPathToken('re', 'act-', 'reconciler'),
+  retiredPathToken('yo', 'ga'), retiredPathToken('yo', 'ga-layout'),
+])
+for (const section of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+  for (const name of Object.keys(manifest[section] ?? {})) {
+    if (retiredDependencies.has(name)) throw new Error(`package manifest contains retired runtime dependency ${section}:${name}`)
+  }
+}
 const targets = new Set()
 
 const addTarget = value => {
@@ -58,6 +78,19 @@ if ([...packed].some(path => path.startsWith('src/'))) {
 }
 if (packed.has('lib/invariant.js')) {
   throw new Error('npm package contains the obsolete hand-built invariant entry')
+}
+const retiredRuntimeNames = [
+  retiredPathToken('re', 'act'), retiredPathToken('re', 'act-', 'reconciler'),
+  retiredPathToken('yo', 'ga'), retiredPathToken('yo', 'ga-layout'),
+]
+const retiredSpecifier = new RegExp(`(?:from\\s*|import\\s*\\()\\s*['"](?:${retiredRuntimeNames.join('|')})(?:/[^'"]*)?['"]`, 'u')
+const retiredRelativePath = new RegExp(`(?:from\\s*|import\\s*\\()\\s*['"][^'"]*(?:/(?:${retiredPathToken('i', 'nk')}|screens|native-ts/${retiredPathToken('yo', 'ga-layout')})(?:/|\\.)|/ui\\.js)['"]`, 'u')
+for (const file of packed) {
+  if (!/^lib\/types\/.*\.(?:js|d\.ts)$/u.test(file)) continue
+  const source = await readFile(new URL(`../${file}`, import.meta.url), 'utf8')
+  if (retiredSpecifier.test(source) || retiredRelativePath.test(source)) {
+    throw new Error(`compiled package imports a retired renderer path: ${file}`)
+  }
 }
 
 await import(new URL(`../${manifest.main}`, import.meta.url))

@@ -232,6 +232,45 @@ function comparisonOk(comparison: SanitizedComparison): boolean {
   return comparison.grid.ok && comparison.cursor.ok && comparison.modes.ok && comparison.width.ok && comparison.height.ok
 }
 
+/**
+ * Hash only stable comparison evidence. Timings, heap samples, git state and
+ * absolute report paths are intentionally excluded from review decisions.
+ */
+export function reviewedDifferenceFingerprint(
+  report: CompareTraceReport,
+  artifactSha256: string,
+): string {
+  return sha256Hex(canonicalJson({
+    schemaVersion: 1,
+    artifactSha256,
+    traceId: report.traceId,
+    profile: report.profile,
+    v1: {
+      frameCount: report.v1.frameCount,
+      width: report.v1.width,
+      height: report.v1.height,
+      gridHash: report.v1.gridHash,
+      ansiBytesHash: report.v1.ansiBytesHash,
+      ansiBytes: report.v1.ansiBytes,
+      diagnostics: report.v1.diagnostics,
+    },
+    v2: {
+      frames: report.v2.frames,
+      fullRedraws: report.v2.fullRedraws,
+      bytes: report.v2.bytes,
+      width: report.v2.width,
+      height: report.v2.height,
+      gridHash: report.v2.gridHash,
+      vtHash: report.v2.vtHash,
+      ansiBytesHash: report.v2.ansiBytesHash,
+      failures: report.v2.failures,
+    },
+    comparison: report.comparison,
+    physicalWidthViolations: report.physicalWidthViolations,
+    sideEffects: report.sideEffects,
+  }))
+}
+
 function safeFailure(value: { scope: string; frameId?: string; eventIndex?: number; message: string }): { scope: string; frameId?: string; eventIndex?: number; message: string } {
   return {
     scope: value.scope,

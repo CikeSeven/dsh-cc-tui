@@ -7,13 +7,11 @@
 ```text
 Cordis profile
   -> src/index.ts (plugin contract and Schema)
-  -> src/plugin.ts (services, Agent, and React lifecycle)
+  -> src/dsh-adapter/plugin.ts (services, Agent, and v2 lifecycle)
   -> DSH Agent / session / tool services
-  -> src/channel.ts (session/event -> Channel)
-  -> src/screens/Chat.tsx (keyboard and mode orchestration)
-  -> src/components/* (views)
-  -> src/ui.ts (themed renderer facade)
-  -> src/ink/* + Yoga (layout, terminal protocol, differential output)
+  -> src/dsh-adapter/channel.ts (session/event -> Channel)
+  -> createTuiV2App / src/tui-v2/app/coordinator.ts
+  -> v2 model -> frame builder -> inline/fullscreen terminal backend
   -> ANSI terminal
 ```
 
@@ -22,14 +20,14 @@ Cordis profile
 | Module | Owns |
 | --- | --- |
 | `src/index.ts` | Cordis plugin name, injection declaration, config interface, and Schema; keep the entry small and lazy |
-| `src/plugin.ts` | TTY guard, questionnaire/skill registration, Agent create/resume, React mount, and the single cleanup funnel |
-| `src/channel.ts` | DSH event projection plus submit, steer, resume, rewind, model, and preset actions |
-| `src/workspaces.ts` | Local-path fallback and generic workspace-provider registry; it must contain no provider protocol, copy, or dependency |
-| `src/screens/Chat.tsx` | Modal precedence, global keys, scroll/search/selection state, and slash dispatch |
-| `src/components/` | User views and design-system primitives; no Agent or session source of truth |
-| `src/ui.ts` | Themed `Box`/`Text`, render, selection, scroll, and other public TUI primitives |
-| `src/ink/` | Ported Ink renderer, terminal protocol, events, selection, and Yoga bridge; sensitive infrastructure |
-| `src/native-ts/yoga-layout/` | Pure JS/TS layout implementation |
+| `src/dsh-adapter/plugin.ts` | TTY guard, questionnaire/skill registration, Agent create/resume, v2 app startup, and the single cleanup funnel |
+| `src/dsh-adapter/channel.ts` | DSH event projection plus submit, steer, resume, rewind, model, and preset actions |
+| `src/sessions/view.ts` | Renderer-neutral session catalog filtering, grouping, windowing, and selection model |
+| `src/tui-v2/app/` | The single v2 coordinator/bootstrap assembling input, dialogs, surfaces, lifecycle, and terminal backends |
+| `src/tui-v2/model/` | Serializable UI state, reducer, selectors, and event/trace contracts |
+| `src/tui-v2/renderer/` | Pure v2 model-snapshot to bounded frame/cell components |
+| `src/tui-v2/terminal/` | Inline/fullscreen backends, input, capability detection, mode restoration, and writer |
+| `src/utils/` | Renderer-neutral persistence, width, activity, editor, and path helpers |
 | `cordis.patch.yml` | Profile bundle layer, service rows, overrides, and mount ordering |
 
 Do not duplicate DSH Agent, session, or tool services in a component. Connect new
@@ -44,7 +42,7 @@ branches.
 
 ## The session log is the source of truth
 
-`channel.ts` does not treat a React-local array as conversation truth. DSH
+`channel.ts` does not treat a UI-local array as conversation truth. DSH
 `session/event` records own:
 
 - initial replay and incremental streaming events;
@@ -71,10 +69,10 @@ by `callId`, never guessed from array position.
 - **Display-cell width**: ANSI escapes, combining marks, emoji, and East Asian
   wide characters use terminal cell width, not JavaScript `string.length`.
 
-When changing `src/ink/` or Yoga, run the CI questionnaire/tool-card regressions
-and the affected scroll, resize, copy-on-select, or PTY harness. Do not print
-diagnostics to an active TUI's stdout; use stderr `DSH_TUI_DEBUG` or
-`DSH_TUI_RENDER_LOG`.
+When changing `src/tui-v2/` model, renderer, or terminal backends, run the
+matching `pnpm test:tui-v2` pattern and the trace/fullscreen/inline verifier checks.
+Do not print diagnostics to an active TUI's stdout; use stderr `DSH_TUI_DEBUG` or
+structured verifier artifacts.
 
 ## Inline and fullscreen modes
 
@@ -83,10 +81,10 @@ diagnostics to an active TUI's stdout; use stderr `DSH_TUI_DEBUG` or
 - **Fullscreen**: `AlternateScreen` switches to the alternate screen, where the
   TUI owns scrolling, mouse selection, OSC 52 copy, and screen restoration.
 
-Both modes share the Channel and React views but use different terminal protocol
-paths. Changes involving input, scrolling, mouse, cursor, resize, or cleanup
-must be checked in both modes, especially on narrow terminals and Windows
-ConPTY.
+Both modes share the Channel and v2 model/components but use different terminal
+protocol paths. Changes involving input, scrolling, mouse, cursor, resize, or
+cleanup must be checked in both modes, especially on narrow terminals and
+Windows ConPTY.
 
 ## Persistence locations
 
@@ -96,8 +94,8 @@ ConPTY.
 | `~/.dsh-tui/sessions/` | JSONL session events for direct `cordis.yml` runs |
 | `~/.dsh-tui/resume.txt` | Recent session ID used by the Windows launcher and exit hint |
 | `~/.dsh-tui/last-used.json` | `/resume` recency metadata |
-| `~/.dsh-tui/theme.json` | Current theme selection |
-| `~/.dsh-tui/themes/` | User theme JSON files |
+| `~/.dsh-tui/theme.json` | Current v2 registry theme id |
+| `~/.dsh-tui/history.jsonl` | Cross-process prompt history (up to 200 entries) |
 | `~/.dsh-tui/working-activity.json` | Activity animation selection |
 | `~/.dsh-tui/agent-preset.json` | Default Agent preset for new sessions |
 

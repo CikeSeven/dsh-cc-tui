@@ -14,8 +14,10 @@ import {
   sha256Hex,
   validateFrozenBaselineArtifact,
   validateFrozenBaselineManifest,
+  validateReviewedDifferenceLedger,
   type FrozenBaselineManifest,
   type FrozenCaptureArtifact,
+  type ReviewedDifferenceLedger,
   type FrozenCaptureRecord,
   type V1CaptureRenderer,
   type V1CaptureResult,
@@ -176,6 +178,8 @@ export interface BaselineBundleVerification {
   readonly manifest: FrozenBaselineManifest
   readonly artifact: FrozenCaptureArtifact
   readonly artifactPath: string
+  readonly reviewedDifferences: ReviewedDifferenceLedger
+  readonly reviewedDifferencesPath: string
   readonly missingSourceFiles: readonly string[]
   readonly sourceMismatches: readonly string[]
 }
@@ -202,6 +206,16 @@ export async function loadAndVerifyBaselineBundle(
   if (artifact.license.sha256 !== manifest.source.license.sha256 || artifact.license.spdx !== manifest.source.license.spdx) {
     throw new Error('baseline artifact license provenance does not match manifest')
   }
+  const reviewedDifferencesPath = path.resolve(repoRoot, manifest.reviewedDifferences.path)
+  const reviewedDifferencesBytes = await readFile(reviewedDifferencesPath)
+  if (sha256Hex(reviewedDifferencesBytes) !== manifest.reviewedDifferences.sha256) {
+    throw new Error('reviewed difference ledger hash does not match manifest')
+  }
+  const reviewedDifferences = validateReviewedDifferenceLedger(JSON.parse(reviewedDifferencesBytes.toString('utf8')))
+  if (reviewedDifferences.baselineArtifact.path !== manifest.artifact.path
+    || reviewedDifferences.baselineArtifact.sha256 !== manifest.artifact.sha256) {
+    throw new Error('reviewed difference ledger baseline artifact does not match manifest')
+  }
   const missingSourceFiles: string[] = []
   const sourceMismatches: string[] = []
   for (const file of manifest.source.files) {
@@ -220,7 +234,15 @@ export async function loadAndVerifyBaselineBundle(
     // absence rather than trying to read or fabricate a replacement.
     missingSourceFiles.push(manifest.source.license.path)
   }
-  return { manifest, artifact, artifactPath, missingSourceFiles, sourceMismatches }
+  return {
+    manifest,
+    artifact,
+    artifactPath,
+    reviewedDifferences,
+    reviewedDifferencesPath,
+    missingSourceFiles,
+    sourceMismatches,
+  }
 }
 
 /** Utility used by tests and the verifier to create an offline snapshot. */

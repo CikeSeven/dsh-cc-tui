@@ -340,6 +340,10 @@ export interface TuiV2CoordinatorOptions {
   readonly themeDescriptors?: readonly ThemeDescriptor[];
   readonly language?: string;
   readonly welcomeText?: string;
+  /** Persisted prompt submissions, newest first. */
+  readonly initialPromptHistory?: readonly string[];
+  /** Best-effort cross-process prompt-history append seam. */
+  readonly onPromptHistoryAppend?: (text: string) => void;
   readonly initialResetReason?: ResetReason;
   readonly adapterInstanceId?: string;
   readonly durableSessionId?: string;
@@ -1413,6 +1417,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       if (externalEditorController === null) notify('External editor capability is unavailable', { color: 'warning' })
       else externalEditorController.open()
     },
+    ...(options.initialPromptHistory !== undefined ? { initialHistory: options.initialPromptHistory } : {}),
+    ...(options.onPromptHistoryAppend !== undefined ? { onHistoryAppend: options.onPromptHistoryAppend } : {}),
   });
 
   const input = createInputSource({

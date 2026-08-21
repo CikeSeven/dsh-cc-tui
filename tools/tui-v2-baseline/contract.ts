@@ -107,7 +107,43 @@ export interface FrozenBaselineManifest {
     readonly path: string
     readonly sha256: string
   }
+  readonly reviewedDifferences: {
+    readonly path: string
+    readonly sha256: string
+  }
   readonly sideEffects: SideEffectPolicy
+}
+
+export interface ReviewedDifferenceLedger {
+  readonly schemaVersion: 1
+  readonly kind: 'tui-v2-reviewed-differences'
+  readonly baselineArtifact: { readonly path: string; readonly sha256: string }
+  readonly policy: {
+    readonly acceptedSeverity: 'P2'
+    readonly requiredSemanticAssertions: readonly string[]
+  }
+  readonly semanticAssertions: readonly {
+    readonly id: string
+    readonly severity: 'P0' | 'P1'
+    readonly owner: string
+    readonly reason: string
+    readonly evidence: readonly (
+      | { readonly kind: 'test'; readonly path: string; readonly testNamePattern: string }
+      | { readonly kind: 'check'; readonly name: string }
+    )[]
+  }[]
+  readonly differences: readonly {
+    readonly id: string
+    readonly traceId: string
+    readonly profile: string
+    readonly severity: 'P2'
+    readonly owner: string
+    readonly reason: string
+    readonly approvedAt: string
+    readonly differenceKinds: readonly ('grid' | 'cursor' | 'modes' | 'width' | 'height')[]
+    readonly reviewFingerprint: string
+    readonly approvedReplacementAssertions: readonly string[]
+  }[]
 }
 
 export function sha256Hex(value: string | Uint8Array): string {
@@ -260,8 +296,83 @@ export function validateFrozenBaselineManifest(value: unknown): FrozenBaselineMa
   const artifact = manifest.artifact as Record<string, unknown>
   requiredString(artifact.path, 'manifest.artifact.path')
   if (!isSha256(artifact.sha256)) throw new TypeError('manifest.artifact.sha256 must be lowercase SHA-256')
+  if (manifest.reviewedDifferences === null || typeof manifest.reviewedDifferences !== 'object' || Array.isArray(manifest.reviewedDifferences)) throw new TypeError('manifest.reviewedDifferences must be an object')
+  const reviewed = manifest.reviewedDifferences as Record<string, unknown>
+  requiredString(reviewed.path, 'manifest.reviewedDifferences.path')
+  if (!isSha256(reviewed.sha256)) throw new TypeError('manifest.reviewedDifferences.sha256 must be lowercase SHA-256')
   validatePolicy(manifest.sideEffects)
   return manifest as unknown as FrozenBaselineManifest
+}
+
+export function validateReviewedDifferenceLedger(value: unknown): ReviewedDifferenceLedger {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('reviewed difference ledger must be an object')
+  const ledger = value as Record<string, unknown>
+  if (ledger.schemaVersion !== 1) throw new TypeError('reviewed difference ledger schemaVersion must be 1')
+  if (ledger.kind !== 'tui-v2-reviewed-differences') throw new TypeError('reviewed difference ledger kind is invalid')
+  const objectField = (parent: Record<string, unknown>, field: string): Record<string, unknown> => {
+    const item = parent[field]
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) throw new TypeError(`${field} must be an object`)
+    return item as Record<string, unknown>
+  }
+  const baselineArtifact = objectField(ledger, 'baselineArtifact')
+  requiredString(baselineArtifact.path, 'baselineArtifact.path')
+  if (!isSha256(baselineArtifact.sha256)) throw new TypeError('baselineArtifact.sha256 must be lowercase SHA-256')
+  const policy = objectField(ledger, 'policy')
+  if (policy.acceptedSeverity !== 'P2') throw new TypeError('policy.acceptedSeverity must be P2')
+  if (!Array.isArray(policy.requiredSemanticAssertions) || policy.requiredSemanticAssertions.length === 0
+    || !policy.requiredSemanticAssertions.every(item => typeof item === 'string' && item.length > 0)
+    || new Set(policy.requiredSemanticAssertions).size !== policy.requiredSemanticAssertions.length) {
+    throw new TypeError('policy.requiredSemanticAssertions must be a non-empty unique string array')
+  }
+  if (!Array.isArray(ledger.semanticAssertions) || ledger.semanticAssertions.length === 0) throw new TypeError('semanticAssertions must be non-empty')
+  const semanticIds = new Set<string>()
+  for (const [index, item] of ledger.semanticAssertions.entries()) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) throw new TypeError(`semanticAssertions[${index}] must be an object`)
+    const assertion = item as Record<string, unknown>
+    const id = requiredString(assertion.id, `semanticAssertions[${index}].id`)
+    if (semanticIds.has(id)) throw new TypeError(`duplicate semantic assertion ${id}`)
+    semanticIds.add(id)
+    if (assertion.severity !== 'P0' && assertion.severity !== 'P1') throw new TypeError(`semanticAssertions[${index}].severity must be P0|P1`)
+    requiredString(assertion.owner, `semanticAssertions[${index}].owner`)
+    requiredString(assertion.reason, `semanticAssertions[${index}].reason`)
+    if (!Array.isArray(assertion.evidence) || assertion.evidence.length === 0) throw new TypeError(`semanticAssertions[${index}].evidence must be non-empty`)
+    for (const [evidenceIndex, evidenceValue] of assertion.evidence.entries()) {
+      if (evidenceValue === null || typeof evidenceValue !== 'object' || Array.isArray(evidenceValue)) throw new TypeError(`semanticAssertions[${index}].evidence[${evidenceIndex}] must be an object`)
+      const evidence = evidenceValue as Record<string, unknown>
+      if (evidence.kind === 'test') {
+        requiredString(evidence.path, `semanticAssertions[${index}].evidence[${evidenceIndex}].path`)
+        requiredString(evidence.testNamePattern, `semanticAssertions[${index}].evidence[${evidenceIndex}].testNamePattern`)
+      } else if (evidence.kind === 'check') {
+        requiredString(evidence.name, `semanticAssertions[${index}].evidence[${evidenceIndex}].name`)
+      } else {
+        throw new TypeError(`semanticAssertions[${index}].evidence[${evidenceIndex}].kind must be test|check`)
+      }
+    }
+  }
+  if (!Array.isArray(ledger.differences)) throw new TypeError('differences must be an array')
+  const differenceIds = new Set<string>()
+  const kinds = new Set(['grid', 'cursor', 'modes', 'width', 'height'])
+  for (const [index, item] of ledger.differences.entries()) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) throw new TypeError(`differences[${index}] must be an object`)
+    const difference = item as Record<string, unknown>
+    const id = requiredString(difference.id, `differences[${index}].id`)
+    if (differenceIds.has(id)) throw new TypeError(`duplicate reviewed difference ${id}`)
+    differenceIds.add(id)
+    requiredString(difference.traceId, `differences[${index}].traceId`)
+    requiredString(difference.profile, `differences[${index}].profile`)
+    if (difference.severity !== 'P2') throw new TypeError(`differences[${index}].severity must be P2`)
+    requiredString(difference.owner, `differences[${index}].owner`)
+    requiredString(difference.reason, `differences[${index}].reason`)
+    const approvedAt = requiredString(difference.approvedAt, `differences[${index}].approvedAt`)
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u.test(approvedAt)) throw new TypeError(`differences[${index}].approvedAt must be UTC RFC 3339`)
+    if (!Array.isArray(difference.differenceKinds) || difference.differenceKinds.length === 0
+      || !difference.differenceKinds.every(kind => kinds.has(String(kind)))
+      || new Set(difference.differenceKinds).size !== difference.differenceKinds.length) throw new TypeError(`differences[${index}].differenceKinds is invalid`)
+    if (!isSha256(difference.reviewFingerprint)) throw new TypeError(`differences[${index}].reviewFingerprint must be lowercase SHA-256`)
+    if (!Array.isArray(difference.approvedReplacementAssertions) || difference.approvedReplacementAssertions.length === 0
+      || !difference.approvedReplacementAssertions.every(assertion => typeof assertion === 'string' && assertion.length > 0)) throw new TypeError(`differences[${index}].approvedReplacementAssertions must be non-empty`)
+  }
+  return ledger as unknown as ReviewedDifferenceLedger
 }
 
 export function captureKey(traceId: string, profile: string, snapshotHash: string): string {

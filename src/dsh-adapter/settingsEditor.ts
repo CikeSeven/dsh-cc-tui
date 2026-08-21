@@ -1,5 +1,5 @@
 /**
- * React-free form model behind the `/settings` screen (issue #165), mirroring
+ * Renderer-neutral form model behind the `/settings` screen (issue #165), mirroring
  * the web front door's card-form.ts semantics: a section stages what the user
  * types and writes it only on save — every settings write is a durable,
  * revision-fenced `settings.mutate`, so a control that committed as it

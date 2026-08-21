@@ -1,15 +1,15 @@
 # 会话持久化与上下文
 
-本文覆盖三块：resume 契约与多会话管理（resume.txt、/resume 选择器、MRU）、
-会话持久化后端（JSONL/SQLite 文档冲突）、已加载上下文与 teardown 分流
-（issue #12）。行号均以审计基线 b2f4087 为准。
+本文覆盖 v2 resume 契约、session catalog、prompt history、上下文投影与 teardown
+分流。旧路径/旧 renderer 行号仅作为 frozen provenance，当前生产入口是
+`src/dsh-adapter/plugin.ts` → `createTuiV2App`。
 
 ## resume 契约
 
-契约总述（`src/sessionHistory.ts:1-9`）：TUI 把选中的会话 id 写入
-`~/.dsh-cc/resume.txt`，launcher 以 `DSH_CC_RESUME_SESSION` 环境变量回喂；
-**会话记录本体在 DSH 持久化后端（dsh-session-persistence-jsonl），resume.txt
-只跨进程携带 id**。
+TUI 把选中的会话 id 写入 `~/.dsh-tui/resume.txt`，launcher 以
+`DSH_TUI_RESUME_SESSION`（兼容读取旧环境名）回喂；**会话记录本体在 DSH
+持久化后端，resume.txt 只跨进程携带 id**。退出 marker 必须在 coordinator stop
+barrier 后写入，teardown/error 路径不得误触发 user-exit。
 
 ```text
 退出（onUserExit，src/plugin.ts:199）与 /resume 选择（src/channel.ts:1449）时
@@ -28,9 +28,18 @@
      降级为新建会话
 ```
 
-退出提示的 resume 命令（src/plugin.ts:477-489）：win32 为 `dsh-cc --resume <id>`，
-其他平台为 `DSH_CC_RESUME_SESSION=<id> dsh --profile <p>`；包本身不提供
-dsh-cc bin。
+退出提示的 resume 命令由 v2 coordinator/launcher seam 生成；win32 通过
+`dsh-tui.cmd --resume` 读取 `~/.dsh-tui/resume.txt`，其他平台使用
+`DSH_TUI_RESUME_SESSION=<id> dsh --profile dsh-tui`。包本身不提供额外 renderer launcher。
+
+## Prompt history（跨进程持久化）
+
+`src/history.ts` 维护 `~/.dsh-tui/history.jsonl`：每行 `{text, ts}`，最多 200 条，
+坏行跳过，连续重复只更新时间戳。`createTuiV2App` 默认把 `loadHistory()` 注入
+v2 `InputController`，启动时 seed vendored editor/history-search mirror；每次 submit
+先保持 session/channel 语义，再通过 `onHistoryAppend` best-effort append。持久化失败
+不能阻断 submit，也不能静默改成只保留进程内历史。`test/tui-v2/persisted-history.test.ts`
+覆盖 malformed line、dedupe、seed 与跨进程 append。
 
 ## /resume 选择器与 MRU
 

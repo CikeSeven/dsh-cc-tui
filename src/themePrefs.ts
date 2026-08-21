@@ -1,16 +1,13 @@
 /**
- * Persisted color-theme preference. The `/theme` choice (built-in palette
- * or user theme name) survives restarts in `~/.dsh-tui/theme.json`, mirroring
- * the working-activity preference (`~/.dsh-tui/working-activity.json`). The
- * file is best-effort: a missing or corrupt file just falls back to the
- * default (terminal-background auto-detection). The preference only wins
- * when DSH_TUI_THEME is unset — see ThemeProvider.
+ * Persisted v2 color-theme preference. The `/theme` choice survives restarts
+ * in `~/.dsh-tui/theme.json`; missing, unsafe or corrupt data falls back to the
+ * v2 registry default. `DSH_TUI_THEME` remains the startup override.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { isSafeThemeName } from './customTheme.js'
 import { DATA_DIR } from './utils/paths.js'
+import { isSafeThemeName } from './utils/themeName.js'
 
 const PREFS_DIR = DATA_DIR
 
@@ -24,7 +21,7 @@ export function parseThemePref(text: string): string | undefined {
     const parsed: unknown = JSON.parse(text)
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
     const theme = (parsed as Record<string, unknown>).theme
-    return typeof theme === 'string' && isSafeThemeName(theme) ? theme : undefined
+    return isSafeThemeName(theme) ? theme : undefined
   } catch {
     return undefined
   }
@@ -44,12 +41,13 @@ export function readThemePref(dir: string = PREFS_DIR): string | undefined {
 }
 
 /**
- * Persist the chosen theme name (best effort).
- * @param name - Theme name to persist.
+ * Persist a safe v2 registry id (best effort).
+ * @param name - Theme id to persist.
  * @param dir - Prefs directory (injectable for tests).
- * @returns True when the file was written, false on failure.
+ * @returns True when the file was written, false on invalid input or I/O failure.
  */
 export function writeThemePref(name: string, dir: string = PREFS_DIR): boolean {
+  if (!isSafeThemeName(name)) return false
   try {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'theme.json'), JSON.stringify({ theme: name }, null, 2))

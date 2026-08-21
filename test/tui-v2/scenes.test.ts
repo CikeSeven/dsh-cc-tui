@@ -10,7 +10,7 @@
  *  - close/teardown once-only semantics (same completed promise);
  *  - the minimal ScreenTakeover (single lease, token identity, idempotent
  *    restore) and the SceneComponentAdapter bridge;
- *  - the `./tui-v2` package export surface (anchors present, React scene
+ *  - the `./tui-v2` package export surface (anchors present, legacy component runtime scene
  *    exports gone).
  *
  * Top-level names carry "scene"/"plugin"/"takeover" for pattern selection.
@@ -196,7 +196,7 @@ test('scene registration matrix: apiVersion gate, grants, duplicates, shape viol
     assert.equal(accepted.result.descriptorId, 'demo')
   }
 
-  // Legacy React descriptor (no apiVersion, a component field): structured
+  // Legacy legacy component runtime descriptor (no apiVersion, a component field): structured
   // rejection, not a throw — this is where every old registration lands.
   const legacy = h.runtime.register({ id: 'legacy', component: () => null } as never)
   assert.equal(legacy.result.status, 'rejected')
@@ -624,7 +624,7 @@ test('plugin row renderer: registration, duplicate refusal, safe invocation', ()
 // package export surface
 // ---------------------------------------------------------------------------
 
-test('tui-v2 package export: anchors present, legacy React scene exports removed', async () => {
+test('tui-v2 package export: anchors present, legacy legacy component runtime scene exports removed', async () => {
   const manifest = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
     exports: Record<string, unknown>
   }

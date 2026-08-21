@@ -27,6 +27,7 @@ import {
   createNodeShellCapability,
 } from '../capabilities/node.js';
 import { resolveEditorCommand } from '../../utils/externalEditor.js';
+import { appendHistory, loadHistory } from '../../history.js';
 import { readThemePref, writeThemePref } from '../../themePrefs.js';
 import { readLangPref, writeLangPref, setLang, isLang } from '../../i18n.js';
 import type { TerminalMode } from '../model/schema.js';
@@ -52,6 +53,13 @@ import {
 } from './coordinator.js';
 import type { ThemeDescriptor } from '../theme/registry.js';
 
+export interface PromptHistoryPersistence {
+  /** Load entries newest first. */
+  readonly load: () => readonly string[];
+  /** Append one submitted prompt (best effort). */
+  readonly append: (text: string) => void;
+}
+
 export interface TuiV2AppOptions {
   readonly channel: CoordinatorChannel;
   readonly stdin?: InputStdin;
@@ -71,6 +79,8 @@ export interface TuiV2AppOptions {
   readonly themeDescriptors?: readonly ThemeDescriptor[];
   readonly language?: string;
   readonly welcomeText?: string;
+  /** `null` disables prompt-history I/O for deterministic embedders/tests. */
+  readonly historyPersistence?: PromptHistoryPersistence | null;
   readonly approvalStore?: ApprovalStoreLike;
   readonly questionStore?: QuestionStoreLike;
   readonly pluginDialogStore?: PluginDialogStoreLike;
@@ -135,6 +145,20 @@ export function createTuiV2App(options: TuiV2AppOptions): TuiV2App {
   const startupLanguage = isLang(process.env.DSH_TUI_LANG)
     ? process.env.DSH_TUI_LANG
     : options.language ?? readLangPref() ?? 'en'
+  const promptHistory: PromptHistoryPersistence | null = options.historyPersistence === null
+    ? null
+    : options.historyPersistence ?? {
+        load: () => loadHistory().map(entry => entry.text),
+        append: (text) => appendHistory(text),
+      }
+  let initialPromptHistory: readonly string[] = []
+  if (promptHistory !== null) {
+    try {
+      initialPromptHistory = promptHistory.load()
+    } catch {
+      initialPromptHistory = []
+    }
+  }
   const coordinator = createTuiV2Coordinator({
     channel: options.channel,
     stdin,
@@ -152,6 +176,8 @@ export function createTuiV2App(options: TuiV2AppOptions): TuiV2App {
     ...(options.themeDescriptors !== undefined ? { themeDescriptors: options.themeDescriptors } : {}),
     language: startupLanguage,
     ...(options.welcomeText !== undefined ? { welcomeText: options.welcomeText } : {}),
+    ...(initialPromptHistory.length > 0 ? { initialPromptHistory } : {}),
+    ...(promptHistory !== null ? { onPromptHistoryAppend: (text: string) => promptHistory.append(text) } : {}),
     ...(options.approvalStore !== undefined ? { approvalStore: options.approvalStore } : {}),
     ...(options.questionStore !== undefined ? { questionStore: options.questionStore } : {}),
     ...(options.pluginDialogStore !== undefined ? { pluginDialogStore: options.pluginDialogStore } : {}),

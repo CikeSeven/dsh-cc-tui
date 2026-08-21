@@ -3,9 +3,9 @@
  * External-editor regression: pure argv/path helpers plus the v2
  * EditorRunner/ScreenTakeover controller seam.
  *
- * The old Ink terminal-handoff reproduction is intentionally gone. Terminal
- * ownership is asserted by the v2 controller tests; this gate never imports
- * `src/ink`, registers an Ink instance, or treats a skipped check as success.
+ * The retired renderer handoff reproduction is intentionally gone. Terminal
+ * ownership is asserted by the v2 controller tests; this gate uses only pure
+ * helpers and the v2 controller seam and never treats a skipped check as success.
  *
  * Run against compiled output: `node scripts/verify-external-editor.mjs`.
  */

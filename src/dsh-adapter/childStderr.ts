@@ -5,9 +5,8 @@
  * SDK's `StdioClientTransport`, whose stderr defaults to `'inherit'`
  * (`stdio: ['pipe', 'pipe', server.stderr ?? 'inherit']`). An inherited fd 2
  * is written by the CHILD process straight to the terminal device — those
- * bytes never pass through this process's patched `process.stderr.write`
- * (see `ink.tsx` patchStderr), so they land at the parked cursor, scroll the
- * alt-screen, and interleave with the diff renderer's absolute-coordinate
+ * bytes never pass through the v2 writer, so they can land at its parked
+ * cursor, scroll the alt-screen, and interleave with absolute-coordinate
  * writes. A server in a reconnect loop (e.g. a proxy repeatedly printing
  * `Error: Non-HTTPS URLs ...` + its usage line) turns that into the
  * overlapping garbage shown in the issue screenshot.

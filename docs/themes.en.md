@@ -2,97 +2,58 @@
 
 [Documentation index](README.md) · [简体中文](themes.md)
 
-## Built-in themes
+## Production theme
 
-dsh-TUI provides three Gentle Mist Blue palettes, plus an `auto` pseudo-theme:
-
-| Name | Purpose |
-| --- | --- |
-| `auto` | Pseudo-theme: follows the system/terminal background, resolving to `light` or `dark` |
-| `light` | Warm-white surfaces, ink body text, and mist-blue interaction color |
-| `dark` | Dark-terminal adaptation with warm-gray text and soft blue accents |
-| `dark-ansi` | Compatibility fallback using only the 16 ANSI colors |
-
-Without an explicit choice, the TUI queries the terminal background with OSC
-11 and selects `light` or `dark`. It falls back to `dark` when the terminal does
-not answer.
-
-`auto` turns that one-shot startup detection into a standing choice: it is a
-valid value for `/theme`, `CC_TUI_THEME`, and `~/.dsh-cc/theme.json`. Selecting
-`auto` applies the last detected base immediately and re-queries OSC 11 in the
-background — on terminals that follow the system theme, picking `auto` again
-(or restarting) catches up after a system light/dark switch. `/theme status`
-shows which palette `auto` currently resolves to, and `getTheme('auto')` serves
-that palette to every consumer. A user theme named `auto` is shadowed by the
-built-in pseudo-theme (not listed in the picker).
+The production v2 registry registers only `default`. Embedders may supply extra
+descriptors through `createTuiV2App({ themeDescriptors })`; an unregistered id
+(including one persisted by an older release) safely falls back to `default` and
+never loads a retired renderer or second theme implementation.
 
 Selection precedence is:
 
 ```text
-DSH_TUI_THEME
-  > persisted choice in ~/.dsh-tui/theme.json
-  > OSC 11 background detection
-  > dark fallback
+explicit createTuiV2App theme
+  > DSH_TUI_THEME
+  > persisted registry id in ~/.dsh-tui/theme.json
+  > default fallback
 ```
 
 ## Switching themes
 
-- `/theme` opens the picker, with `auto` and the built-ins before custom themes.
+- `/theme` opens the v2 registry picker; it lists `default`, then injected descriptors.
 - `/theme <name>` switches directly.
 - `/theme status` shows the current theme and persistence location.
 
 Confirming a choice hot-switches immediately and writes it to
 `~/.dsh-tui/theme.json`. `DSH_TUI_THEME`, when set, still wins on the next launch.
 
-## Custom themes
+## v2 theme descriptors
 
-Place JSON files under `~/.dsh-tui/themes/`. Each file starts from one built-in
-palette and overrides a subset of its colors:
+Production v2 does not dynamically load a second theme implementation from a user
+folder. Hosts/plugins register descriptors through
+`createTuiV2App({ themeDescriptors })`; the registry accepts only a safe id, a
+single-line display name, `default|dark|light|ansi` base, and known-role
+`LineStyle` values:
 
-```json
+```ts
 {
-  "name": "sakura",
-  "displayName": "Sakura",
-  "base": "dark",
-  "colors": {
-    "claude": "#FF9EC7",
-    "claudeShimmer": "#FFC0D5",
-    "permission": "#FFB3CC",
-    "promptBorder": "#B08B99",
-    "text": "#E8E6E0",
-    "inactive": "#A99BA0",
-    "subtle": "#8A7A80",
-    "selectionBg": "#5C3A44",
-    "success": "#9CC7A8",
-    "error": "#E08591",
-    "warning": "#E0C08A"
-  }
+  id: 'night-owl',
+  displayName: 'Night Owl',
+  base: 'dark',
+  roles: { accent: { foreground: '#ff00aa', bold: true, ... } }
 }
 ```
 
-Fields:
+`src/utils/themeName.ts` rejects traversal/control input and
+`src/tui-v2/theme/registry.ts` rejects unknown roles/invalid colors, falling back
+to `default` for an unknown id. When truecolor is not confirmed by host
+capabilities, `resolveThemeForProfile` quantizes roles to ANSI-256; it never
+silently starts another renderer. Persistence stores only a safe registry id in
+`~/.dsh-tui/theme.json`.
 
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `base` | Yes | `light`, `dark`, or `dark-ansi`; source for every non-overridden color |
-| `colors` | Yes | Partial override of semantic Theme keys |
-| `name` | No | Theme ID; defaults to the filename |
-| `displayName` | No | Picker label; defaults to `name` |
-
-When the file declares `name`, its filename remains a loading alias. See the
-`Theme` type in [`src/theme.ts`](../src/theme.ts) for every semantic key.
-
-Common override groups:
-
-| Group | Keys |
-| --- | --- |
-| Tool card surfaces (two depths) | `toolCardBackground`, `toolCardBackgroundDim` |
-| Tool status dots (by category) | `toolDotExec`, `toolDotRead`, `toolDotWrite`, `toolDotWeb`, `toolDotTask` |
-| Diff rows | `diffAdded`, `diffRemoved`, `diffAddedDimmed`, `diffRemovedDimmed`, `diffAddedWord`, `diffRemovedWord` |
-| Diff syntax highlighting | `syntaxKeyword`, `syntaxString`, `syntaxComment`, `syntaxNumber`, `syntaxFunction`, `syntaxType`, `syntaxVariable`, `syntaxOperator`, `syntaxPunctuation`, `syntaxConstant` |
-
-Diff semantics outrank syntax colors: changed words always render in
-`diffAddedWord` / `diffRemovedWord`; syntax colors apply to unchanged text only.
+Descriptor registration, invalid input, truecolor degradation, and preference
+round-trips are covered by `node --import tsx/esm scripts/verify-themes.mjs` and
+`test/tui-v2/theme-i18n-width.test.ts`.
 
 ## Color formats
 

@@ -24,8 +24,8 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import { cleanScalarText } from './sanitize.js'
 import { activationFiber, bindCallerEffect, compositionRoot, concreteService, requirePluginCaller } from './host-access.js'
 
-/** Minimal shape of the ink Key flags the matcher reads (kept structurally
- *  compatible with `Key` from the ui kit without importing React-facing
+/** Minimal shape of the terminal Key flags the matcher reads (kept structurally
+ *  compatible with `Key` from the ui kit without importing presentation
  *  modules into the adapter). */
 export interface TuiShortcutKey {
   ctrl?: boolean

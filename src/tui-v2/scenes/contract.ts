@@ -2,7 +2,7 @@
  * tui-v2 plugin scene + row contracts (WP-08a, plan §7.4).
  *
  * The type definitions in this module are verbatim from the development
- * plan — they are the FINAL plugin-facing surface. The old React scene
+ * plan — they are the FINAL plugin-facing surface. The old legacy component runtime scene
  * descriptor (`TuiSceneProps`/`TuiSceneDescriptor`, `./scenes` export) and
  * the `./jsx-runtime` export are deleted in the same breaking release; no
  * legacy adapter is provided. Old descriptors are rejected at registration
@@ -10,7 +10,7 @@
  *
  * Boundary rules (plan §7.4):
  *
- *  - A scene never receives React, the Channel, the Cordis context, the
+ *  - A scene never receives legacy component runtime, the Channel, the Cordis context, the
  *    TerminalWriter or stdout — its only host handle is the capability
  *    context minted at registration/open.
  *  - `SceneV2.render()` returns a MUTABLE `string[]`; the single
@@ -22,7 +22,7 @@
  *    construct one and cannot restore the screen by itself.
  *
  * Dependency rule (§4.3): `import type` from model/renderer/terminal
- * contracts only; no runtime imports, no dsh-adapter, no React.
+ * contracts only; no runtime imports, no dsh-adapter, no legacy component runtime.
  */
 import type { SceneViewModel, SerializableValue } from '../model/schema.js'
 import type { Component, Focusable } from '../renderer/component.js'
@@ -85,7 +85,7 @@ export interface SceneRegistrationHandle {
 }
 
 export interface TuiSceneRuntimeV2Contract {
-  /** Final API; the old React descriptor/register overload is removed in this breaking release. */
+  /** Final API; the old legacy component runtime descriptor/register overload is removed in this breaking release. */
   register(descriptor: SceneDescriptorV2, identity?: unknown): SceneRegistrationHandle
 }
 
