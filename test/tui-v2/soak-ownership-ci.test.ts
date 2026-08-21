@@ -204,7 +204,7 @@ test('ownership gate: production graph has one writer and all structured owners 
   assert.match(String(result.details.hitHash), /^[0-9a-f]{64}$/u)
 })
 
-test('ci-integration gate: staged mode passes and defers only exact publish to WP-09c2', { timeout: 90_000 }, async () => {
+test('ci-integration gate: staged mode passes with the exact verified publish contract', { timeout: 90_000 }, async () => {
   const result = await checkCiIntegration({
     output: path.join(os.tmpdir(), 'unused-ci-integration-test.json'),
     profile: null,
@@ -214,8 +214,9 @@ test('ci-integration gate: staged mode passes and defers only exact publish to W
   })
   assert.equal(result.status, 'pass', JSON.stringify(result.details))
   const publish = result.details.publish as any
-  assert.equal(publish.deferred.length, 1)
-  assert.equal(publish.deferred[0].deferredTo, 'WP-09c2')
+  assert.equal(publish.deferred.length, 0)
+  assert.equal(publish.exactVerifiedTarball, true)
+  assert.deepEqual(publish.ordinaryPublishHits, [])
   const probes = result.details.probes as any[]
   assert.deepEqual(probes.map(probe => probe.exitCode), [0, 0, 0, 0])
   assert.equal(probes.every(probe => probe.artifactStatus === 'pass' && /^[0-9a-f]{64}$/u.test(probe.artifactSha256)), true)

@@ -1,4 +1,54 @@
+import { execFile } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
+import { promisify } from 'node:util'
+import { validateRollbackLocal } from './tui-v2-rollback.mjs'
+
+const execFileAsync = promisify(execFile)
+
+const cli = process.argv.slice(2)
+const rollbackIndex = cli.findIndex(arg => arg === '--rollback' || arg === '--rollback-manifest')
+if (rollbackIndex >= 0) {
+  let manifestPath = null
+  let tarballPath = null
+  for (let index = 0; index < cli.length; index += 1) {
+    const arg = cli[index]
+    if (arg === '--') continue
+    if (arg === '--rollback' || arg === '--rollback-manifest') {
+      if (manifestPath !== null) throw new Error('duplicate rollback manifest argument')
+      manifestPath = cli[++index]
+      if (!manifestPath || manifestPath.startsWith('--')) throw new Error('--rollback requires a manifest path')
+    } else if (arg === '--tarball') {
+      if (tarballPath !== null) throw new Error('duplicate --tarball argument')
+      tarballPath = cli[++index]
+      if (!tarballPath || tarballPath.startsWith('--')) throw new Error('--tarball requires one path')
+    } else {
+      throw new Error(`unknown rollback argument: ${arg}`)
+    }
+  }
+  if (manifestPath === null) throw new Error('--rollback requires a manifest path')
+  const currentPackage = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const result = await validateRollbackLocal(manifestPath, {
+    expectedPackageName: currentPackage.name,
+    tarballPath,
+    requireUnexpired: true,
+  })
+  if (result.errors.length > 0) throw new Error(result.errors.join('; '))
+  if (tarballPath !== null) {
+    let rollbackPackage
+    try {
+      const extracted = await execFileAsync('tar', [
+        '--extract', '--to-stdout', '--gzip', '--file', tarballPath, 'package/package.json',
+      ], { maxBuffer: 1024 * 1024 })
+      rollbackPackage = JSON.parse(extracted.stdout)
+    } catch (error) {
+      throw new Error(`rollback tarball package.json is unreadable: ${String(error?.message || error)}`)
+    }
+    if (rollbackPackage.name !== result.value.package || rollbackPackage.version !== result.value.version) {
+      throw new Error(`rollback tarball package identity ${rollbackPackage.name}@${rollbackPackage.version} does not match manifest ${result.value.package}@${result.value.version}`)
+    }
+  }
+  console.log(`rollback manifest OK (${result.value.package}@${result.value.version}, ${result.tarballStatus})`)
+} else {
 
 const input = await new Promise((resolve, reject) => {
   let value = ''
@@ -109,3 +159,4 @@ if (tuiV2.SCENE_API_VERSION !== '2' || !Array.isArray(tuiV2.SUPPORTED_SCENE_API_
 }
 
 console.log(`package surface OK (${packed.size} files, ${targets.size} entry targets)`)
+}

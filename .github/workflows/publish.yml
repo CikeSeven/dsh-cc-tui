@@ -1,16 +1,32 @@
 name: Publish
 
-# 发版入口：推送 v* 标签。构建、package surface 和 v2 checks 必须先通过。
+# 发版入口：推送 v* 标签。只发布 pack/verify 产生的同一个绝对 tgz。
 on:
   push:
     tags: ['v*']
 
 permissions:
+  actions: read
   contents: read
   id-token: write
 
 env:
   DSH_TUI_LANG: zh
+  # These values are release inputs, not defaults. The shell below fails
+  # closed when any previous-release/signature/launcher value is absent.
+  TUI_V2_ROLLBACK_REGISTRY: ${{ vars.TUI_V2_ROLLBACK_REGISTRY }}
+  TUI_V2_ROLLBACK_VERSION: ${{ vars.TUI_V2_ROLLBACK_VERSION }}
+  TUI_V2_ROLLBACK_SIGNATURE_ALGORITHM: ${{ vars.TUI_V2_ROLLBACK_SIGNATURE_ALGORITHM }}
+  TUI_V2_ROLLBACK_SIGNATURE_REF: ${{ secrets.TUI_V2_ROLLBACK_SIGNATURE_REF }}
+  TUI_V2_ROLLBACK_SESSION_MIN: ${{ vars.TUI_V2_ROLLBACK_SESSION_MIN }}
+  TUI_V2_ROLLBACK_SESSION_MAX: ${{ vars.TUI_V2_ROLLBACK_SESSION_MAX }}
+  TUI_V2_ROLLBACK_LAUNCHER_COMMAND: ${{ vars.TUI_V2_ROLLBACK_LAUNCHER_COMMAND }}
+  TUI_V2_ROLLBACK_LAUNCHER_ARGS_JSON: ${{ vars.TUI_V2_ROLLBACK_LAUNCHER_ARGS_JSON }}
+  TUI_V2_ROLLBACK_LAUNCHER_TIMEOUT_MS: ${{ vars.TUI_V2_ROLLBACK_LAUNCHER_TIMEOUT_MS }}
+  TUI_V2_ROLLBACK_LAUNCHER_RETRIES: ${{ vars.TUI_V2_ROLLBACK_LAUNCHER_RETRIES }}
+  TUI_V2_ROLLBACK_KEEP_STABLE_VERSIONS: ${{ vars.TUI_V2_ROLLBACK_KEEP_STABLE_VERSIONS }}
+  TUI_V2_ROLLBACK_EXPIRES_AT: ${{ vars.TUI_V2_ROLLBACK_EXPIRES_AT }}
+  TUI_V2_ROLLBACK_ARTIFACT_RUN_ID: ${{ vars.TUI_V2_ROLLBACK_ARTIFACT_RUN_ID }}
 
 jobs:
   npm:
@@ -30,7 +46,22 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
 
-      - run: pnpm install --frozen-lockfile
+      - name: Require previous verified release artifact identity
+        run: |
+          : "${TUI_V2_ROLLBACK_ARTIFACT_RUN_ID:?missing TUI_V2_ROLLBACK_ARTIFACT_RUN_ID}"
+          : "${TUI_V2_ROLLBACK_VERSION:?missing TUI_V2_ROLLBACK_VERSION}"
+
+      - name: Download previous verified release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tui-v2-verified-release
+          path: ${{ runner.temp }}/tui-v2-rollback-input
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ env.TUI_V2_ROLLBACK_ARTIFACT_RUN_ID }}
+
+      # --ignore-scripts is intentional: only the explicit compile step below
+      # may produce build output; install/pack/publish must remain side-effect free.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm compile
 
       - name: Verify clean compile output
@@ -39,11 +70,10 @@ jobs:
           test -f lib/types/dsh-adapter/invariant.js
 
       - run: pnpm verify:build
-      - run: pnpm verify:package
       - run: pnpm smoke
       - run: pnpm test:tui-v2
 
-      - name: Verify v2 release checks
+      - name: Verify v2 release checks before packing
         run: |
           for check in baseline regression-matrix trace fork skeleton controllers fullscreen inline host-capabilities ownership ci-integration v2-only; do
             pnpm verify:tui-v2 -- --check "$check" --output "$RUNNER_TEMP/tui-v2/$check.json"
@@ -64,8 +94,104 @@ jobs:
           pkg="$(node -p "require('./package.json').version")"
           [ "$tag" = "$pkg" ] || { echo "tag $tag != package.json $pkg"; exit 1; }
 
-      # 用 npm 发布 workspace bundledDependencies；上面的 package gate 已经
-      # 在同一编译产物上验证入口和离线 baseline 排除规则。
-      - run: npm publish --access public --provenance
+      - name: Pack and verify one immutable release artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          outDir="${RUNNER_TEMP:-$(node -p "require('os').tmpdir()")}/tui-v2"
+          mkdir -p "$outDir"
+          packJson="$outDir/pack.json"
+          rollbackManifest="$outDir/rollback-manifest.json"
+          : "${TUI_V2_ROLLBACK_REGISTRY:?missing TUI_V2_ROLLBACK_REGISTRY}"
+          : "${TUI_V2_ROLLBACK_VERSION:?missing TUI_V2_ROLLBACK_VERSION}"
+          : "${TUI_V2_ROLLBACK_SIGNATURE_ALGORITHM:?missing TUI_V2_ROLLBACK_SIGNATURE_ALGORITHM}"
+          : "${TUI_V2_ROLLBACK_SIGNATURE_REF:?missing TUI_V2_ROLLBACK_SIGNATURE_REF}"
+          : "${TUI_V2_ROLLBACK_SESSION_MIN:?missing TUI_V2_ROLLBACK_SESSION_MIN}"
+          : "${TUI_V2_ROLLBACK_SESSION_MAX:?missing TUI_V2_ROLLBACK_SESSION_MAX}"
+          : "${TUI_V2_ROLLBACK_LAUNCHER_COMMAND:?missing TUI_V2_ROLLBACK_LAUNCHER_COMMAND}"
+          : "${TUI_V2_ROLLBACK_LAUNCHER_ARGS_JSON:?missing TUI_V2_ROLLBACK_LAUNCHER_ARGS_JSON}"
+          : "${TUI_V2_ROLLBACK_LAUNCHER_TIMEOUT_MS:?missing TUI_V2_ROLLBACK_LAUNCHER_TIMEOUT_MS}"
+          : "${TUI_V2_ROLLBACK_LAUNCHER_RETRIES:?missing TUI_V2_ROLLBACK_LAUNCHER_RETRIES}"
+          : "${TUI_V2_ROLLBACK_KEEP_STABLE_VERSIONS:?missing TUI_V2_ROLLBACK_KEEP_STABLE_VERSIONS}"
+          : "${TUI_V2_ROLLBACK_EXPIRES_AT:?missing TUI_V2_ROLLBACK_EXPIRES_AT}"
+          currentVersion="$(node -p "require('./package.json').version")"
+          test "$TUI_V2_ROLLBACK_VERSION" != "$currentVersion"
+          previousName="deepseek-harness-tui-dsh-tui-$TUI_V2_ROLLBACK_VERSION.tgz"
+          previousRoot="$RUNNER_TEMP/tui-v2-rollback-input"
+          previousInput="$previousRoot/$previousName"
+          previousVerified="$previousRoot/verified-tarball.json"
+          test -f "$previousInput" -f "$previousVerified"
+          previousTarball="$outDir/$previousName"
+          cp -- "$previousInput" "$previousTarball"
+          previousSha="$(sha256sum "$previousTarball" | cut -d' ' -f1)"
+          node -e "const fs=require('fs'),path=require('path'); const a=JSON.parse(fs.readFileSync(process.argv[1])); const expectedBase=process.argv[2], expectedName=process.argv[3], expectedVersion=process.argv[4], expectedSha=process.argv[5]; if(a.status!=='pass'||a.verifier!=='tui-v2-exact-tarball-v1'||a.artifact?.name!==expectedName||a.artifact?.version!==expectedVersion||path.basename(a.artifact?.tarball||'')!==expectedBase||a.artifact?.sha256!==expectedSha) process.exit(1)" "$previousVerified" "$previousName" "$(node -p "require('./package.json').name")" "$TUI_V2_ROLLBACK_VERSION" "$previousSha"
+          npm pack --ignore-scripts --json --pack-destination "$outDir" --foreground-scripts=false > "$packJson"
+          tgz="$(cd "$outDir" && node -e "const r=JSON.parse(require('fs').readFileSync(process.argv[1])); const x=Array.isArray(r)?r[0]:Object.values(r)[0]; process.stdout.write(require('path').resolve(x.filename))" "$packJson")"
+          sha="$(sha256sum "$tgz" | cut -d' ' -f1)"
+          node scripts/create-tui-v2-rollback-manifest.mjs \
+            --registry "$TUI_V2_ROLLBACK_REGISTRY" \
+            --package "$(node -p "require('./package.json').name")" \
+            --version "$TUI_V2_ROLLBACK_VERSION" \
+            --tarball "$previousTarball" --sha256 "$previousSha" \
+            --signature-algorithm "$TUI_V2_ROLLBACK_SIGNATURE_ALGORITHM" \
+            --signature-ref "$TUI_V2_ROLLBACK_SIGNATURE_REF" \
+            --session-min "$TUI_V2_ROLLBACK_SESSION_MIN" --session-max "$TUI_V2_ROLLBACK_SESSION_MAX" \
+            --launcher-command "$TUI_V2_ROLLBACK_LAUNCHER_COMMAND" \
+            --launcher-args-json "$TUI_V2_ROLLBACK_LAUNCHER_ARGS_JSON" \
+            --launcher-timeout-ms "$TUI_V2_ROLLBACK_LAUNCHER_TIMEOUT_MS" \
+            --launcher-retries "$TUI_V2_ROLLBACK_LAUNCHER_RETRIES" \
+            --keep-stable-versions "$TUI_V2_ROLLBACK_KEEP_STABLE_VERSIONS" \
+            --expires-at "$TUI_V2_ROLLBACK_EXPIRES_AT" --output "$rollbackManifest"
+          node scripts/verify-package.mjs < "$packJson"
+          node scripts/verify-package.mjs --rollback "$rollbackManifest" --tarball "$previousTarball"
+          node scripts/verify-tui-v2-tarball.mjs \
+            --tarball "$tgz" --sha256 "$sha" --pack-json "$packJson" \
+            --rollback-manifest "$rollbackManifest" --output "$outDir/verified-tarball.json"
+          printf '%s\n' "$tgz" > "$outDir/verified-tgz.path"
+          printf '%s\n' "$sha" > "$outDir/verified-tgz.sha256"
+          printf '%s\n' "$previousTarball" > "$outDir/rollback-tgz.path"
+
+      - name: Verify final artifact and rollback drill
+        run: |
+          outDir="${RUNNER_TEMP:-$(node -p "require('os').tmpdir()")}/tui-v2"
+          tgz="$(node -p "require('fs').readFileSync('$outDir/verified-tgz.path','utf8').trim()")"
+          sha="$(node -p "require('fs').readFileSync('$outDir/verified-tgz.sha256','utf8').trim()")"
+          rollbackTgz="$(node -p "require('fs').readFileSync('$outDir/rollback-tgz.path','utf8').trim()")"
+          pnpm verify:tui-v2 -- --check ci-integration --final --rollback-manifest "$outDir/rollback-manifest.json" --rollback-tarball "$rollbackTgz" --tarball "$tgz" --verified-tarball "$outDir/verified-tarball.json" --output "$outDir/ci-integration-final.json"
+          pnpm verify:tui-v2 -- --check v2-only --final --rollback-manifest "$outDir/rollback-manifest.json" --rollback-tarball "$rollbackTgz" --tarball "$tgz" --verified-tarball "$outDir/verified-tarball.json" --output "$outDir/v2-only-final.json"
+          pnpm verify:rollback -- --manifest "$outDir/rollback-manifest.json" --tarball "$rollbackTgz" --output "$outDir/rollback-drill.json"
+          test "$(sha256sum "$tgz" | cut -d' ' -f1)" = "$sha"
+
+      - name: Upload verified release artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-v2-verified-release
+          path: ${{ runner.temp }}/tui-v2
+          if-no-files-found: error
+
+      # This is the only publish action. It consumes the path/hash recorded by
+      # verified-tarball.json; --ignore-scripts forbids a second build.
+      - name: Publish exact verified tarball
+        run: |
+          set -euo pipefail
+          outDir="${RUNNER_TEMP:-$(node -p "require('os').tmpdir()")}/tui-v2"
+          tgz="$(node -e "const a=JSON.parse(require('fs').readFileSync(process.argv[1])); process.stdout.write(a.artifact.tarball)" "$outDir/verified-tarball.json")"
+          sha="$(node -e "const a=JSON.parse(require('fs').readFileSync(process.argv[1])); process.stdout.write(a.artifact.sha256)" "$outDir/verified-tarball.json")"
+          test -f "$tgz"
+          test "$(sha256sum "$tgz" | cut -d' ' -f1)" = "$sha"
+          publishJson="$outDir/publish-response.json"
+          npm publish "$tgz" --ignore-scripts --access public --provenance > "$publishJson"
+          publishSha="$(sha256sum "$publishJson" | cut -d' ' -f1)"
+          node -e "require('fs').writeFileSync(process.argv[1], JSON.stringify({schemaVersion:1,status:'published',tarball:process.argv[2],tarballSha256:process.argv[3],responseSha256:process.argv[4]},null,2)+'\\n')" "$outDir/publish-record.json" "$tgz" "$sha" "$publishSha"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Upload publish response hash
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-v2-publish-response
+          path: |
+            ${{ runner.temp }}/tui-v2/publish-response.json
+            ${{ runner.temp }}/tui-v2/publish-record.json
+          if-no-files-found: error

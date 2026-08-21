@@ -7,8 +7,8 @@
 ## 扫描
 
 - 命令：`rg -o 'scripts/[A-Za-z0-9_.-]+' .github/workflows package.json | LC_ALL=C sort -u`
-- sourceCommit：`546e9007df3ebd340fd7099da1de92a083807781`
-- 清单条目数：70；listHash（sha256）：`8f44b54c4f805b856c2056b3981be7921abef5637425d8eed45de78992c09581`（WP-09c1：加入 bounded soak、PTY continuation merge 与 ownership/CI workflow entries）
+- sourceCommit：`e26f416e04bf61b6b00ba9a27c0815b3c537991b`
+- 清单条目数：75；listHash（sha256）：`dcb48f4625cf6a63783683aa5053b695766c2a0a3bc395d976946f1f0a08299b`（WP-09c2：加入 exact tarball verifier、rollback manifest generator/drill 与 verified publish workflow entries）
 - 说明：清单行格式为 `<文件>:<入口>`；校验脚本用等价的纯 Node 重扫实现
   （`computeEntryScan`，对本仓库 ASCII 入口名与 `LC_ALL=C sort -u` 字节一致），
   不依赖运行时 ripgrep。
@@ -20,18 +20,18 @@
   `offline-baseline` / `unaffected`（不触及被迁移的渲染/插件面，原样保留并由 CI
   持续证明；`rewrite-v2` 为历史枚举，本阶段无剩余行）。
 - status：旧 live-only 入口在本阶段标为 `retired`；v2 wrapper/check 与纯 domain 入口通过后标为 `verified`；仅真实 PTY/宿主矩阵留作非阻断 `accepted-risk`。
-- 当前分布：severity {"P2":53,"P1":51,"P0":10}；status {"verified":84,"retired":26,"accepted-risk":4}；disposition {"unaffected":59,"remove":54,"offline-baseline":1}。
+- 当前分布：severity {"P2":53,"P1":51,"P0":14}；status {"verified":88,"retired":26,"accepted-risk":4}；disposition {"unaffected":63,"remove":54,"offline-baseline":1}。
 
 ## 机器可读矩阵
 
 ```json
 {
   "scan": {
-    "sourceCommit": "546e9007df3ebd340fd7099da1de92a083807781",
+    "sourceCommit": "e26f416e04bf61b6b00ba9a27c0815b3c537991b",
     "scanCommand": "rg -o 'scripts/[A-Za-z0-9_.-]+' .github/workflows package.json | LC_ALL=C sort -u",
-    "listHash": "8f44b54c4f805b856c2056b3981be7921abef5637425d8eed45de78992c09581",
-    "entryCount": 70,
-    "generatedAt": "2026-08-21T18:18:16.000Z"
+    "listHash": "dcb48f4625cf6a63783683aa5053b695766c2a0a3bc395d976946f1f0a08299b",
+    "entryCount": 75,
+    "generatedAt": "2026-08-21T20:40:00.000Z"
   },
   "rows": [
     {
@@ -1514,6 +1514,58 @@
       "ciCommand": "node --import tsx/esm scripts/merge-tui-v2-soak.ts --mode aggregate (called by tui-v2-host-soak workflow)",
       "blockDefault": false,
       "deleteCondition": "retain until a runner can provide an equivalent uninterrupted host gate with the same identity and artifact completeness",
+      "disposition": "unaffected"
+    },
+    {
+      "id": "REG-115",
+      "severity": "P0",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-21T20:40:00.000Z",
+      "traceId": "exact-tarball-verifier@v1",
+      "assertion": "one exact npm pack artifact is hash/size/path checked, safely extracted, surface-checked, license/NOTICE/fork-ledger checked, and recorded in verified-tarball.json",
+      "ciCommand": "pnpm verify:tui-v2-tarball (node scripts/verify-tui-v2-tarball.mjs)",
+      "blockDefault": true,
+      "deleteCondition": "replace only with a versioned verifier preserving exact tarball/hash/file-manifest and safe-extraction evidence",
+      "disposition": "unaffected"
+    },
+    {
+      "id": "REG-116",
+      "severity": "P0",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-21T20:40:00.000Z",
+      "traceId": "rollback-manifest-child-drill@v1",
+      "assertion": "rollback manifest schema/hash/signature/session/launcher/retention and failed-renderer child cleanup/repeated-signal/timeout evidence are validated without in-process renderer fallback or network",
+      "ciCommand": "pnpm verify:rollback (node scripts/verify-tui-v2-rollback.mjs) && node --test --import tsx/esm test/tui-v2/rollback.test.ts",
+      "blockDefault": true,
+      "deleteCondition": "replace only with an equivalent external-launcher and cleanup evidence contract; never with an in-process renderer switch",
+      "disposition": "unaffected"
+    },
+    {
+      "id": "REG-117",
+      "severity": "P0",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-21T20:40:00.000Z",
+      "traceId": "verified-publish-flow@v1",
+      "assertion": "publish workflow compiles once, packs once, verifies stdin/package and exact tgz/hash, uploads verified artifact, and publishes only the same verified absolute path with --ignore-scripts",
+      "ciCommand": "node --import tsx/esm scripts/verify-tui-v2.ts -- --check ci-integration --final && node --test --import tsx/esm test/tui-v2/tarball-release.test.ts",
+      "blockDefault": true,
+      "deleteCondition": "replace only with a static and runtime guard proving no ordinary publish or second prepare/compile",
+      "disposition": "unaffected"
+    },
+    {
+      "id": "REG-118",
+      "severity": "P0",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-21T20:40:00.000Z",
+      "traceId": "rollback-manifest-generation@v1",
+      "assertion": "rollback manifest generator requires every registry/version/signature/session/launcher/retention value and optionally verifies the exact local tarball without inventing production identity",
+      "ciCommand": "node scripts/create-tui-v2-rollback-manifest.mjs --tarball <fixture.tgz> --sha256 <exact-hash>",
+      "blockDefault": true,
+      "deleteCondition": "replace only with an equivalent deterministic generator that fails closed on missing release inputs",
       "disposition": "unaffected"
     }
   ]

@@ -48,9 +48,9 @@
  *   - ownership (WP-09c1): production dependency closure + AST output/control
  *                        scan matched one-to-one against the structured owner
  *                        ledger, plus a live writer/query/generation drill.
- *   - ci-integration (WP-09c1): parsed workflow/package contracts and bounded
- *                        non-recursive local probes; exact-tarball publish is
- *                        staged until WP-09c2 and becomes strict under --final.
+ *   - ci-integration (WP-09c2): parsed workflow/package contracts, bounded
+ *                        local probes, exact pack/verify/publish identity, and
+ *                        strict final artifact checks under --final.
  *
  * Every check writes an atomic JSON artifact
  *   { schemaVersion: 1, check, status, details, startedAt, durationMs,
@@ -82,6 +82,12 @@ interface CheckContext {
   fixture: string | null
   final: boolean
   rollbackManifest: string | null
+  /** Optional exact previous-release tarball when it is not beside the manifest. */
+  rollbackTarball?: string | null
+  /** Exact local release tarball supplied by the publish runner (WP-09c2). */
+  tarball?: string | null
+  /** verified-tarball.json produced for that exact tarball. */
+  verifiedTarball?: string | null
 }
 interface CheckResult {
   status: 'pass' | 'fail'
@@ -2200,7 +2206,7 @@ export async function checkOwnership(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
-// CI/workflow integration gate (WP-09c1; exact publish deferred to WP-09c2)
+// CI/workflow integration gate (WP-09c2 exact pack/verify/publish contract)
 // ---------------------------------------------------------------------------
 
 interface CiProbeResult {
@@ -2371,6 +2377,9 @@ export async function checkCiIntegration(ctx: CheckContext): Promise<CheckResult
   const expectedScripts = {
     'test:tui-v2': 'node scripts/test-tui-v2.mjs',
     'verify:tui-v2': 'node --import tsx/esm scripts/verify-tui-v2.ts',
+    'verify:package': 'npm pack --dry-run --json --ignore-scripts --foreground-scripts=false | node scripts/verify-package.mjs',
+    'verify:tui-v2-tarball': 'node scripts/verify-tui-v2-tarball.mjs',
+    'verify:rollback': 'node scripts/verify-tui-v2-rollback.mjs',
     'bench:tui-v2': 'node --expose-gc --import tsx/esm scripts/bench-tui-v2.ts',
     'soak:tui-v2': 'node --expose-gc --import tsx/esm scripts/soak-tui-v2.ts',
   }
@@ -2386,6 +2395,7 @@ export async function checkCiIntegration(ctx: CheckContext): Promise<CheckResult
     staticContracts.push({ id, ok })
     if (!ok) errors.push(message)
   }
+  contract('no-root-prepare', manifest?.scripts?.prepare === undefined, 'root package must not define prepare; release compile is explicit and single-shot')
   contract('node-22.19', /22\.19/u.test(workflowText), 'workflows do not cover Node 22.19')
   contract('node-24', /node(?:-version)?[^\n]*24|node:\s*\[[^\]]*['"]?24/iu.test(workflowText), 'workflows do not cover Node 24')
   contract('test-wrapper', /pnpm\s+test:tui-v2/u.test(workflowText), 'workflows do not run test:tui-v2 wrapper')
@@ -2413,18 +2423,55 @@ export async function checkCiIntegration(ctx: CheckContext): Promise<CheckResult
   contract('soak-chain-verifier', /scripts\/merge-tui-v2-soak\.ts/u.test(hostWorkflowText), 'host workflow lacks soak artifact chain verifier')
 
   const publishSource = publishWorkflow?.source ?? ''
-  const exactPublish = /verify-tui-v2-tarball\.mjs/u.test(publishSource) &&
-    /npm\s+publish\s+["']?\$\{?tgz\}?|npm\s+publish\s+["']?\$tgz/iu.test(publishSource) &&
-    /--ignore-scripts/u.test(publishSource)
-  const ordinaryPublishHits = publishSource.split('\n')
-    .map((line, index) => ({ line: index + 1, text: line.trim() }))
-    .filter(hit => /\bnpm\s+publish\b/u.test(hit.text) && !/\$\{?tgz\}?|\.tgz/u.test(hit.text))
+  const publishCommandLines = publishSource.split('\n').map((line, index) => ({ line: index + 1, text: line.trim() }))
+  const exactPublish = /verify-tui-v2-tarball\.mjs/u.test(publishSource)
+    && /verified-tarball\.json/u.test(publishSource)
+    && /npm\s+pack\s+--ignore-scripts\s+--json\s+--pack-destination/u.test(publishSource)
+    && /--foreground-scripts=false/u.test(publishSource)
+    && /packJson/u.test(publishSource)
+    && /rollbackManifest/u.test(publishSource)
+    && /sha256sum/u.test(publishSource)
+    && /node\s+scripts\/verify-package\.mjs\s+<\s+"?\$packJson/u.test(publishSource)
+    && /--tarball\s+"?\$tgz/u.test(publishSource)
+    && /--sha256\s+"?\$sha/u.test(publishSource)
+    && /npm\s+publish\s+"?\$tgz"?\s+--ignore-scripts/iu.test(publishSource)
+    && /actions\/download-artifact@v4/u.test(publishSource)
+    && /TUI_V2_ROLLBACK_ARTIFACT_RUN_ID/u.test(publishSource)
+    && /publish-response\.json/u.test(publishSource)
+    && /actions\/upload-artifact@v4/u.test(publishSource)
+  const publishLines = publishCommandLines.filter(hit => /\bnpm\s+publish\b/u.test(hit.text))
+  const exactPublishLines = publishLines.filter(hit => /npm\s+publish\s+"?\$tgz"?\s+--ignore-scripts/iu.test(hit.text))
+  const ordinaryPublishHits = publishLines.filter(hit => !exactPublishLines.includes(hit))
+  contract('single-exact-publish', exactPublishLines.length === 1 && publishLines.length === 1, `publish workflow must contain exactly one exact publish command (found ${publishLines.length} publish lines)`)
+  const compileCommandLines = publishCommandLines.filter(hit => /(?:^|\s)(?:pnpm|npm)\s+compile(?:\s|$)/u.test(hit.text))
+  const prepareCommandLines = publishCommandLines.filter(hit => /\bprepare\b/u.test(hit.text) && !hit.text.startsWith('#'))
+  contract('verified-tarball-script', /scripts\/verify-tui-v2-tarball\.mjs/u.test(publishSource), 'publish workflow does not run the exact tarball verifier')
+  contract('rollback-generator', /scripts\/create-tui-v2-rollback-manifest\.mjs/u.test(publishSource), 'publish workflow does not generate rollback manifest from explicit inputs')
+  contract('rollback-artifact-download', /actions\/download-artifact@v4/u.test(publishSource) && /TUI_V2_ROLLBACK_ARTIFACT_RUN_ID/u.test(publishSource), 'publish workflow does not download an explicit previous verified release artifact')
+  contract('verified-artifact-upload', /verified-tarball\.json/u.test(publishSource) && /actions\/upload-artifact@v4/u.test(publishSource), 'publish workflow does not upload verified-tarball.json')
+  contract('publish-response-hash', /publish-response\.json/u.test(publishSource) && /publish-record\.json/u.test(publishSource), 'publish workflow does not record publish response/tarball hashes')
+  contract('single-compile', compileCommandLines.length === 1, `publish workflow must contain exactly one compile command (found ${compileCommandLines.length})`)
+  contract('no-prepare-step', prepareCommandLines.length === 0, 'publish workflow contains a second prepare invocation')
   if (!exactPublish || ordinaryPublishHits.length > 0) {
     deferred.push({
       id: 'verified-tarball-publish',
-      reason: 'publish workflow does not yet consume the exact verified tgz and still contains ordinary npm publish',
+      reason: 'publish workflow does not consume the exact verified tgz/hash through the fixed pack/verify flow',
       deferredTo: 'WP-09c2',
     })
+  }
+
+  const verified = await checkVerifiedTarballReference(ctx)
+  if (verified.details.status !== 'pass' && finalMode) {
+    deferred.push({ id: 'verified-tarball-artifact', reason: 'no passing verified-tarball.json supplied for final artifact identity check', deferredTo: 'WP-09c2' })
+  }
+  errors.push(...verified.errors)
+  const rollbackPath = ctx.rollbackManifest ?? process.env.TUI_V2_ROLLBACK_MANIFEST ?? null
+  if (finalMode || rollbackPath !== null) {
+    const rollback = await checkRollbackManifest(rollbackPath, ctx.rollbackTarball ?? null)
+    errors.push(...rollback.errors)
+    if (finalMode) {
+      for (const item of rollback.deferred) deferred.push({ id: 'rollback-manifest', reason: item.reason, deferredTo: item.deferredTo })
+    }
   }
   if (finalMode) {
     for (const item of deferred) errors.push(`final ci-integration deferred item: ${item.reason} (${item.deferredTo})`)
@@ -2445,14 +2492,14 @@ export async function checkCiIntegration(ctx: CheckContext): Promise<CheckResult
       staticContracts,
       packageScripts: expectedScripts,
       probes,
-      publish: { exactVerifiedTarball: exactPublish, ordinaryPublishHits, deferred },
+      publish: { exactVerifiedTarball: exactPublish, ordinaryPublishHits, deferred, verifiedTarball: verified.details },
       errors,
     },
   }
 }
 
 // ---------------------------------------------------------------------------
-// v2-only final legacy-clean gate + rollback preflight (WP-09b; rollback deferred to WP-09c2)
+// v2-only final legacy-clean gate + exact rollback/artifact preflight (WP-09c2)
 // ---------------------------------------------------------------------------
 
 const retiredSourcePath = (...parts: string[]): string => parts.join('')
@@ -2552,7 +2599,13 @@ async function scanLegacySource(): Promise<{
     // The verifier necessarily contains the forbidden vocabulary in its own
     // policy regexes; do not treat that policy implementation as application
     // source under test.
-    if (file === 'scripts/verify-tui-v2.ts') continue
+    if (file === 'scripts/verify-tui-v2.ts'
+      || file === 'scripts/verify-tui-v2-tarball.mjs'
+      || file === 'scripts/verify-tui-v2-rollback.mjs'
+      || file === 'scripts/tui-v2-rollback-child.mjs'
+      || file === 'scripts/tui-v2-rollback.mjs'
+      || file === 'scripts/create-tui-v2-rollback-manifest.mjs'
+      || file.startsWith('test/tui-v2/')) continue
     const source = await readFile(path.join(repoRoot, file), 'utf8')
     const clean = sourceWithoutComments(source)
     clean.split('\n').forEach((line, index) => {
@@ -2709,7 +2762,7 @@ interface RollbackPreflight {
   readonly details: Record<string, unknown>
 }
 
-export async function checkRollbackManifest(manifestPath: string | null): Promise<RollbackPreflight> {
+export async function checkRollbackManifest(manifestPath: string | null, tarballOverride: string | null = null): Promise<RollbackPreflight> {
   if (manifestPath === null || manifestPath === '') {
     return {
       errors: [],
@@ -2717,77 +2770,103 @@ export async function checkRollbackManifest(manifestPath: string | null): Promis
       details: { status: 'deferred', path: null },
     }
   }
-  const errors: string[] = []
-  const deferred: { reason: string; deferredTo: 'WP-09c2' }[] = []
-  let value: any
   try {
-    value = JSON.parse(await readFile(path.resolve(manifestPath), 'utf8'))
-  } catch (error: any) {
-    return { errors: [`rollback manifest unreadable: ${String(error?.message || error)}`], deferred, details: { path: path.resolve(manifestPath) } }
-  }
-  const requiredString = (field: string): string => {
-    const current = field.split('.').reduce((cursor, key) => cursor?.[key], value)
-    if (typeof current !== 'string' || current === '') {
-      errors.push(`rollback manifest missing ${field}`)
-      return ''
-    }
-    return current
-  }
-  if (value?.schemaVersion !== 1) errors.push('rollback manifest schemaVersion must be 1')
-  const registry = requiredString('registry')
-  const packageName = requiredString('package')
-  const version = requiredString('version')
-  const tarball = requiredString('tarball')
-  const sha256 = requiredString('sha256')
-  if (sha256 !== '' && !/^[0-9a-f]{64}$/u.test(sha256)) errors.push('rollback manifest sha256 must be lowercase 64-hex')
-  if (tarball !== '' && path.basename(tarball) !== tarball) errors.push('rollback manifest tarball must be a basename')
-  if (registry !== '' && !/^[a-z][a-z0-9+.-]*:\/\//iu.test(registry)) errors.push('rollback manifest registry must be an absolute registry URL')
-  if (packageName !== '' && !/^@[^/]+\/[^/]+$/u.test(packageName)) errors.push('rollback manifest package must be scoped')
-  if (version !== '' && !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u.test(version)) errors.push('rollback manifest version must be exact semver')
-  const signature = value?.signature
-  if (signature === null || typeof signature !== 'object') errors.push('rollback manifest signature is required')
-  else {
-    if (!['sigstore', 'gpg'].includes(signature.algorithm)) errors.push('rollback manifest signature.algorithm must be sigstore|gpg')
-    if (typeof signature.ref !== 'string' || signature.ref === '') errors.push('rollback manifest signature.ref is required')
-  }
-  const session = value?.sessionSchema
-  if (session === null || typeof session !== 'object' || !Number.isInteger(session.min) || !Number.isInteger(session.max) || session.min < 1 || session.max < session.min) {
-    errors.push('rollback manifest sessionSchema min/max are invalid')
-  }
-  const launcher = value?.launcher
-  if (launcher === null || typeof launcher !== 'object' || typeof launcher.command !== 'string' || launcher.command === '' || !Array.isArray(launcher.args) || !launcher.args.every((item: unknown) => typeof item === 'string') || !Number.isInteger(launcher.timeoutMs) || launcher.timeoutMs <= 0 || !Number.isInteger(launcher.retries) || launcher.retries < 0) {
-    errors.push('rollback manifest launcher contract is invalid')
-  }
-  const retention = value?.retention
-  if (retention === null || typeof retention !== 'object' || !Number.isInteger(retention.keepStableVersions) || retention.keepStableVersions < 1 || typeof retention.expiresAt !== 'string' || !UTC_DATE.test(retention.expiresAt)) {
-    errors.push('rollback manifest retention contract is invalid')
-  }
-  let tarballStatus: 'verified' | 'missing' | 'not-checked' = 'not-checked'
-  if (tarball !== '' && sha256 !== '' && errors.length === 0) {
-    const localTarball = path.join(path.dirname(path.resolve(manifestPath)), tarball)
-    try {
-      const bytes = await readFile(localTarball)
-      tarballStatus = 'verified'
-      if (sha256Hex(bytes) !== sha256) errors.push('rollback tarball sha256 does not match manifest')
-    } catch {
-      tarballStatus = 'missing'
+    const rollbackModule = await import('./tui-v2-rollback.mjs') as any
+    const packageJson = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'))
+    const result = await rollbackModule.validateRollbackLocal(path.resolve(manifestPath), {
+      expectedPackageName: packageJson.name,
+      tarballPath: tarballOverride === null ? undefined : path.resolve(tarballOverride),
+      requireUnexpired: true,
+    })
+    const deferred: { reason: string; deferredTo: 'WP-09c2' }[] = []
+    const errors = [...result.errors] as string[]
+    // Staged checks may run before the previous tarball is attached. Preserve
+    // the old honest defer only for that one environment-only condition; a
+    // supplied/tampered artifact is always a hard failure.
+    if (result.tarballStatus === 'missing' && tarballOverride === null) {
+      const missing = 'rollback tarball is missing or not a regular file:'
+      const retained = errors.filter(error => !error.startsWith(missing))
+      errors.length = 0
+      errors.push(...retained)
       deferred.push({ reason: 'exact rollback tarball is not present beside the manifest', deferredTo: 'WP-09c2' })
+    }
+    return {
+      errors,
+      deferred,
+      details: {
+        path: result.path,
+        ...(result.summary ?? {}),
+        tarballStatus: result.tarballStatus,
+        tarballPath: result.tarballPath,
+        tarballSha256: result.tarballSha256,
+        tarballSize: result.tarballSize,
+      },
+    }
+  } catch (error: any) {
+    return {
+      errors: [`rollback manifest validation failed: ${String(error?.message || error)}`],
+      deferred: [],
+      details: { path: path.resolve(manifestPath) },
+    }
+  }
+}
+
+async function checkVerifiedTarballReference(ctx: CheckContext): Promise<{ errors: string[]; details: Record<string, unknown> }> {
+  const artifactPath = ctx.verifiedTarball === undefined || ctx.verifiedTarball === null || ctx.verifiedTarball === ''
+    ? null
+    : path.resolve(ctx.verifiedTarball)
+  if (artifactPath === null) return { errors: [], details: { status: 'not-supplied', path: null } }
+  const errors: string[] = []
+  let value: any = null
+  try {
+    value = JSON.parse(await readFile(artifactPath, 'utf8'))
+  } catch (error: any) {
+    return { errors: [`verified-tarball artifact unreadable: ${String(error?.message || error)}`], details: { status: 'invalid', path: artifactPath } }
+  }
+  if (value?.schemaVersion !== 1 || value?.status !== 'pass' || value?.verifier !== 'tui-v2-exact-tarball-v1') {
+    errors.push('verified-tarball artifact must have schemaVersion 1, exact verifier id, and status pass')
+  }
+  const exactPath = typeof value?.artifact?.tarball === 'string' ? path.resolve(value.artifact.tarball) : null
+  const exactSha = typeof value?.artifact?.sha256 === 'string' ? value.artifact.sha256 : null
+  if (exactPath === null || exactSha === null || !/^[0-9a-f]{64}$/u.test(exactSha)) errors.push('verified-tarball artifact lacks exact artifact path/hash')
+  if (ctx.tarball !== undefined && ctx.tarball !== null && exactPath !== path.resolve(ctx.tarball)) errors.push('verified-tarball path does not match supplied tarball')
+  if (exactPath !== null) {
+    try {
+      const bytes = await readFile(exactPath)
+      if (exactSha !== null && sha256Hex(bytes) !== exactSha) errors.push('verified-tarball artifact hash does not match exact tarball')
+    } catch (error: any) {
+      errors.push(`verified-tarball exact tarball unreadable: ${String(error?.message || error)}`)
+    }
+  }
+  const packPath = typeof value?.pack?.path === 'string' ? path.resolve(value.pack.path) : null
+  const packSha = typeof value?.pack?.sha256 === 'string' ? value.pack.sha256 : null
+  const rollbackPath = typeof value?.rollback?.path === 'string' ? path.resolve(value.rollback.path) : null
+  const rollbackSha = typeof value?.rollback?.sha256 === 'string' ? value.rollback.sha256 : null
+  if (packPath === null || rollbackPath === null || !/^[0-9a-f]{64}$/u.test(packSha ?? '') || !/^[0-9a-f]{64}$/u.test(rollbackSha ?? '')) {
+    errors.push('verified-tarball artifact lacks pack/rollback paths or hashes')
+  }
+  if (ctx.rollbackManifest !== undefined && ctx.rollbackManifest !== null && rollbackPath !== path.resolve(ctx.rollbackManifest)) {
+    errors.push('verified-tarball rollback manifest path does not match supplied manifest')
+  }
+  for (const [label, pathname, expected] of [['pack JSON', packPath, packSha], ['rollback manifest', rollbackPath, rollbackSha]] as const) {
+    if (pathname === null || expected === null) continue
+    try {
+      if (sha256Hex(await readFile(pathname)) !== expected) errors.push(`verified-tarball ${label} hash does not match artifact`)
+    } catch (error: any) {
+      errors.push(`verified-tarball ${label} unreadable: ${String(error?.message || error)}`)
     }
   }
   return {
     errors,
-    deferred,
     details: {
-      path: path.resolve(manifestPath),
-      schemaVersion: value?.schemaVersion ?? null,
-      package: packageName || null,
-      version: version || null,
-      tarball: tarball || null,
-      tarballStatus,
-      signature: signature && typeof signature === 'object' ? { algorithm: signature.algorithm ?? null, refPresent: typeof signature.ref === 'string' && signature.ref !== '' } : null,
-      sessionSchema: session && typeof session === 'object' ? { min: session.min ?? null, max: session.max ?? null } : null,
-      launcher: launcher && typeof launcher === 'object' ? { command: launcher.command ?? null, timeoutMs: launcher.timeoutMs ?? null, retries: launcher.retries ?? null } : null,
-      retention: retention && typeof retention === 'object' ? { keepStableVersions: retention.keepStableVersions ?? null, expiresAt: retention.expiresAt ?? null } : null,
+      status: errors.length === 0 ? 'pass' : 'fail',
+      path: artifactPath,
+      tarball: exactPath,
+      sha256: exactSha,
+      packJson: packPath,
+      packJsonSha256: packSha,
+      rollbackManifest: rollbackPath,
+      rollbackManifestSha256: rollbackSha,
     },
   }
 }
@@ -2900,10 +2979,17 @@ export async function checkV2Only(ctx: CheckContext): Promise<CheckResult> {
   }
 
   const rollbackPath = ctx.rollbackManifest ?? process.env.TUI_V2_ROLLBACK_MANIFEST ?? null
-  const rollback = await checkRollbackManifest(rollbackPath)
+  const rollback = await checkRollbackManifest(rollbackPath, ctx.rollbackTarball ?? null)
   details.rollback = rollback.details
   deferred.push(...rollback.deferred)
   errors.push(...rollback.errors)
+
+  const verified = await checkVerifiedTarballReference(ctx)
+  details.verifiedTarball = verified.details
+  errors.push(...verified.errors)
+  if (finalMode && verified.details.status !== 'pass') {
+    deferred.push({ reason: 'no passing verified-tarball.json supplied for final v2-only artifact identity', deferredTo: 'WP-09c2' })
+  }
 
   if (finalMode && deferred.length > 0) {
     for (const item of deferred) errors.push(`final v2-only deferred item: ${item.reason} (${item.deferredTo})`)
@@ -2944,6 +3030,9 @@ function parseArgs(argv: string[]) {
     fixture: string | null
     final: boolean
     rollbackManifest: string | null
+    rollbackTarball: string | null
+    tarball: string | null
+    verifiedTarball: string | null
     help: boolean
   } = {
     check: null,
@@ -2952,6 +3041,9 @@ function parseArgs(argv: string[]) {
     fixture: null,
     final: false,
     rollbackManifest: null,
+    rollbackTarball: null,
+    tarball: null,
+    verifiedTarball: null,
     help: false,
   }
   for (let i = 0; i < argv.length; i++) {
@@ -2964,6 +3056,9 @@ function parseArgs(argv: string[]) {
     else if (arg === '--fixture') out.fixture = argv[++i] ?? null
     else if (arg === '--final') out.final = true
     else if (arg === '--rollback-manifest') out.rollbackManifest = argv[++i] ?? null
+    else if (arg === '--rollback-tarball') out.rollbackTarball = argv[++i] ?? null
+    else if (arg === '--tarball') out.tarball = argv[++i] ?? null
+    else if (arg === '--verified-tarball') out.verifiedTarball = argv[++i] ?? null
     else if (arg === '--help') out.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
@@ -2976,7 +3071,8 @@ function verifierHelp(): string {
     'Usage: node --import tsx/esm scripts/verify-tui-v2.ts -- --check <name> [options]',
     `Checks: ${[...checks.keys()].join(', ')}`,
     'Options: --output <path> --profile <id> --fixture <path> --final',
-    '         --rollback-manifest <path> --help',
+    '         --rollback-manifest <path> --rollback-tarball <path> --tarball <path>',
+    '         --verified-tarball <path> --help',
     'TUI_V2_FINAL=1 enables strict v2-only semantics.',
   ].join('\n')
 }
@@ -3029,6 +3125,9 @@ async function main(): Promise<void> {
       fixture: args.fixture,
       final: args.final,
       rollbackManifest: args.rollbackManifest,
+      rollbackTarball: args.rollbackTarball,
+      tarball: args.tarball,
+      verifiedTarball: args.verifiedTarball,
     })
     artifact.status = result.status
     artifact.details = result.details
