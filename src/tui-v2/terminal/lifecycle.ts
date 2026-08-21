@@ -106,6 +106,14 @@ export interface ScreenTakeover {
   current(): { token: TakeoverToken; generation: number } | null
 }
 
+/** Physical terminal state parked while a child owns stdin/stdout. */
+export interface TakeoverSuspension {
+  readonly modeSnapshot: TerminalModeSnapshot
+  readonly generation: number
+  readonly barrier: WriterBarrier
+}
+
+
 // ---------------------------------------------------------------------------
 // options / results
 // ---------------------------------------------------------------------------
@@ -182,6 +190,10 @@ export interface TerminalLifecycle {
   forceStopRequested(): boolean
   /** Modes this instance has issued — the takeover restore baseline. */
   currentModeSnapshot(): TerminalModeSnapshot
+  /** Suspend input/modes while an external child temporarily owns the tty. */
+  suspendForTakeover?(): Promise<TakeoverSuspension>
+  /** Restore the modes/input ownership captured by suspendForTakeover(). */
+  resumeFromTakeover?(suspension: TakeoverSuspension): Promise<void>
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +264,8 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
   private readonly registered: Array<{ target: ProcessSignalHost; event: string; listener: (...args: never[]) => void }> = []
   private readonly stopSignalsSeen = new Set<string>()
   private forced = false
+  /** Child takeover state; the writer remains quiesced while non-v2 code owns the tty. */
+  private takeoverSuspension: TakeoverSuspension | null = null
 
   constructor(options: TerminalLifecycleOptions) {
     this.writer = options.writer
@@ -570,6 +584,61 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
     }
     if (result.result !== null && result.result.status === 'written') this.mode.mouse = enabled
     return result.result ?? { status: 'error', error: { code: 'op-failed', message: 'mouse toggle failed', generation: this.currentGeneration, recoverable: true } }
+  }
+
+  // ------------------------------------------------------- child takeover
+
+  async suspendForTakeover(): Promise<TakeoverSuspension> {
+    if (this.takeoverSuspension !== null) return this.takeoverSuspension
+    if (this.state !== 'active' && this.state !== 'starting') {
+      throw new Error(`cannot suspend terminal lifecycle in state '${this.state}'`)
+    }
+    const modeSnapshot = this.currentModeSnapshot()
+    this.input.stop()
+    const barrier = await this.writer.quiesce()
+    // Resume the writer gate only long enough to emit the reverse mode bundle;
+    // it is quiesced again before returning to the child owner.
+    this.writer.resume(barrier, barrier.generation)
+    const deadlineAt = this.clock.now() + LIFECYCLE_CLEANUP_DEADLINE_MS
+    await this.runCleanupSequence(false, deadlineAt)
+    const parked = await this.writer.quiesce()
+    this.restoreRawMode()
+    this.takeoverSuspension = { modeSnapshot, generation: this.currentGeneration, barrier: parked }
+    this.diagnostic('takeover-suspended', 'terminal modes parked for child takeover', {
+      generation: this.currentGeneration,
+      alternateScreen: modeSnapshot.alternateScreen,
+    })
+    return this.takeoverSuspension
+  }
+
+  async resumeFromTakeover(suspension: TakeoverSuspension): Promise<void> {
+    if (this.takeoverSuspension === null) return
+    if (suspension !== this.takeoverSuspension) throw new Error('takeover suspension token mismatch')
+    const nextGeneration = suspension.generation + 1
+    this.writer.resume(suspension.barrier, nextGeneration)
+    this.currentGeneration = nextGeneration
+    this.input.setGeneration(nextGeneration)
+    const mode = suspension.modeSnapshot
+    const steps: Array<{ readonly name: string; readonly operation: TerminalControlOperation; readonly apply: () => void }> = []
+    if (mode.alternateScreen) steps.push({ name: 'resume-alt', operation: lifecycleOp('enter-alt', true), apply: () => { this.mode.alternateScreen = true } })
+    if (mode.bracketedPaste && this.profile.supportsBracketedPaste === 'yes') steps.push({ name: 'resume-paste', operation: lifecycleOp('paste', true), apply: () => { this.mode.bracketedPaste = true } })
+    if (mode.mouse !== 'off' && this.profile.supportsMouse === 'yes') steps.push({ name: 'resume-mouse', operation: lifecycleOp('mouse', true), apply: () => { this.mode.mouse = true } })
+    if (mode.focusReporting && this.profile.supportsFocusReporting === 'yes') steps.push({ name: 'resume-focus', operation: lifecycleOp('focus', true), apply: () => { this.mode.focusReporting = true } })
+    if (mode.kittyKeyboard && this.profile.supportsKittyKeyboard === 'yes') steps.push({ name: 'resume-kitty', operation: { kind: 'sequence', sequence: ansi.kittyKeyboardPush(1), purpose: 'pi-compatible' }, apply: () => { this.mode.kittyKeyboard = true; this.input.setKittyKeyboardActive(true) } })
+    if (mode.syncOutput && this.profile.supportsSyncOutput === 'yes') steps.push({ name: 'resume-sync', operation: lifecycleOp('sync-output', true), apply: () => { this.mode.syncOutput = true } })
+    if (mode.cursorVisible === false) steps.push({ name: 'resume-cursor', operation: lifecycleOp('cursor', false), apply: () => { this.mode.cursorHidden = true } })
+    for (const step of steps) {
+      const outcome = await this.withDeadline(step.name, this.writer.writeControl(step.operation, nextGeneration), LIFECYCLE_OP_TIMEOUT_MS)
+      if (outcome.result?.status === 'written') step.apply()
+      else if (outcome.timedOut || outcome.result?.status === 'error') this.diagnostic('takeover-resume-failed', `failed to restore '${step.name}'`, {})
+    }
+    if (mode.rawInput) {
+      this.input.setRawMode(true)
+      this.mode.rawInput = true
+    }
+    this.input.start()
+    this.takeoverSuspension = null
+    this.diagnostic('takeover-resumed', 'terminal modes restored after child takeover', { generation: nextGeneration })
   }
 
   // ------------------------------------------------------- process handlers

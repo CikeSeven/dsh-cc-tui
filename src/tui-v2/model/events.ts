@@ -37,6 +37,7 @@ export type AppEvent =
   | (EventMeta & { type: 'overlay/close'; overlayId: string })
   | (EventMeta & { type: 'search/update'; search: TranscriptSearchState })
   | (EventMeta & { type: 'surface/update'; surface: SurfaceUpdatePayload['surface'] })
+  | (EventMeta & { type: 'preferences/update'; theme?: string; language?: string })
   | (EventMeta & { type: 'terminal/suspended' | 'terminal/resumed' })
   | (EventMeta & { type: 'app/error'; error: SerializableError })
   | (EventMeta & { type: 'scene/open'; scene: SceneViewModel })
@@ -56,6 +57,7 @@ const APP_EVENT_TYPES = [
   'overlay/close',
   'search/update',
   'surface/update',
+  'preferences/update',
   'terminal/suspended',
   'terminal/resumed',
   'app/error',
@@ -268,6 +270,11 @@ export function validateAppEvent(value: unknown): AppEvent {
     }
     case 'surface/update':
       validateSurface(e.surface, 'surface')
+      break
+    case 'preferences/update':
+      if (e.theme !== undefined && (typeof e.theme !== 'string' || e.theme === '')) fail('theme must be a non-empty string when present')
+      if (e.language !== undefined && (typeof e.language !== 'string' || e.language === '')) fail('language must be a non-empty string when present')
+      if (e.theme === undefined && e.language === undefined) fail('preferences/update must carry theme or language')
       break
     case 'terminal/suspended':
     case 'terminal/resumed':

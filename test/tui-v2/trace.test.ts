@@ -128,6 +128,7 @@ function variantEvents(): AppEvent[] {
     { ...meta(), type: 'overlay/open', overlay: sampleOverlay() },
     { ...meta(), type: 'overlay/close', overlayId: 'overlay-1' },
     { ...meta(), type: 'search/update', search: { query: 'x', active: true, current: 0, matches: ['row-1'] } },
+    { ...meta(), type: 'preferences/update', theme: 'default', language: 'en' },
     { ...meta(), type: 'terminal/suspended' },
     { ...meta(), type: 'terminal/resumed' },
     { ...meta(), type: 'app/error', error: { code: 'E_X', message: 'boom', recoverable: false } },
@@ -263,7 +264,7 @@ test('trace schema: validateOverlayState rejects contradictory capture flags', (
 
 test('trace events: every AppEvent variant survives a JSON round-trip', () => {
   const variants = variantEvents()
-  assert.equal(new Set(variants.map((e) => e.type)).size, 13, 'expected one example per variant')
+  assert.equal(new Set(variants.map((e) => e.type)).size, 14, 'expected one example per variant')
   for (const event of variants) {
     const parsed = parseAppEvent(serializeAppEvent(event))
     assert.deepEqual(parsed, event, `round-trip mismatch for ${event.type}`)
@@ -589,6 +590,7 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
       'assistant-stream.jsonl',
       'editor.jsonl',
       'exit-error.jsonl',
+      'external-actions@v1.jsonl',
       'image-fallback@v1.jsonl',
       'inline-scrollback.jsonl',
       'interactive-overlays.jsonl',

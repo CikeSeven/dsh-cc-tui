@@ -298,6 +298,15 @@ function applyEvent(state: UiState, event: AppEvent): UiState {
       return { ...state, search: deepFreeze({ ...event.search, matches: [...event.search.matches] }) }
     case 'surface/update':
       return applySurfaceUpdate(state, event.surface)
+    case 'preferences/update':
+      return {
+        ...state,
+        preferences: {
+          ...state.preferences,
+          ...(event.theme === undefined ? {} : { theme: event.theme }),
+          ...(event.language === undefined ? {} : { language: event.language }),
+        },
+      }
     case 'terminal/suspended':
       return {
         ...state,

@@ -37,3 +37,27 @@ export type {
 
 /** Row renderer signature (serialized row view in, Component/string[] out). */
 export type { PluginRowRenderer } from './scenes/runtime.js'
+
+/** WP-08f stable host capability contracts; Node bindings stay private. */
+export type {
+  ClipboardCapability,
+  ClipboardReadValue,
+  ClipboardWriteResult,
+  EditorRequest,
+  EditorResult,
+  EditorRunner,
+  ExternalActionKind,
+  ExternalActionPhase,
+  ExternalActionSummary,
+  ExternalActionTraceSink,
+  LanguageCapability,
+  PreferencePersistence,
+  RestartRequest,
+  RestartResult,
+  RestartRunner,
+  ShellCapability,
+  ShellOutputSink,
+  ShellRequest,
+  ShellResult,
+} from './capabilities/external-actions.js'
+export type { NotificationController, NotificationInput, NotificationView } from './controllers/notifications.js'

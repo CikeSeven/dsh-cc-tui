@@ -1586,6 +1586,20 @@ traces['image-fallback@v1'] = {
   },
 }
 
+// --- external actions (WP-08f): lifecycle/ownership summaries only. Raw shell,
+// environment, child output and clipboard bytes are intentionally absent.
+traces['external-actions@v1'] = {
+  terminalProfile: 'unicode-ambiguous-narrow',
+  build: (fx) => [
+    resetEvent(fx, 'new-session', [], 'reset-external-actions-1'),
+    event(fx, 'input', { type: 'input/command', command: cmd({ type: 'editor', command: 'submit' }) }),
+    event(fx, 'terminal', { type: 'terminal/suspended' }),
+    event(fx, 'terminal', { type: 'terminal/resumed' }),
+    event(fx, 'input', { type: 'input/command', command: cmd({ type: 'app', command: 'interrupt' }) }),
+    { kind: 'expectedState', value: { externalActionTrace: 'redacted summaries only', clipboard: 'unsupported-or-hash-only', childOutput: 'sanitized bounded rows', secrets: null, bytes: null } },
+  ],
+}
+
 // --- inline scrollback (WP-07): end-growth past a small viewport feeds settled
 // lines into scrollback; browsing must never feed; appends resume afterwards.
 traces['inline-scrollback'] = {

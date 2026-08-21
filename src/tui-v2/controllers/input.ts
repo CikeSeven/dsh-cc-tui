@@ -102,6 +102,10 @@ export interface InputControllerOptions {
   readonly onHelpRequest?: () => void;
   /** Ctrl+R opens prompt-history search instead of reaching the editor. */
   readonly onHistorySearchRequest?: () => void;
+  /** Ctrl+V asks the clipboard controller for an atomic paste. */
+  readonly onPasteRequest?: () => void;
+  /** Ctrl+X opens the injected external editor. */
+  readonly onExternalEditorRequest?: () => void;
   /** Arming window for the double-Ctrl+C exit. Default 2000ms. */
   readonly ctrlCArmMs?: number;
 }
@@ -231,6 +235,16 @@ export function createInputController(options: InputControllerOptions): InputCon
         disarm();
         journal({ type: 'app', command: 'redraw' });
         options.onRedrawRequest?.();
+        return;
+      }
+      if (payload.eventType !== 'release' && payload.key === 'ctrl+v') {
+        disarm();
+        options.onPasteRequest?.();
+        return;
+      }
+      if (payload.eventType !== 'release' && payload.key === 'ctrl+x') {
+        disarm();
+        options.onExternalEditorRequest?.();
         return;
       }
       if (payload.eventType !== 'release' && payload.key === 'ctrl+r') {

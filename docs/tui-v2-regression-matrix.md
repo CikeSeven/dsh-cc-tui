@@ -1373,6 +1373,58 @@
       "disposition": "rewrite-v2"
     },
     {
+      "id": "REG-105",
+      "severity": "P1",
+      "owner": "tui-v2",
+      "status": "in-progress",
+      "updatedAt": "2026-08-20T22:00:00.000Z",
+      "traceId": "external-actions@v1",
+      "assertion": "v2 WP-08f shell/clipboard/editor/update/notification/theme/i18n controllers use bounded capabilities, lifecycle cleanup and redacted action summaries; inline differences are explicit",
+      "ciCommand": "node --test --import tsx/esm test/tui-v2/controllers-external-actions.test.ts test/tui-v2/components-external-actions.test.ts && pnpm verify:tui-v2 -- --check trace",
+      "blockDefault": true,
+      "deleteCondition": "external-actions@v1 与所有 WP-08f controller/component/lifecycle fixtures 全部稳定通过后转 verified；WP-09 删除旧入口时保留 v2 coverage",
+      "disposition": "rewrite-v2"
+    },
+    {
+      "id": "REG-106",
+      "severity": "P0",
+      "owner": "tui-v2",
+      "status": "in-progress",
+      "updatedAt": "2026-08-20T22:00:00.000Z",
+      "traceId": "external-editor-tty-handoff@v1",
+      "assertion": "child takeover suspend/resume preserves writer ownership, terminal modes, input generation and cleanup on cancel/timeout/nonzero",
+      "ciCommand": "node --test --import tsx/esm test/tui-v2/terminal-lifecycle.test.ts test/tui-v2/controllers-external-actions.test.ts",
+      "blockDefault": true,
+      "deleteCondition": "fake child/profile fixture 覆盖 restore/late result 后转 verified；旧 external-editor script 在 WP-09 删除旧 renderer 时退役",
+      "disposition": "rewrite-v2"
+    },
+    {
+      "id": "REG-107",
+      "severity": "P1",
+      "owner": "tui-v2",
+      "status": "in-progress",
+      "updatedAt": "2026-08-20T22:00:00.000Z",
+      "traceId": "local-shell-command@v1",
+      "assertion": "!cmd/!!cmd local shell has explicit stdin/stdout/stderr ownership, sanitized bounded output, timeout/SIGINT/cancel and no model submission for !cmd",
+      "ciCommand": "node --test --import tsx/esm test/tui-v2/controllers-external-actions.test.ts test/tui-v2/controllers-commands.test.ts",
+      "blockDefault": true,
+      "deleteCondition": "real host shell adapter 与 fake runner matrix 完成后转 verified；保留 inline append-only assertion",
+      "disposition": "rewrite-v2"
+    },
+    {
+      "id": "REG-108",
+      "severity": "P1",
+      "owner": "tui-v2",
+      "status": "in-progress",
+      "updatedAt": "2026-08-20T22:00:00.000Z",
+      "traceId": "theme-i18n-notification@v1",
+      "assertion": "bounded notification queue/dedupe/timeout and safe theme/language registry/picker semantics remain width-safe for CJK/emoji/control text",
+      "ciCommand": "node --test --import tsx/esm test/tui-v2/controllers-external-actions.test.ts test/tui-v2/components-external-actions.test.ts test/tui-v2/renderer-cells-width.test.ts",
+      "blockDefault": false,
+      "deleteCondition": "theme/i18n picker integration and old theme/i18n scripts all pass before verified; no global preference import in v2 components",
+      "disposition": "rewrite-v2"
+    },
+    {
       "id": "REG-103",
       "severity": "P2",
       "owner": "tui-v2",

@@ -182,6 +182,23 @@ import { buildFrame } from '../renderer/frame-builder.js';
 import { buildSearchHighlightRegions } from '../renderer/search-highlights.js';
 import { computeInlineLiveRegion } from './inline-live-region.js';
 import { selectTerminalMode } from './modes.js';
+import type {
+  ClipboardCapability,
+  EditorRunner,
+  ExternalActionTraceSink,
+  LanguageCapability,
+  PreferencePersistence,
+  RestartRunner,
+  ShellCapability,
+} from '../capabilities/external-actions.js';
+import { createShellController, type ShellController } from '../controllers/shell.js';
+import { createClipboardController, type ClipboardController } from '../controllers/clipboard.js';
+import { createExternalEditorController, type ExternalEditorController } from '../controllers/external-editor.js';
+import { createUpdateController, type UpdateController, type UpdateRequest } from '../controllers/update.js';
+import { createNotificationController, type NotificationController, type NotificationView } from '../controllers/notifications.js';
+import { createPreferencesController, type PreferenceController } from '../controllers/preferences.js';
+import { createThemeRegistry } from '../theme/registry.js';
+import { isLanguageId } from '../i18n/catalog.js';
 
 export type CoordinatorPhase = 'created' | 'starting' | 'active' | 'stopping' | 'stopped' | 'failed';
 
@@ -264,6 +281,16 @@ export interface TuiV2CoordinatorOptions {
   readonly scenes?: PluginUIRuntime;
   /** Enable the built-in trajectory SceneV2 registration. */
   readonly trajectory?: boolean;
+  /** WP-08f host capabilities. Every field is optional for existing embedders. */
+  readonly shellCapability?: ShellCapability;
+  readonly clipboardCapability?: ClipboardCapability;
+  readonly editorRunner?: EditorRunner;
+  readonly restartRunner?: RestartRunner;
+  readonly languageCapability?: LanguageCapability;
+  readonly preferencePersistence?: PreferencePersistence;
+  readonly actionTrace?: ExternalActionTraceSink;
+  readonly editorArgv?: () => readonly string[] | undefined;
+  readonly confirmUpdate?: (request: { sessionId: string; profile: string; targetVersion?: string }) => Promise<boolean> | boolean;
   readonly onDiagnostic?: (diagnostic: CoordinatorDiagnostic) => void;
 }
 
@@ -296,6 +323,12 @@ export interface CoordinatorDiagnostics {
   readonly surfaces: ReturnType<SurfaceController['activity']['diagnostics']>;
   /** WP-08a plugin scene runtime counters (absent when no runtime is wired). */
   readonly scenes?: PluginUIRuntimeDiagnostics;
+  readonly shell?: ReturnType<ShellController['diagnostics']>;
+  readonly clipboard?: ReturnType<ClipboardController['diagnostics']>;
+  readonly externalEditor?: ReturnType<ExternalEditorController['diagnostics']>;
+  readonly update?: ReturnType<UpdateController['diagnostics']>;
+  readonly preferences?: ReturnType<PreferenceController['diagnostics']>;
+  readonly notifications?: ReturnType<NotificationController['diagnostics']>;
 }
 
 /** WP-05 controller handles (tests/verify introspection). */
@@ -313,6 +346,12 @@ export interface CoordinatorControllers {
   readonly settingsFlow: SettingsFlowController;
   readonly channelOptions: ChannelOptionsController;
   readonly surfaces: SurfaceController;
+  readonly shell: ShellController;
+  readonly clipboard: ClipboardController | null;
+  readonly externalEditor: ExternalEditorController | null;
+  readonly update: UpdateController;
+  readonly preferences: PreferenceController;
+  readonly notifications: NotificationController;
 }
 
 export interface TuiV2Coordinator {
@@ -419,8 +458,13 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
 
   // ------------------------------------------------------- editor binding
 
-  const theme = DEFAULT_COMPONENT_THEME;
+  const themeRegistry = createThemeRegistry({
+    initial: [{ id: 'default', displayName: 'Default', base: 'default', roles: DEFAULT_COMPONENT_THEME.roles }],
+  })
+  let theme = themeRegistry.resolve(options.theme ?? 'default')
   const editorMirror = { text: '' };
+  /** Renderer reference used by preference changes to invalidate caches. */
+  let baseRendererForTheme: BaseRenderer | null = null
   /** Guard: repaint hints emitted from syncFromView (mid-render) are inert. */
   let syncingEditorView = false;
 
@@ -531,6 +575,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         : null,
     },
   });
+  baseRendererForTheme = baseRenderer
 
   const rowViewOf = (row: UiState['session']['rowsById'][string], streaming: boolean) => ({
     rowId: row.rowId,
@@ -718,9 +763,75 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
 
   // ----------------------------------------------------- WP-05 controllers
 
+  const notificationController = createNotificationController({
+    clock,
+    trace: options.actionTrace,
+    onChange: () => {
+      if (phase === 'active') scheduler.requestRender('notify', getScheduledState)
+    },
+  })
   const notify = (text: string, notifyOptions?: { color?: 'error' | 'warning' | 'success' }): void => {
-    channel.notify(text, notifyOptions);
-  };
+    channel.notify(text, notifyOptions)
+    const severity = notifyOptions?.color ?? 'info'
+    notificationController.enqueue({ text, severity, timeoutMs: 4000 })
+    if (phase === 'active') scheduler.requestRender('notify', getScheduledState)
+  }
+  const languageCapability: LanguageCapability = options.languageCapability ?? {
+    supported: ['zh', 'en'],
+    set: async (language) => isLanguageId(language)
+      ? { status: 'changed' as const, language }
+      : { status: 'unsupported' as const },
+  }
+  const preferencesController = createPreferencesController({
+    themes: themeRegistry,
+    languages: languageCapability,
+    ...(options.preferencePersistence === undefined ? {} : { persistence: options.preferencePersistence }),
+    notify,
+    onChange: (change) => {
+      streamingController.ingest({
+        ...meta.next('input', `preference-${change.kind}-${change.value}`),
+        type: 'preferences/update',
+        ...(change.kind === 'theme' ? { theme: change.value } : { language: change.value }),
+      })
+      if (change.kind === 'theme') {
+        theme = themeRegistry.resolve(change.value)
+        const rendererForTheme = baseRendererForTheme as BaseRenderer | null
+        rendererForTheme?.applyEnvironmentChange({ themeChanged: true })
+        if (phase === 'active') scheduler.requestRender('sync', getScheduledState)
+      }
+    },
+    trace: options.actionTrace,
+  })
+  let shellController: ShellController | null = options.shellCapability === undefined ? null : createShellController({
+    capability: options.shellCapability,
+    cwd: () => channel.cwd,
+    notify,
+    appendTranscript: (title, lines) => channel.pushLocal(title, lines),
+    includeInContext: (text) => channel.submit(`<bash-stdout>\n${text}\n</bash-stdout>`),
+    trace: options.actionTrace,
+  })
+  let clipboardController: ClipboardController | null = null
+  let externalEditorController: ExternalEditorController | null = null
+  let updateController: UpdateController | null = null
+  const shellProxy: ShellController = {
+    run: (text) => {
+      if (!text.trim().startsWith('!')) return false
+      if (shellController !== null) return shellController.run(text)
+      notify('Local shell capability is unavailable', { color: 'warning' })
+      return true
+    },
+    cancel: () => shellController?.cancel() ?? false,
+    phase: () => shellController?.phase() ?? 'idle',
+    activeOperationId: () => shellController?.activeOperationId() ?? null,
+    diagnostics: () => shellController?.diagnostics() ?? { started: 0, completed: 0, failed: 0, cancelled: 0, timedOut: 0, ignored: 0, superseded: 0, outputChunks: 0, outputChars: 0, truncatedOutput: 0 },
+  }
+  const updateProxy: UpdateController = {
+    request: (request) => updateController?.request(request) ?? (notify('Update capability is unavailable', { color: 'warning' }), Promise.resolve(false)),
+    cancel: () => updateController?.cancel() ?? false,
+    phase: () => updateController?.phase() ?? 'idle',
+    activeOperationId: () => updateController?.activeOperationId() ?? null,
+    diagnostics: () => updateController?.diagnostics() ?? { requested: 0, confirmed: 0, rejected: 0, started: 0, succeeded: 0, failed: 0, cancelled: 0, late: 0, restoreErrors: 0 },
+  }
 
   const replayController = createReplayController({
     dispatch: (event) => streamingController.ingest(event),
@@ -932,6 +1043,12 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     submitToModel: (text) => adapter.commands.submit(text),
     steerToModel: (text) => adapter.commands.steer(text),
     notify,
+    shell: shellProxy,
+    preferences: preferencesController,
+    update: updateProxy,
+    ...(options.restartRunner === undefined ? {} : {
+      updateRequest: { sessionId: channel.agentId, profile: profile.id },
+    }),
   });
 
   const scrollingController = createScrollingController({
@@ -1099,6 +1216,14 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     },
     onHistorySearchRequest: () => {
       commandsController.handleSubmittedText('/history');
+    },
+    onPasteRequest: () => {
+      if (clipboardController === null) notify('Clipboard capability is unavailable', { color: 'warning' })
+      else void clipboardController.paste()
+    },
+    onExternalEditorRequest: () => {
+      if (externalEditorController === null) notify('External editor capability is unavailable', { color: 'warning' })
+      else externalEditorController.open()
     },
   });
 
@@ -1268,6 +1393,48 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     onDiagnostic: (code, message, details) => diagnostic(code, message, details),
   });
 
+  if (options.clipboardCapability !== undefined) {
+    clipboardController = createClipboardController({
+      capability: options.clipboardCapability,
+      generation: () => lifecycle.generation(),
+      profileSupportsOsc52: () => profile.supportsOsc52 === 'yes',
+      writer,
+      insertText: (text) => editorBinding.insertPaste?.(text),
+      stageImage: async (input) => {
+        const result = await adapter.commands.stageImage(input as Parameters<ChannelCommands['stageImage']>[0])
+        return result.status === 'stored'
+          ? { token: result.token }
+          : { placeholder: result.placeholder }
+      },
+      notify,
+      trace: options.actionTrace,
+    });
+  }
+  if (options.editorRunner !== undefined) {
+    externalEditorController = createExternalEditorController({
+      runner: options.editorRunner,
+      takeover: sceneTakeover,
+      cwd: () => channel.cwd,
+      draft: () => editorBinding.getText(),
+      setDraft: (text) => editorBinding.setDraft?.(text),
+      resolveArgv: options.editorArgv ?? (() => undefined),
+      notify,
+      trace: options.actionTrace,
+    });
+  }
+  if (options.restartRunner !== undefined) {
+    updateController = createUpdateController({
+      runner: options.restartRunner,
+      takeover: sceneTakeover,
+      confirm: options.confirmUpdate ?? (() => true),
+      cleanup: async () => {
+        notificationController.clear()
+      },
+      notify,
+      trace: options.actionTrace,
+    });
+  }
+
   const scheduler: RenderScheduler<ScheduledFrame> = createRenderScheduler<ScheduledFrame>({
     clock,
     ...(options.streamWindowMs !== undefined ? { streamWindowMs: options.streamWindowMs } : {}),
@@ -1310,7 +1477,19 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
 
   const mergedDockView = (): DockView => {
     const base = selectDockView(state);
-    if (dockMirror === null) return base;
+    const actionNotifications = notificationController.view().map((item) => ({
+      notificationId: item.notificationId,
+      text: item.text,
+      ...(item.severity === 'info' ? {} : { color: item.severity }),
+    }))
+    if (dockMirror === null) return { ...base, notifications: actionNotifications.length > 0 ? actionNotifications : base.notifications }
+    const notifications = [...dockMirror.notifications]
+    const seenText = new Set(notifications.map((item) => item.text))
+    for (const item of actionNotifications) {
+      if (seenText.has(item.text)) continue
+      notifications.push(item)
+      seenText.add(item.text)
+    }
     return {
       ...base,
       status: {
@@ -1321,7 +1500,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         extras: { status: dockMirror.status.status, working: dockMirror.status.working, effort: dockMirror.status.effort },
       },
       pendingMessages: dockMirror.pending.map((message) => message.text),
-      notifications: dockMirror.notifications,
+      notifications,
       surface: dockMirror.surface,
     };
   };
@@ -1589,6 +1768,8 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       foreignGuard?.detach();
       streamingController.stop();
       adapter.stop();
+      clipboardController?.stop();
+      notificationController.stop();
       lifecycle.detachProcessHandlers();
       try {
         await lifecycle.stop(reason);
@@ -1633,6 +1814,12 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       settingsFlow: settingsFlowController,
       channelOptions: channelOptionsController,
       surfaces: surfaceController as SurfaceController,
+      shell: shellProxy,
+      clipboard: clipboardController,
+      externalEditor: externalEditorController,
+      update: updateProxy,
+      preferences: preferencesController,
+      notifications: notificationController,
     },
     diagnostics: () => ({
       phase,
@@ -1659,6 +1846,12 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       settingsFlow: settingsFlowController.diagnostics(),
       channelOptions: channelOptionsController.diagnostics(),
       surfaces: surfaceController?.activity.diagnostics() ?? { ticks: 0, stalls: 0, invalidPresets: 0 },
+      shell: shellProxy.diagnostics(),
+      ...(clipboardController !== null ? { clipboard: clipboardController.diagnostics() } : {}),
+      ...(externalEditorController !== null ? { externalEditor: externalEditorController.diagnostics() } : {}),
+      update: updateProxy.diagnostics(),
+      preferences: preferencesController.diagnostics(),
+      notifications: notificationController.diagnostics(),
       ...(pluginRuntime !== null ? { scenes: pluginRuntime.diagnostics() } : {}),
     }),
   };

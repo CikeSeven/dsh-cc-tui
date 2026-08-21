@@ -29,13 +29,13 @@
  */
 import { randomUUID } from 'node:crypto'
 
-import type { TerminalLifecycle, ScreenTakeover, TakeoverLease, TakeoverToken } from './lifecycle.js'
+import type { TerminalLifecycle, ScreenTakeover, TakeoverLease, TakeoverSuspension, TakeoverToken } from './lifecycle.js'
 import type { TerminalWriter } from './writer.js'
 
 /** Narrow lifecycle surface the takeover needs (satisfied by TerminalLifecycle). */
 export type TakeoverLifecycle = Pick<
   TerminalLifecycle,
-  'generation' | 'setGeneration' | 'currentModeSnapshot'
+  'generation' | 'setGeneration' | 'currentModeSnapshot' | 'suspendForTakeover' | 'resumeFromTakeover'
 >
 
 /** Narrow writer surface the takeover needs (satisfied by TerminalWriter). */
@@ -51,6 +51,7 @@ export interface ScreenTakeoverDeps {
 
 interface LeaseRecord {
   readonly lease: TakeoverLease
+  readonly suspension: TakeoverSuspension | null
   /** Set on the first restore; repeated restores return it unchanged. */
   restorePromise: Promise<void> | null
 }
@@ -83,10 +84,15 @@ export function createScreenTakeover(deps: ScreenTakeoverDeps): ScreenTakeover {
         `dsh-tui: screen takeover is busy (held by ${current.lease.token.ownerKind}#${current.lease.token.id})`,
       )
     }
-    // Settled writer watermark at takeover time; the writer is released
-    // immediately (in-band owners render through it, §15.1 WP-08a).
-    const barrier = await deps.writer.quiesce()
-    deps.writer.resume(barrier, barrier.generation)
+    // Capture the pre-child mode before suspension clears the physical modes.
+    const modeBeforeTakeover = deps.lifecycle.currentModeSnapshot()
+    // Child owners keep the writer/input suspended for the lease lifetime;
+    // scene owners retain the existing in-band settled-watermark behavior.
+    const suspension = ownerKind === 'external-editor' || ownerKind === 'update' || ownerKind === 'shutdown'
+      ? await deps.lifecycle.suspendForTakeover?.() ?? null
+      : null
+    const barrier = suspension?.barrier ?? await deps.writer.quiesce()
+    if (suspension === null) deps.writer.resume(barrier, barrier.generation)
     const generation = deps.lifecycle.generation()
     const token = {
       id: randomUUID(),
@@ -98,10 +104,10 @@ export function createScreenTakeover(deps: ScreenTakeoverDeps): ScreenTakeover {
     const lease: TakeoverLease = Object.freeze({
       token,
       generation,
-      modeBeforeTakeover: deps.lifecycle.currentModeSnapshot(),
+      modeBeforeTakeover,
       barrier,
     })
-    current = { lease, restorePromise: null }
+    current = { lease, suspension, restorePromise: null }
     diagnostic('takeover/requested', `takeover lease issued to "${ownerKind}"`, { reason, generation })
     return lease
   }
@@ -117,9 +123,13 @@ export function createScreenTakeover(deps: ScreenTakeoverDeps): ScreenTakeover {
       const record = current
       record.restorePromise ??= (async () => {
         current = null
-        // generation++ on restore (§6.6): the writer adopts it on the next
-        // frame (watermarks reset), the input source follows via lifecycle.
-        deps.lifecycle.setGeneration(record.lease.generation + 1)
+        // Child takeover restoration re-enables modes/input and advances the
+        // generation; in-band scenes retain the historical generation bump.
+        if (record.suspension !== null) {
+          await deps.lifecycle.resumeFromTakeover?.(record.suspension)
+        } else {
+          deps.lifecycle.setGeneration(record.lease.generation + 1)
+        }
         lastRestored = record
         diagnostic('takeover/restored', `takeover lease of "${record.lease.token.ownerKind}" restored`, {
           reason,

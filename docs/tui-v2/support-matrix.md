@@ -58,6 +58,19 @@ bundle 里 `resetScrollRegion()`（`CSI r`）按 xterm 语义会把光标 home �
    scrollback。
 3. **overlay 不可见但吃键**：inline 下 approval/question/plugin、picker/help/history/transcript-search、session/workspace 以及 settings/model/preset/effort 均不渲染；键盘仍由当前 focused overlayId 对应 controller 持有（Enter/Esc/筛选/编辑照常生效）。每个新 overlay 有 dock warning + 诊断；这是明确 warning 降级，不伪装 fullscreen overlay parity。
 
+## WP-08f external action 支持边界
+
+| 场景 | fullscreen | inline | 语义 |
+| --- | --- | --- | --- |
+| `!`/`!!` shell | 支持；child output 先 sanitize 后投影 | 支持；只能 append-only local rows/notice | 不污染 writer/frame；stdin/stdout/stderr owner 明确，timeout/SIGINT/cancel/late token 有界 |
+| clipboard paste | text/files/image；image 复用 stageImage | 同一 input route；不承诺应用 selection parity | image bytes 只进 ImageStore；失败/unsupported notice |
+| OSC52 copy | profile 明确支持时 writer trusted sequence | 同一 capability；不支持时明确失败 | WP-08g 负责 negotiation，本包不新增底层协商 |
+| external editor | `ScreenTakeover` suspend → child → restore/full redraw | 同一安全 transfer；无法安全 transfer 则 unsupported | temp file 0600、timeout/cancel/nonzero/empty、raw/alt/mouse/paste/cursor 恢复 |
+| update restart | 注入 runner + takeover/cleanup | 同一状态反馈，不伪装 alt-screen | controller 不调用 process.exit；late result 丢弃 |
+| notifications/theme/i18n | dock/picker 正常布局 | 有界 dock/append 反馈；overlay 可不可见但不静默 | Clock timeout、dedupe/sticky；theme registry/language capability 安全 fallback |
+
+上述 action 的 trace 只记录 `external-actions@v1` 的 bounded summary（kind/status/generation/count/hash），禁止 secrets、raw command/env、child output 原文和 clipboard/image bytes。详细 stdout/stderr owner 见 `docs/tui-v2-stdout-ownership.md`。
+
 ## 机器块（verify --check inline Part 4 对账用）
 
 ```json

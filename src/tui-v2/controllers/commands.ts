@@ -11,6 +11,9 @@ import type { LocalCommand } from '../../commands.js'
 import type { AppEvent } from '../model/events.js'
 import type { EventMeta, SerializableError } from '../model/schema.js'
 import type { ReplayController } from './replay.js'
+import type { ShellController } from './shell.js'
+import type { PreferenceController } from './preferences.js'
+import type { UpdateController, UpdateRequest } from './update.js'
 
 export interface CommandChannel {
   readonly working: boolean
@@ -48,6 +51,10 @@ export interface CommandsControllerOptions {
   readonly submitToModel: (text: string) => void
   readonly steerToModel: (text: string) => void
   readonly notify: (text: string, options?: { color?: 'error' | 'warning' | 'success' }) => void
+  readonly shell?: ShellController
+  readonly preferences?: PreferenceController
+  readonly update?: UpdateController
+  readonly updateRequest?: Omit<UpdateRequest, 'requireConfirmation'>
 }
 
 export interface CommandsControllerDiagnostics {
@@ -136,6 +143,28 @@ export function createCommandsController(options: CommandsControllerOptions): Co
 
   const handleSlash = (text: string, parsed: { name: string; rawInput: string }): SubmittedTextOutcome => {
     const { name, rawInput } = parsed
+    if (name === 'theme' || name === 'language' || name === 'lang') {
+      counts.commands += 1
+      if (options.preferences === undefined) {
+        options.notify(`/${name} is unavailable in this host`, { color: 'warning' })
+      } else if (name === 'theme') {
+        if (rawInput === '') noteOverlay(options.overlays.openHelp('/theme'))
+        else void options.preferences.setTheme(rawInput.split(/\s+/u)[0] as string)
+      } else {
+        if (rawInput === '') noteOverlay(options.overlays.openHelp(`/${name}`))
+        else void options.preferences.setLanguage(rawInput.split(/\s+/u)[0] as string)
+      }
+      return 'command'
+    }
+    if (name === 'update') {
+      counts.commands += 1
+      if (options.update === undefined || options.updateRequest === undefined) {
+        options.notify('Update is unavailable in this host', { color: 'warning' })
+      } else {
+        void options.update.request({ ...options.updateRequest, requireConfirmation: true })
+      }
+      return 'command'
+    }
     if (name === 'new') {
       counts.commands += 1
       void options.replay.newSession()
@@ -242,6 +271,7 @@ export function createCommandsController(options: CommandsControllerOptions): Co
         counts.empties += 1
         return 'empty'
       }
+      if (options.shell?.run(trimmed) === true) return 'command'
       if (options.channel.working) {
         const parsed = trimmed.startsWith('/') ? parseSlashName(trimmed) : undefined
         if (parsed !== undefined && (
