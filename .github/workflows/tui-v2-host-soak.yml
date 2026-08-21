@@ -1,0 +1,132 @@
+name: tui-v2 host soak
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'nightly (8h) or release (24h) continuation chain'
+        required: true
+        default: nightly
+        type: choice
+        options: [nightly, release]
+
+permissions:
+  contents: read
+
+env:
+  DSH_TUI_LANG: en
+
+jobs:
+  # GitHub-hosted jobs have a finite timeout. Each reusable segment is below
+  # six hours; the chain verifier proves continuity instead of pretending that
+  # five processes are one 24-hour process.
+  segment-1:
+    name: host soak segment 1
+    uses: ./.github/workflows/tui-v2-soak-segment.yml
+    with:
+      segment: 1
+      previous_segment: 0
+      release: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release') }}
+
+  segment-2:
+    name: host soak segment 2
+    needs: segment-1
+    uses: ./.github/workflows/tui-v2-soak-segment.yml
+    with:
+      segment: 2
+      previous_segment: 1
+      release: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release') }}
+
+  segment-3:
+    name: host soak segment 3 (release 24h only)
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release')
+    needs: segment-2
+    uses: ./.github/workflows/tui-v2-soak-segment.yml
+    with:
+      segment: 3
+      previous_segment: 2
+      release: true
+
+  segment-4:
+    name: host soak segment 4 (release 24h only)
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release')
+    needs: segment-3
+    uses: ./.github/workflows/tui-v2-soak-segment.yml
+    with:
+      segment: 4
+      previous_segment: 3
+      release: true
+
+  segment-5:
+    name: host soak segment 5 (release 24h only)
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release')
+    needs: segment-4
+    uses: ./.github/workflows/tui-v2-soak-segment.yml
+    with:
+      segment: 5
+      previous_segment: 4
+      release: true
+
+  aggregate-nightly:
+    name: aggregate nightly 8h PTY chain
+    if: github.event_name != 'release' && (github.event_name != 'workflow_dispatch' || inputs.mode != 'release') && always()
+    needs: segment-2
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tui-v2-host-segment-*
+          path: ${{ runner.temp }}/tui-v2/chains
+          merge-multiple: false
+      - name: Verify exact 2x240m / 480m host chain
+        run: |
+          node --import tsx/esm scripts/merge-tui-v2-soak.ts \
+            --mode aggregate \
+            --directory "$RUNNER_TEMP/tui-v2/chains" \
+            --output "$RUNNER_TEMP/tui-v2/nightly-aggregate.json" \
+            --expected-segments 2 \
+            --expected-total-minutes 480 \
+            --expected-hosts ubuntu-latest,macos-latest,windows-latest \
+            --expected-nodes 24
+      - name: Upload nightly aggregate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-v2-host-nightly-aggregate
+          path: ${{ runner.temp }}/tui-v2/nightly-aggregate.json
+          if-no-files-found: error
+
+  aggregate-release:
+    name: aggregate release 24h PTY chain
+    if: (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'release')) && always()
+    needs: segment-5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tui-v2-host-segment-*
+          path: ${{ runner.temp }}/tui-v2/chains
+          merge-multiple: false
+      - name: Verify exact 5x288m / 1440m host and Node chain
+        run: |
+          node --import tsx/esm scripts/merge-tui-v2-soak.ts \
+            --mode aggregate \
+            --directory "$RUNNER_TEMP/tui-v2/chains" \
+            --output "$RUNNER_TEMP/tui-v2/release-aggregate.json" \
+            --expected-segments 5 \
+            --expected-total-minutes 1440 \
+            --expected-hosts ubuntu-latest,macos-latest,windows-latest \
+            --expected-nodes 22.19,24
+      - name: Upload release aggregate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-v2-host-release-aggregate
+          path: ${{ runner.temp }}/tui-v2/release-aggregate.json
+          if-no-files-found: error

@@ -49,12 +49,15 @@ jobs:
       - name: Run bounded v2 benchmark
         run: pnpm bench:tui-v2 -- --fixture v2-stream-200 --iterations 20 --output "$RUNNER_TEMP/tui-v2/bench.json"
 
+      - name: Run bounded fake soak smoke
+        run: pnpm soak:tui-v2 -- --minutes 0.02 --profile unknown-conservative --seed 1 --output "$RUNNER_TEMP/tui-v2/soak-smoke.json"
+
       - name: Run v2 regression selection
         run: pnpm test:tui-v2 -- --test-name-pattern 'baseline|compare|v2-only|controller|replay|adapter|fullscreen|compositor|scroll|width|inline'
 
       - name: Verify v2 checks
         run: |
-          for check in baseline regression-matrix trace fork skeleton controllers fullscreen inline host-capabilities v2-only; do
+          for check in baseline regression-matrix trace fork skeleton controllers fullscreen inline host-capabilities ownership ci-integration v2-only; do
             pnpm verify:tui-v2 -- --check "$check" --output "$RUNNER_TEMP/tui-v2/$check.json"
           done
 
@@ -129,26 +132,14 @@ jobs:
       - run: pnpm verify:package
       - run: pnpm test:tui-v2 -- --output "$RUNNER_TEMP/tui-v2/test.json"
 
-      - name: Check v2 baseline
-        run: pnpm verify:tui-v2 -- --check baseline --output "$RUNNER_TEMP/tui-v2/baseline.json"
-      - name: Check v2 regression matrix
-        run: pnpm verify:tui-v2 -- --check regression-matrix --output "$RUNNER_TEMP/tui-v2/regression-matrix.json"
-      - name: Check v2 trace replay
-        run: pnpm verify:tui-v2 -- --check trace --output "$RUNNER_TEMP/tui-v2/trace.json"
-      - name: Check v2 fork boundary
-        run: pnpm verify:tui-v2 -- --check fork --output "$RUNNER_TEMP/tui-v2/fork.json"
-      - name: Check v2 skeleton lifecycle
-        run: pnpm verify:tui-v2 -- --check skeleton --output "$RUNNER_TEMP/tui-v2/skeleton.json"
-      - name: Check v2 controllers
-        run: pnpm verify:tui-v2 -- --check controllers --output "$RUNNER_TEMP/tui-v2/controllers.json"
-      - name: Check v2 fullscreen
-        run: pnpm verify:tui-v2 -- --check fullscreen --output "$RUNNER_TEMP/tui-v2/fullscreen.json"
-      - name: Check v2 inline
-        run: pnpm verify:tui-v2 -- --check inline --output "$RUNNER_TEMP/tui-v2/inline.json"
-      - name: Check v2 host capabilities
-        run: pnpm verify:tui-v2 -- --check host-capabilities --output "$RUNNER_TEMP/tui-v2/host-capabilities.json"
-      - name: Check v2-only boundary
-        run: pnpm verify:tui-v2 -- --check v2-only --output "$RUNNER_TEMP/tui-v2/v2-only.json"
+      - name: Check all v2 contracts
+        run: |
+          for check in baseline regression-matrix trace fork skeleton controllers fullscreen inline host-capabilities ownership ci-integration v2-only; do
+            pnpm verify:tui-v2 -- --check "$check" --output "$RUNNER_TEMP/tui-v2/$check.json"
+          done
+
+      - name: Run bounded fake soak (PR full duration gate)
+        run: pnpm soak:tui-v2 -- --minutes 10 --profile unknown-conservative --seed 1 --output "$RUNNER_TEMP/tui-v2/soak.json"
 
       - name: Upload tui-v2 artifacts
         if: always()

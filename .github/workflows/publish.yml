@@ -45,7 +45,7 @@ jobs:
 
       - name: Verify v2 release checks
         run: |
-          for check in baseline regression-matrix trace fork skeleton controllers fullscreen inline host-capabilities v2-only; do
+          for check in baseline regression-matrix trace fork skeleton controllers fullscreen inline host-capabilities ownership ci-integration v2-only; do
             pnpm verify:tui-v2 -- --check "$check" --output "$RUNNER_TEMP/tui-v2/$check.json"
           done
 

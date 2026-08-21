@@ -38,9 +38,10 @@ import {
 import {
   CURSOR_MARKER,
   Editor,
+  editorUndoDiagnostics,
   type EditorTheme,
   type TUI,
-} from '../../terminal/pi.js'
+} from '../../terminal/pi-editor.js'
 import type { TerminalProfile } from '../../terminal/profile.js'
 import type { ComponentTheme } from '../theme.js'
 
@@ -60,6 +61,8 @@ export interface PromptEditor extends Component, Focusable {
   syncFromView(view: EditorView): void
   /** Current plain text. */
   getText(): string
+  /** Bounded production-editor state exposed as scalar diagnostics only. */
+  diagnostics(): { readonly undo: { readonly depth: number; readonly limit: number } }
   /** Vendored cursor position (col is a UTF-16 code-unit index). */
   getCursor(): { line: number; col: number }
   /** UTF-16 offset of the cursor in getText() (lines joined with '\n'). */
@@ -145,6 +148,10 @@ export function createPromptEditor(options: PromptEditorOptions): PromptEditor {
 
     getText() {
       return editor.getText()
+    },
+
+    diagnostics() {
+      return { undo: editorUndoDiagnostics(editor) }
     },
 
     getCursor() {

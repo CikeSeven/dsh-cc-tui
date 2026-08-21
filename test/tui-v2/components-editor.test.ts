@@ -109,3 +109,17 @@ test('components/editor: backspace emits delete', () => {
   assert.equal(editor.getText(), 'a')
   assert.ok(commands.some((c) => c.command === 'delete'))
 })
+
+test('components/editor: production undo history retains only the latest bounded snapshots', () => {
+  const { editor } = makeEditor()
+  const limit = editor.diagnostics().undo.limit
+  for (let index = 0; index < limit; index += 1) {
+    editor.handleInput?.('x')
+    editor.handleInput?.('\x7f')
+  }
+  assert.deepEqual(editor.diagnostics().undo, { depth: limit, limit })
+
+  editor.handleInput?.('\x1b[45;5u')
+  assert.equal(editor.getText(), 'x', 'latest retained snapshot remains undoable')
+  assert.deepEqual(editor.diagnostics().undo, { depth: limit - 1, limit })
+})

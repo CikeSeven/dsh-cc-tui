@@ -55,7 +55,7 @@
  *   by the lifecycle layer via `emitSignal`/`emitResize` so the sequence
  *   space stays single-owner.
  *
- * Dependency rule (§4.3): node + pi facade + import type model/renderer only.
+ * Dependency rule (§4.3): node + production-safe pi input facade + import type model/renderer only.
  */
 import type { Readable } from 'node:stream'
 
@@ -67,7 +67,7 @@ import {
   isKeyRepeat,
   parseKey,
   setKittyProtocolActive,
-} from './pi.js'
+} from './pi-input.js'
 import type { TerminalProfile } from './profile.js'
 import {
   expectedReportForKind,

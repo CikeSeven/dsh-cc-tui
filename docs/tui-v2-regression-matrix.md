@@ -7,8 +7,8 @@
 ## 扫描
 
 - 命令：`rg -o 'scripts/[A-Za-z0-9_.-]+' .github/workflows package.json | LC_ALL=C sort -u`
-- sourceCommit：`54ede4405605323ee524cd9ea194b9c7ad57ed17`
-- 清单条目数：67；listHash（sha256）：`cea01eea15b0a7160e61a8eccd3b9f8c940b6d0f4c4dc382e80d729ec6984eed`（WP-09b3：旧 renderer 入口已删除；保留 v2 wrapper/check 与 renderer-neutral domain gates，域脚本改为 `.ts`）
+- sourceCommit：`546e9007df3ebd340fd7099da1de92a083807781`
+- 清单条目数：70；listHash（sha256）：`8f44b54c4f805b856c2056b3981be7921abef5637425d8eed45de78992c09581`（WP-09c1：加入 bounded soak、PTY continuation merge 与 ownership/CI workflow entries）
 - 说明：清单行格式为 `<文件>:<入口>`；校验脚本用等价的纯 Node 重扫实现
   （`computeEntryScan`，对本仓库 ASCII 入口名与 `LC_ALL=C sort -u` 字节一致），
   不依赖运行时 ripgrep。
@@ -20,18 +20,18 @@
   `offline-baseline` / `unaffected`（不触及被迁移的渲染/插件面，原样保留并由 CI
   持续证明；`rewrite-v2` 为历史枚举，本阶段无剩余行）。
 - status：旧 live-only 入口在本阶段标为 `retired`；v2 wrapper/check 与纯 domain 入口通过后标为 `verified`；仅真实 PTY/宿主矩阵留作非阻断 `accepted-risk`。
-- 当前分布：severity {"P2":53,"P1":50,"P0":9}；status {"verified":82,"retired":26,"accepted-risk":4}；disposition {"unaffected":57,"remove":54,"offline-baseline":1}。
+- 当前分布：severity {"P2":53,"P1":51,"P0":10}；status {"verified":84,"retired":26,"accepted-risk":4}；disposition {"unaffected":59,"remove":54,"offline-baseline":1}。
 
 ## 机器可读矩阵
 
 ```json
 {
   "scan": {
-    "sourceCommit": "54ede4405605323ee524cd9ea194b9c7ad57ed17",
+    "sourceCommit": "546e9007df3ebd340fd7099da1de92a083807781",
     "scanCommand": "rg -o 'scripts/[A-Za-z0-9_.-]+' .github/workflows package.json | LC_ALL=C sort -u",
-    "listHash": "cea01eea15b0a7160e61a8eccd3b9f8c940b6d0f4c4dc382e80d729ec6984eed",
-    "entryCount": 67,
-    "generatedAt": "2026-08-22T00:10:00.000Z"
+    "listHash": "8f44b54c4f805b856c2056b3981be7921abef5637425d8eed45de78992c09581",
+    "entryCount": 70,
+    "generatedAt": "2026-08-21T18:18:16.000Z"
   },
   "rows": [
     {
@@ -1488,6 +1488,32 @@
       "ciCommand": "pnpm compile (node scripts/copy-vendor-assets.mjs) && pnpm verify:package",
       "blockDefault": false,
       "deleteCondition": "WP-03a 新增入口，不触及旧渲染面；仅在 compile 不再产出 vendored assets 时删除本行",
+      "disposition": "unaffected"
+    },
+    {
+      "id": "REG-113",
+      "severity": "P1",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-21T18:18:16.000Z",
+      "traceId": "bounded-soak@v1",
+      "assertion": "bounded fake/real-PTY soak uses the v2 coordinator, exact GC entry, complete identity, 20k midpoint windows and fail-closed §10.1 latency/heap/RSS/queue rules without promoting smoke evidence",
+      "ciCommand": "pnpm soak:tui-v2 (node --expose-gc --import tsx/esm scripts/soak-tui-v2.ts) && pnpm verify:tui-v2 -- --check ownership",
+      "blockDefault": false,
+      "deleteCondition": "retain the bounded soak, stats tests and ownership gate; delete only when a versioned replacement covers the same fake/PTY evidence",
+      "disposition": "unaffected"
+    },
+    {
+      "id": "REG-114",
+      "severity": "P0",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-21T18:18:16.000Z",
+      "traceId": "host-soak-chain@v1",
+      "assertion": "workflow and merge guard require nightly 2x240m and release 5x288m real-PTY host artifacts to be identity/hash chained and aggregate to exact 8h/24h contracts instead of claiming an impossible single hosted job; actual long host execution remains REG-110 evidence",
+      "ciCommand": "node --import tsx/esm scripts/merge-tui-v2-soak.ts --mode aggregate (called by tui-v2-host-soak workflow)",
+      "blockDefault": false,
+      "deleteCondition": "retain until a runner can provide an equivalent uninterrupted host gate with the same identity and artifact completeness",
       "disposition": "unaffected"
     }
   ]

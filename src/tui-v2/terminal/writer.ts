@@ -76,9 +76,9 @@
  *   transitions to `stopped`. stop is idempotent: every call returns the
  *   same promise.
  *
- * Stats are a fixed set of bounded counters (`stats()`); no stdout bytes are
- * retained. All timers run on the injected `Clock` — no real timers exist in
- * this module.
+ * Stats are a fixed set of bounded counters and current/peak queue gauges
+ * (`stats()`); no stdout bytes are retained. All timers run on the injected
+ * `Clock` — no real timers exist in this module.
  *
  * Image operations are now controlled by the process-local ImageStore:
  * upload validates hash/protocol before bytes leave the process, Kitty place /
@@ -153,6 +153,8 @@ export interface TerminalWriter {
   flush(): Promise<void>
   invalidate(): void
   stop(options?: { preserveScreen?: boolean; preserveCursor?: boolean }): Promise<void>
+  lifecycleState(): TerminalLifecycleState
+  stats(): TerminalWriterStats
 }
 
 // ---------------------------------------------------------------------------
@@ -190,6 +192,15 @@ export interface TerminalWriterStats {
   readonly encodeErrors: number
   readonly totalWriteMs: number
   readonly maxBatchBytes: number
+  /** Current bounded queue state; payload bytes are never retained here. */
+  readonly queueDepth: number
+  readonly pendingBytes: number
+  readonly inFlight: number
+  readonly maxQueueDepth: number
+  readonly maxPendingBytes: number
+  readonly backpressureEvents: number
+  readonly generation: number
+  readonly quiescenceWaiters: number
 }
 
 export interface TerminalWriterOptions {
@@ -819,6 +830,9 @@ class TerminalWriterImpl implements TerminalWriter {
     encodeErrors: 0,
     totalWriteMs: 0,
     maxBatchBytes: 0,
+    maxQueueDepth: 0,
+    maxPendingBytes: 0,
+    backpressureEvents: 0,
   }
 
   constructor(options: TerminalWriterOptions) {
@@ -841,7 +855,25 @@ class TerminalWriterImpl implements TerminalWriter {
   }
 
   stats(): TerminalWriterStats {
-    return { ...this.counters }
+    return {
+      ...this.counters,
+      queueDepth: this.frameQueueDepth(),
+      pendingBytes: this.pendingBytes,
+      inFlight: this.inFlight === null ? 0 : 1,
+      generation: this.currentGeneration,
+      quiescenceWaiters: this.quiescenceWaiters.length,
+    }
+  }
+
+  private frameQueueDepth(): number {
+    const queued = this.queue.reduce((count, job) => count + (job.patch === undefined ? 0 : 1), 0)
+    const inFlight = this.inFlight?.jobs.reduce((count, job) => count + (job.patch === undefined ? 0 : 1), 0) ?? 0
+    return queued + inFlight
+  }
+
+  private updateQueueHighWatermarks(): void {
+    this.counters.maxQueueDepth = Math.max(this.counters.maxQueueDepth, this.frameQueueDepth())
+    this.counters.maxPendingBytes = Math.max(this.counters.maxPendingBytes, this.pendingBytes)
   }
 
   private errorResult(code: string, message: string, generation: number, recoverable: boolean): WriteResult {
@@ -1192,6 +1224,7 @@ class TerminalWriterImpl implements TerminalWriter {
     const settled = new Promise<WriteResult>((resolve) => {
       this.queue.push({ ...job, resolve })
       this.pendingBytes += job.bytes
+      this.updateQueueHighWatermarks()
       this.pump()
     })
     return { settled }
@@ -1265,6 +1298,7 @@ class TerminalWriterImpl implements TerminalWriter {
       settled: false,
     }
     this.inFlight = flight
+    this.updateQueueHighWatermarks()
     let ok = true
     try {
       ok = this.stream.write(buffer, (error?: Error | null) => this.onWriteCallback(epoch, error ?? null))
@@ -1274,6 +1308,7 @@ class TerminalWriterImpl implements TerminalWriter {
     }
     if (!ok) {
       // Backpressure: settle requires the write callback AND a drain event.
+      this.counters.backpressureEvents += 1
       flight.needsDrain = true
       this.stream.once('drain', () => {
         if (this.inFlight?.epoch === epoch) {

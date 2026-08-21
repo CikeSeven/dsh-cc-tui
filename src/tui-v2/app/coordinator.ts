@@ -406,6 +406,10 @@ export interface CoordinatorDiagnostics {
   readonly eventsApplied: number;
   readonly eventsRejected: number;
   readonly snapshotGapRecoveries: number;
+  readonly generation: number;
+  readonly writer: ReturnType<ReturnType<typeof createTerminalWriter>['stats']>;
+  readonly writerLifecycle: ReturnType<ReturnType<typeof createTerminalWriter>['lifecycleState']>;
+  readonly scheduler: ReturnType<RenderScheduler<ScheduledFrame>['diagnostics']>;
   readonly adapter: ReturnType<ChannelUiAdapter['diagnostics']>;
   readonly streaming: ReturnType<ReturnType<typeof createStreamingController>['diagnostics']>;
   readonly input: ReturnType<ReturnType<typeof createInputController>['diagnostics']>;
@@ -2059,6 +2063,10 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       eventsApplied,
       eventsRejected,
       snapshotGapRecoveries,
+      generation: lifecycle.generation(),
+      writer: writer.stats(),
+      writerLifecycle: writer.lifecycleState(),
+      scheduler: scheduler.diagnostics(),
       adapter: adapter.diagnostics(),
       streaming: streamingController.diagnostics(),
       input: inputController.diagnostics(),

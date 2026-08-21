@@ -21,3 +21,164 @@
 - inline shell output 若投影 transcript，只能通过 adapter 的 append-only local rows；任何直接 child stdout 都属于 foreign output，必须经 guard/re-anchor。
 - OSC52 negotiation、鼠标底层 capability、宿主特定 probe 仍留 WP-08g；WP-08f 只调用 profile 与 trusted writer capability。
 - image bytes 继续只存在 process-local ImageStore；external action trace 只记录 action kind/status/generation/hash/count，不记录 secrets、raw shell、env 或 bytes。
+
+## 机器可读 ownership block（WP-09c1）
+
+`pnpm verify:tui-v2 -- --check ownership` 从下列 roots 解析 runtime
+import/export/dynamic-import 闭包，使用 TypeScript AST 扫描直接 stdout/stderr、
+`console.*`、唯一 terminal stream、foreign-output guard、external child 和 control
+sequence。所有命中必须恰好匹配一个 owner；controller 物理写入、旧路径、未登记命中
+或登记项漂移都会失败。`pi.ts`、`ProcessTerminal`、`TuiMainScreen`、
+`TuiAltScreen` 不得进入生产闭包；生产只通过收窄的 `pi-editor.ts` / `pi-input.ts`
+复用 editor/input 纯逻辑。
+
+```json
+{
+  "schemaVersion": 1,
+  "ruleVersion": "tui-v2-ownership-v1",
+  "hitHash": "b842627d44386fa96b4a5ae5f285183c03e691c45f25b7c9b93a9c9111402c29",
+  "roots": [
+    "bin/dsh-tui.js",
+    "src/index.ts",
+    "src/dsh-adapter/index.ts",
+    "src/dsh-adapter/plugin.ts",
+    "src/tui-v2/app/bootstrap.ts"
+  ],
+  "owners": [
+    {
+      "id": "launcher-pre-tui",
+      "owner": "bin launcher",
+      "files": ["bin/dsh-tui.js"],
+      "kinds": ["console-write", "external-child"],
+      "lifecycle": "before v2 bootstrap or after the inherited dsh child exits",
+      "backpressure": "launcher diagnostics are finite lines; child stdio is inherited only while the child owns the process terminal",
+      "cleanup": "launcher forwards child exit/signal and never coexists with an in-process TerminalWriter",
+      "generation": "outside the v2 generation domain",
+      "queue": "no frame queue; one foreground child"
+    },
+    {
+      "id": "adapter-boundary-diagnostics",
+      "owner": "dsh adapter bootstrap/update handoff",
+      "files": ["src/dsh-adapter/index.ts", "src/dsh-adapter/plugin.ts"],
+      "kinds": ["console-write", "stderr-write"],
+      "lifecycle": "rename/upstream notices run before the first frame; update failures run after disposeRootAndThen",
+      "backpressure": "finite diagnostic lines only; no terminal control payload",
+      "cleanup": "active coordinator is stopped before update stderr and process exit",
+      "generation": "pre-takeover or post-cleanup; never a live frame generation",
+      "queue": "does not enter the writer queue"
+    },
+    {
+      "id": "debug-diagnostics",
+      "owner": "bounded opt-in diagnostic stderr",
+      "files": ["src/utils/debug.ts"],
+      "kinds": ["stderr-write"],
+      "lifecycle": "only when DSH_TUI_DEBUG is explicitly enabled; inline foreign-output guard observes active writes",
+      "backpressure": "one bounded message plus scalar JSON fields per call; no raw child bytes",
+      "cleanup": "no listener/timer ownership; caller lifecycle ends emission",
+      "generation": "diagnostic metadata is generation-neutral and never advances writer generation",
+      "queue": "outside frame queue; inline damage is re-anchored"
+    },
+    {
+      "id": "child-output-sanitizer",
+      "owner": "ChildStderrGuard / external-action sanitizer",
+      "files": ["src/dsh-adapter/childStderr.ts", "src/tui-v2/capabilities/external-actions.ts"],
+      "kinds": ["control-sequence"],
+      "lifecycle": "guard attaches with adapter effect and restores spawn at disposal; action sanitizer is controller-scoped",
+      "backpressure": "child lines and action output are bounded before projection; regexes consume ANSI/OSC as data",
+      "cleanup": "spawn patch and subscriptions are restored/stopped by their owner",
+      "generation": "sanitized text only crosses the current controller generation",
+      "queue": "never writes terminal bytes and never bypasses TerminalWriter"
+    },
+    {
+      "id": "host-external-actions",
+      "owner": "ShellCapability / EditorRunner / ClipboardCapability",
+      "files": ["src/tui-v2/capabilities/node.ts", "src/utils/clipboard.ts", "src/utils/execFileNoThrow.ts"],
+      "kinds": ["external-child"],
+      "lifecycle": "shell/clipboard children are piped and projected; editor inherits tty only inside ScreenTakeover",
+      "backpressure": "shell output is sanitized/capped; clipboard helpers have timeout; editor temporarily owns the tty",
+      "cleanup": "AbortSignal/timeout sends SIGINT then SIGTERM; takeover finally restores terminal/input",
+      "generation": "editor restore increments generation; late shell/clipboard results are fenced",
+      "queue": "child output never enters a second terminal writer; projected results use bounded controller queues"
+    },
+    {
+      "id": "post-cleanup-update-child",
+      "owner": "RestartRunner after ScreenTakeover cleanup",
+      "files": ["src/update.ts"],
+      "kinds": ["external-child", "stderr-write"],
+      "lifecycle": "update/restart runs only after coordinator cleanup and root disposal",
+      "backpressure": "foreground child owns inherited stdio; captured stderr is finite-classified for one retry",
+      "cleanup": "child close/error settles once and replacement process owns subsequent output",
+      "generation": "old generation is stopped before spawn; no resume into the old writer",
+      "queue": "no active frame queue during inherited child output"
+    },
+    {
+      "id": "trusted-frame-control-builders",
+      "owner": "cell/frame pipeline feeding TerminalWriter",
+      "files": [
+        "src/tui-v2/components/transcript/markdown.ts",
+        "src/tui-v2/renderer/lines.ts",
+        "src/tui-v2/terminal/ansi.ts"
+      ],
+      "kinds": ["control-sequence"],
+      "lifecycle": "component strings are parsed into cells; only trusted ansi.ts builders can become writer control operations",
+      "backpressure": "builders allocate bounded frame/control strings and never call a stream",
+      "cleanup": "TerminalWriter owns reset/OSC close/mode cleanup",
+      "generation": "writer validates generation on every patch/control",
+      "queue": "all physical bytes enter the one writer FIFO"
+    },
+    {
+      "id": "terminal-input-query-owner",
+      "owner": "InputSource / QueryBroker",
+      "files": ["src/tui-v2/terminal/input.ts", "src/tui-v2/terminal/query.ts"],
+      "kinds": ["control-sequence"],
+      "lifecycle": "input owns stdin while active; query tokens expire/cancel at stop or generation change",
+      "backpressure": "bounded tokenizer ring and 150/300 ms query budgets",
+      "cleanup": "input stop drops partial bytes; broker cancels pending tokens",
+      "generation": "responses require opaque token and exact generation",
+      "queue": "queries are emitted only through TerminalWriter's bounded control lane"
+    },
+    {
+      "id": "vendored-editor-input-logic",
+      "owner": "narrow pi Editor/StdinBuffer compatibility surface",
+      "files": [
+        "src/tui-v2/vendor/pi-tui/src/components/editor.ts",
+        "src/tui-v2/vendor/pi-tui/src/dsh/pi-output-encoder.ts",
+        "src/tui-v2/vendor/pi-tui/src/keys.ts",
+        "src/tui-v2/vendor/pi-tui/src/stdin-buffer.ts",
+        "src/tui-v2/vendor/pi-tui/src/terminal-colors.ts",
+        "src/tui-v2/vendor/pi-tui/src/terminal-image.ts",
+        "src/tui-v2/vendor/pi-tui/src/tui.ts",
+        "src/tui-v2/vendor/pi-tui/src/utils.ts"
+      ],
+      "kinds": ["control-sequence", "terminal-stream-write"],
+      "lifecycle": "production constructs only Editor and StdinBuffer with a coordinator-owned no-output host; dormant TuiBase methods retain an injected Terminal interface but the narrow facade exports no constructor for that owner",
+      "backpressure": "the production pi-editor facade caps retained undo snapshots at 256; input raw diagnostics remain a bounded ring; literals are style/input parsers",
+      "cleanup": "coordinator stops input and discards editor with the app; no ProcessTerminal is reachable",
+      "generation": "input wrapper stamps generation; editor emits commands rather than terminal writes",
+      "queue": "no physical stream method is exported by pi-editor.ts or pi-input.ts"
+    },
+    {
+      "id": "inline-foreign-output-guard",
+      "owner": "ForeignOutputGuard",
+      "files": ["src/tui-v2/terminal/foreign-output.ts"],
+      "kinds": ["stream-guard"],
+      "lifecycle": "attached only for inline backend and detached before terminal cleanup",
+      "backpressure": "forwards the original write result and counts only bytes/write count",
+      "cleanup": "detach restores the exact prior write method without clobbering later patches",
+      "generation": "foreign output schedules a damage redraw in the current generation",
+      "queue": "writer proxy marks the sole sanctioned lane; foreign writes never create a second queue"
+    },
+    {
+      "id": "unique-terminal-writer",
+      "owner": "TerminalWriter",
+      "files": ["src/tui-v2/terminal/writer.ts"],
+      "kinds": ["terminal-stream-write"],
+      "lifecycle": "created -> starting -> active -> stopping -> stopped with fail-before/after-takeover terminals",
+      "backpressure": "one write in flight, queueDepth <= 2 frames, pending bytes <= 8 MiB, callback plus drain settlement",
+      "cleanup": "stop blocks new work, drains/destroys by deadline, emits trusted cleanup bundle and clears queue",
+      "generation": "watermark tuple and opaque quiesce barrier reject stale generations",
+      "queue": "the only physical frame/query/control FIFO; stats expose current and peak depth/bytes"
+    }
+  ]
+}
+```

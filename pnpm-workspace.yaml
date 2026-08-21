@@ -10,6 +10,7 @@ packages:
 allowBuilds:
   esbuild: false
   koffi: false
+  node-pty: true
 minimumReleaseAgeExclude:
   - '@deepseek-ai/cordis-plugin-include@1.0.6'
   - '@deepseek-ai/cordis-plugin-loader@1.0.2'

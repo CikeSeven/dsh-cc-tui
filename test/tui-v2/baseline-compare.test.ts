@@ -130,17 +130,17 @@ test('compare report: same trace emits hashes, frame/bytes/memory metrics and no
   assert.equal(raw.includes('DeepSeek Harness'), false)
 })
 
-test('v2-only gate: legacy scan is clean and only WP-09c remains deferred', async () => {
+test('v2-only gate: legacy scan is clean and only WP-09c2 remains deferred', async () => {
   const staged = await checkV2Only({ output: path.join(os.tmpdir(), 'v2-only-staged-test.json'), profile: null, fixture: null, final: false, rollbackManifest: null })
   assert.equal(staged.status, 'pass')
   const stagedDeferred = (staged.details.deferred as { deferredTo: string }[])
-  assert.deepEqual(stagedDeferred, [{ reason: 'no immutable rollback-manifest.json supplied in this work package', deferredTo: 'WP-09c' }])
+  assert.deepEqual(stagedDeferred, [{ reason: 'no immutable rollback-manifest.json supplied in this work package', deferredTo: 'WP-09c2' }])
   const stagedLegacy = staged.details.legacyScan as { counts: { sourcePaths: number; switches: number; jsx: number; direct: number } }
   assert.deepEqual(stagedLegacy.counts, { sourcePaths: 0, switches: 0, jsx: 0, direct: 0 })
 
   const final = await checkV2Only({ output: path.join(os.tmpdir(), 'v2-only-final-test.json'), profile: null, fixture: null, final: true, rollbackManifest: null })
   assert.equal(final.status, 'fail')
-  assert.ok((final.details.errors as string[]).some((error) => error.includes('WP-09c')))
+  assert.ok((final.details.errors as string[]).some((error) => error.includes('WP-09c2')))
   assert.equal((final.details.errors as string[]).some((error) => error.includes('WP-09b')), false)
 })
 

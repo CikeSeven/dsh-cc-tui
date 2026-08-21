@@ -1,0 +1,119 @@
+name: tui-v2 host soak segment
+
+on:
+  workflow_call:
+    inputs:
+      segment:
+        required: true
+        type: number
+      previous_segment:
+        required: true
+        type: number
+      release:
+        required: true
+        type: boolean
+
+env:
+  DSH_TUI_LANG: en
+  TUI_V2_CONTAINER_IMAGE: not-applicable-github-host
+  TUI_V2_CONTAINER_DIGEST: not-applicable-github-host
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  host-soak:
+    name: PTY soak segment ${{ inputs.segment }} / ${{ matrix.host }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.host }}
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [ubuntu-latest, macos-latest, windows-latest]
+        node: ${{ inputs.release && fromJSON('["22.19", "24"]') || fromJSON('["24"]') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Ubuntu native PTY toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes build-essential python3
+      - name: Verify macOS native PTY toolchain
+        if: runner.os == 'macOS'
+        run: xcode-select -p && python3 --version
+      - name: Verify Windows ConPTY toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python --version
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm compile
+      - run: pnpm verify:build
+      - run: pnpm verify:package
+
+      - name: Download and verify previous continuation artifact
+        if: inputs.previous_segment > 0
+        uses: actions/download-artifact@v4
+        with:
+          name: tui-v2-host-segment-${{ inputs.previous_segment }}-${{ matrix.host }}-node-${{ matrix.node }}
+          path: ${{ runner.temp }}/tui-v2/previous
+
+      - name: Select explicit segment duration
+        run: |
+          if [[ "${{ inputs.release }}" == "true" ]]; then
+            echo 'SOAK_MINUTES=288' >> "$GITHUB_ENV"
+            echo 'EXPECTED_SEGMENTS=5' >> "$GITHUB_ENV"
+          else
+            echo 'SOAK_MINUTES=240' >> "$GITHUB_ENV"
+            echo 'EXPECTED_SEGMENTS=2' >> "$GITHUB_ENV"
+          fi
+
+      - name: Run required real PTY soak segment
+        run: |
+          mkdir -p "$RUNNER_TEMP/tui-v2"
+          if [[ "$SOAK_MINUTES" == "288" ]]; then
+            pnpm soak:tui-v2 -- --minutes 288 --profile unknown-conservative --seed 1 --require-pty --output "$RUNNER_TEMP/tui-v2/soak.json"
+          else
+            pnpm soak:tui-v2 -- --minutes 240 --profile unknown-conservative --seed 1 --require-pty --output "$RUNNER_TEMP/tui-v2/soak.json"
+          fi
+
+      - name: Verify continuation hash chain
+        run: |
+          run_id="${GITHUB_RUN_ID}:${GITHUB_WORKFLOW}:${{ matrix.host }}:${{ matrix.node }}"
+          common=(--mode chain
+            --input "$RUNNER_TEMP/tui-v2/soak.json"
+            --output "$RUNNER_TEMP/tui-v2/chain.json"
+            --run-id "$run_id"
+            --host "${{ matrix.host }}"
+            --node "${{ matrix.node }}"
+            --segment "${{ inputs.segment }}"
+            --expected-segments "$EXPECTED_SEGMENTS")
+          if [[ "$SOAK_MINUTES" == "288" ]]; then
+            common+=(--segment-minutes 288)
+          else
+            common+=(--segment-minutes 240)
+          fi
+          if [[ "${{ inputs.previous_segment }}" -gt 0 ]]; then
+            common+=(--previous "$RUNNER_TEMP/tui-v2/previous/chain.json")
+          fi
+          node --import tsx/esm scripts/merge-tui-v2-soak.ts "${common[@]}"
+
+      - name: Upload real PTY continuation artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-v2-host-segment-${{ inputs.segment }}-${{ matrix.host }}-node-${{ matrix.node }}
+          path: ${{ runner.temp }}/tui-v2
+          if-no-files-found: error

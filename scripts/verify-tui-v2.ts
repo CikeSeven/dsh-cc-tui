@@ -45,6 +45,12 @@
  *                        drills (sigterm/error: modes restored, cursor parked);
  *                        and the docs/tui-v2/support-matrix.md machine block
  *                        validated against INLINE_/FULLSCREEN_CAPABILITIES.
+ *   - ownership (WP-09c1): production dependency closure + AST output/control
+ *                        scan matched one-to-one against the structured owner
+ *                        ledger, plus a live writer/query/generation drill.
+ *   - ci-integration (WP-09c1): parsed workflow/package contracts and bounded
+ *                        non-recursive local probes; exact-tarball publish is
+ *                        staged until WP-09c2 and becomes strict under --final.
  *
  * Every check writes an atomic JSON artifact
  *   { schemaVersion: 1, check, status, details, startedAt, durationMs,
@@ -57,8 +63,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { Writable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import * as ts from 'typescript'
 import { checkVendorTree, PINNED_COMMIT, VENDOR_REL } from './vendor-pi-tui.mjs'
 
 const execFileAsync = promisify(execFile)
@@ -516,6 +524,8 @@ const FORK_REQUIRED_FILES = ['LICENSE', 'NOTICE', 'PATCH-LEDGER.md', 'VENDOR-MAN
 // ported upstream tests and the re-vendor script itself.
 const FORK_IMPORT_ALLOWLIST = [
   'src/tui-v2/terminal/pi.ts',
+  'src/tui-v2/terminal/pi-editor.ts',
+  'src/tui-v2/terminal/pi-input.ts',
   'scripts/vendor-pi-tui.mjs',
 ]
 const FORK_IMPORT_ALLOWLIST_PREFIX = ['test/tui-v2/pi-fork/']
@@ -1755,7 +1765,694 @@ async function checkHostCapabilities(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
-// v2-only final legacy-clean gate + rollback preflight (WP-09b; rollback deferred to WP-09c)
+// stdout/stderr/terminal ownership gate (WP-09c1)
+// ---------------------------------------------------------------------------
+
+const OWNERSHIP_DOC = path.join(repoRoot, 'docs', 'tui-v2-stdout-ownership.md')
+export const OWNERSHIP_PRODUCTION_ROOTS = [
+  'bin/dsh-tui.js',
+  'src/index.ts',
+  'src/dsh-adapter/index.ts',
+  'src/dsh-adapter/plugin.ts',
+  'src/tui-v2/app/bootstrap.ts',
+] as const
+const OWNERSHIP_LEGACY_ROOTS = [
+  'src/ink', 'src/components', 'src/screens', 'src/ui.ts', 'src/native-ts/yoga-layout',
+] as const
+const OWNERSHIP_FORBIDDEN_PHYSICAL_WRITERS = [
+  'src/tui-v2/terminal/pi.ts',
+  'src/tui-v2/vendor/pi-tui/src/terminal.ts',
+  'src/tui-v2/vendor/pi-tui/src/tui-main-screen.ts',
+  'src/tui-v2/vendor/pi-tui/src/tui-alt-screen.ts',
+] as const
+export type OwnershipHitKind =
+  | 'stdout-write'
+  | 'stderr-write'
+  | 'console-write'
+  | 'terminal-stream-write'
+  | 'stream-guard'
+  | 'external-child'
+  | 'control-sequence'
+
+export interface OwnershipHit {
+  readonly file: string
+  readonly line: number
+  readonly kind: OwnershipHitKind
+  readonly expression: string
+}
+
+export interface OwnershipOwnerRule {
+  readonly id: string
+  readonly owner: string
+  readonly files: readonly string[]
+  readonly kinds: readonly OwnershipHitKind[]
+  readonly lifecycle: string
+  readonly backpressure: string
+  readonly cleanup: string
+  readonly generation: string
+  readonly queue: string
+}
+
+interface OwnershipMachineBlock {
+  readonly schemaVersion: 1
+  readonly ruleVersion: string
+  readonly hitHash: string
+  readonly roots: readonly string[]
+  readonly owners: readonly OwnershipOwnerRule[]
+}
+
+function posixRelative(file: string): string {
+  return path.relative(repoRoot, file).split(path.sep).join('/')
+}
+
+function sourceKind(file: string): ts.ScriptKind {
+  if (file.endsWith('.js') || file.endsWith('.mjs') || file.endsWith('.cjs')) return ts.ScriptKind.JS
+  if (file.endsWith('.tsx') || file.endsWith('.jsx')) return ts.ScriptKind.TSX
+  return ts.ScriptKind.TS
+}
+
+function sourceDependencies(sourceFile: ts.SourceFile): string[] {
+  const out = new Set<string>()
+  const visit = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const clause = node.importClause
+      const namedBindings = clause?.namedBindings
+      const namedTypeOnly = namedBindings !== undefined && ts.isNamedImports(namedBindings) &&
+        namedBindings.elements.length > 0 && namedBindings.elements.every(element => element.isTypeOnly)
+      const hasRuntimeBinding = clause === undefined || clause.isTypeOnly !== true && (
+        clause.name !== undefined || namedBindings === undefined || ts.isNamespaceImport(namedBindings) || !namedTypeOnly
+      )
+      if (hasRuntimeBinding) out.add(node.moduleSpecifier.text)
+    }
+    if (ts.isExportDeclaration(node) && node.isTypeOnly !== true && node.moduleSpecifier !== undefined && ts.isStringLiteral(node.moduleSpecifier)) {
+      const clause = node.exportClause
+      const namedTypeOnly = clause !== undefined && ts.isNamedExports(clause) && clause.elements.length > 0 &&
+        clause.elements.every(element => element.isTypeOnly)
+      if (!namedTypeOnly) out.add(node.moduleSpecifier.text)
+    }
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+      node.arguments.length === 1 &&
+      ts.isStringLiteral(node.arguments[0]!)
+    ) out.add(node.arguments[0]!.text)
+    ts.forEachChild(node, visit)
+  }
+  visit(sourceFile)
+  return [...out]
+}
+
+async function resolveOwnershipModule(importer: string, specifier: string): Promise<string | null> {
+  if (!specifier.startsWith('.') && !specifier.startsWith('/')) return null
+  let absolute: string
+  if (importer === 'bin/dsh-tui.js' && specifier.startsWith('../lib/types/')) {
+    const sourceRel = specifier.slice('../lib/types/'.length).replace(/\.js$/u, '.ts')
+    absolute = path.join(repoRoot, 'src', sourceRel)
+  } else {
+    absolute = path.resolve(repoRoot, path.dirname(importer), specifier)
+  }
+  const rootPrefix = `${repoRoot}${path.sep}`
+  if (absolute !== repoRoot && !absolute.startsWith(rootPrefix)) return null
+  const extension = path.extname(absolute)
+  const stem = extension === '' ? absolute : absolute.slice(0, -extension.length)
+  const candidates = extension === '.js' || extension === '.mjs' || extension === '.cjs'
+    ? [`${stem}.ts`, `${stem}.tsx`, `${stem}.mts`, `${stem}.cts`, absolute]
+    : extension === ''
+      ? [`${absolute}.ts`, `${absolute}.tsx`, `${absolute}.js`, path.join(absolute, 'index.ts'), path.join(absolute, 'index.js')]
+      : [absolute]
+  for (const candidate of candidates) {
+    if ((await stat(candidate).catch(() => null))?.isFile()) return posixRelative(candidate)
+  }
+  return null
+}
+
+export async function computeOwnershipProductionGraph(
+  roots: readonly string[] = OWNERSHIP_PRODUCTION_ROOTS,
+): Promise<{ files: string[]; edges: Array<{ importer: string; specifier: string; resolved: string }> }> {
+  const queue = [...roots]
+  const seen = new Set<string>()
+  const edges: Array<{ importer: string; specifier: string; resolved: string }> = []
+  while (queue.length > 0) {
+    const file = queue.shift() as string
+    if (seen.has(file)) continue
+    const full = path.join(repoRoot, file)
+    if (!(await stat(full).catch(() => null))?.isFile()) throw new Error(`ownership production root/module missing: ${file}`)
+    seen.add(file)
+    const source = await readFile(full, 'utf8')
+    const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, sourceKind(file))
+    for (const specifier of sourceDependencies(parsed)) {
+      const resolved = await resolveOwnershipModule(file, specifier)
+      if (resolved === null) continue
+      edges.push({ importer: file, specifier, resolved })
+      if (!seen.has(resolved)) queue.push(resolved)
+    }
+  }
+  return {
+    files: [...seen].sort(),
+    edges: edges.sort((a, b) => `${a.importer}\0${a.specifier}`.localeCompare(`${b.importer}\0${b.specifier}`)),
+  }
+}
+
+function compactExpression(text: string): string {
+  return text.replace(/\s+/gu, ' ').trim().slice(0, 180)
+}
+
+function nodeLine(sourceFile: ts.SourceFile, node: ts.Node): number {
+  return sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1
+}
+
+function scanOwnershipFile(file: string, source: string): OwnershipHit[] {
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, sourceKind(file))
+  const hits: OwnershipHit[] = []
+  const add = (node: ts.Node, kind: OwnershipHitKind, expression = node.getText(parsed)): void => {
+    hits.push({ file, line: nodeLine(parsed, node), kind, expression: compactExpression(expression) })
+  }
+  const isEscapedControl = (node: ts.Node): boolean => {
+    if (!(
+      ts.isStringLiteral(node) ||
+      ts.isNoSubstitutionTemplateLiteral(node) ||
+      ts.isTemplateExpression(node) ||
+      ts.isRegularExpressionLiteral(node)
+    )) return false
+    return /(?:\\x1b|\\u001b|\\033|\u001b)/iu.test(node.getText(parsed))
+  }
+  const visit = (node: ts.Node): void => {
+    if (isEscapedControl(node)) add(node, 'control-sequence')
+    if (ts.isCallExpression(node)) {
+      const callee = node.expression.getText(parsed)
+      if (callee === 'process.stdout.write') add(node, 'stdout-write')
+      else if (callee === 'process.stderr.write') add(node, 'stderr-write')
+      else if (/^console\.(?:log|warn|error|info|debug)$/u.test(callee)) add(node, 'console-write')
+      else if (callee === 'this.stream.write' || callee === 'this.terminal.write') add(node, 'terminal-stream-write')
+      else if (callee === 'Reflect.apply' && /(?:originalWrite|target\.write)/u.test(node.getText(parsed))) add(node, 'stream-guard')
+      else if (/^(?:spawn|spawnSync|execFile|execFileSync)$/u.test(callee)) add(node, 'external-child')
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      /(?:^|\.)stream\.write$|^stream\.write$/u.test(node.left.getText(parsed))
+    ) add(node, 'stream-guard')
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  const unique = new Map<string, OwnershipHit>()
+  for (const hit of hits) unique.set(`${hit.file}:${hit.line}:${hit.kind}:${hit.expression}`, hit)
+  return [...unique.values()].sort((a, b) => a.line - b.line || a.kind.localeCompare(b.kind))
+}
+
+export async function scanOwnershipProductionTree(
+  roots: readonly string[] = OWNERSHIP_PRODUCTION_ROOTS,
+): Promise<{ graph: Awaited<ReturnType<typeof computeOwnershipProductionGraph>>; hits: OwnershipHit[] }> {
+  const graph = await computeOwnershipProductionGraph(roots)
+  const hits: OwnershipHit[] = []
+  for (const file of graph.files) hits.push(...scanOwnershipFile(file, await readFile(path.join(repoRoot, file), 'utf8')))
+  return { graph, hits }
+}
+
+export function scanOwnershipSourceForTest(file: string, source: string): OwnershipHit[] {
+  return scanOwnershipFile(file, source)
+}
+
+export function ownershipHitHash(hits: readonly OwnershipHit[]): string {
+  const material = hits
+    .map(hit => `${hit.file}:${hit.line}:${hit.kind}:${hit.expression}`)
+    .sort()
+    .join('\n') + '\n'
+  return sha256Hex(material)
+}
+
+function extractOwnershipMachineBlock(markdown: string): OwnershipMachineBlock | null {
+  for (const match of markdown.matchAll(/```json\s*\n([\s\S]*?)```/gu)) {
+    try {
+      const parsed = JSON.parse(match[1]!)
+      if (parsed?.schemaVersion === 1 && Array.isArray(parsed?.owners) && Array.isArray(parsed?.roots)) return parsed
+    } catch {
+      // Continue to the ownership block.
+    }
+  }
+  return null
+}
+
+function validateOwnershipMachine(machine: OwnershipMachineBlock, errors: string[]): void {
+  if (machine.ruleVersion !== 'tui-v2-ownership-v1') errors.push('ownership machine ruleVersion must be tui-v2-ownership-v1')
+  if (!/^[0-9a-f]{64}$/u.test(machine.hitHash)) errors.push('ownership machine hitHash must be lowercase 64-hex')
+  if (JSON.stringify(machine.roots) !== JSON.stringify(OWNERSHIP_PRODUCTION_ROOTS)) {
+    errors.push('ownership machine roots do not exactly match verifier production roots')
+  }
+  const ids = new Set<string>()
+  for (const owner of machine.owners) {
+    const where = typeof owner?.id === 'string' ? owner.id : '<missing-owner-id>'
+    if (!owner || typeof owner !== 'object') {
+      errors.push('ownership owner entry must be an object')
+      continue
+    }
+    if (typeof owner.id !== 'string' || owner.id === '') errors.push(`${where}: id is required`)
+    else if (ids.has(owner.id)) errors.push(`${where}: duplicate id`)
+    else ids.add(owner.id)
+    for (const field of ['owner', 'lifecycle', 'backpressure', 'cleanup', 'generation', 'queue'] as const) {
+      if (typeof owner[field] !== 'string' || owner[field] === '') errors.push(`${where}: ${field} is required`)
+    }
+    if (!Array.isArray(owner.files) || owner.files.length === 0 || !owner.files.every(file => typeof file === 'string' && file !== '')) {
+      errors.push(`${where}: files must be a non-empty string array`)
+    }
+    if (!Array.isArray(owner.kinds) || owner.kinds.length === 0 || !owner.kinds.every(kind => [
+      'stdout-write', 'stderr-write', 'console-write', 'terminal-stream-write', 'stream-guard', 'external-child', 'control-sequence',
+    ].includes(kind))) errors.push(`${where}: kinds contains an invalid value`)
+  }
+}
+
+export function ownershipRegistrationErrors(
+  hits: readonly OwnershipHit[],
+  owners: readonly Pick<OwnershipOwnerRule, 'id' | 'files' | 'kinds'>[],
+): string[] {
+  const errors: string[] = []
+  for (const hit of hits) {
+    const matches = owners.filter(owner => owner.files.includes(hit.file) && owner.kinds.includes(hit.kind))
+    if (matches.length !== 1) errors.push(`${hit.file}:${hit.line} ${hit.kind} has ${matches.length} registered owners`)
+  }
+  return errors
+}
+
+async function runOwnershipWriterDrill(): Promise<Record<string, unknown>> {
+  const { createQueryBroker } = await import('../src/tui-v2/terminal/query.js')
+  const { unknownConservativeDefaults } = await import('../src/tui-v2/terminal/profile.js')
+  const { createTerminalWriter, encodePatchOperations } = await import('../src/tui-v2/terminal/writer.js')
+  const clock = {
+    now: () => performance.now(),
+    setTimeout: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
+    clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  }
+  class OwnershipStream extends Writable {
+    readonly hash = createHash('sha256')
+    bytes = 0
+    writes = 0
+    constructor() { super({ highWaterMark: 1 }) }
+    override _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding)
+      this.bytes += buffer.byteLength
+      this.writes += 1
+      this.hash.update(buffer)
+      setImmediate(callback)
+    }
+  }
+  const stream = new OwnershipStream()
+  const broker = createQueryBroker({ clock })
+  let token: any = null
+  const writer = createTerminalWriter({
+    stream,
+    clock,
+    profile: unknownConservativeDefaults(),
+    queryBroker: broker,
+    queryTokenSink: value => { token = value },
+  })
+  const operations: any[] = [
+    {
+      kind: 'resources',
+      resources: {
+        styles: [{ id: 0, foreground: null, background: null, bold: false, dim: false, italic: false, underline: false, inverse: false, strike: false }],
+        hyperlinks: [],
+      },
+    },
+    { kind: 'write-cells', x: 0, y: 0, cells: [{ grapheme: 'O', width: 1, styleId: 0 }] },
+  ]
+  const encoded = await encodePatchOperations(operations)
+  const patch = (generation: number, patchSeq: number) => ({
+    frameId: `ownership-${generation}-${patchSeq}`,
+    stateRevision: patchSeq,
+    patchSeq,
+    generation,
+    operations,
+    bytes: encoded.bytes,
+    fullRedraw: patchSeq === 1,
+  }) as any
+  const first = await writer.write(patch(0, 1))
+  const barrier = await writer.quiesce()
+  writer.resume(barrier, 1)
+  const second = await writer.write(patch(1, 1))
+  const stale = await writer.write(patch(0, 2))
+  const query = writer.query({ kind: 'cursor', generation: 1, timeoutMs: 150, retry: 0, expected: 'cursor-report' })
+  await new Promise(resolve => setImmediate(resolve))
+  const queryAccepted = token !== null && broker.accept(token, {
+    kind: 'query-response', sequence: 1, generation: 1, payload: null,
+    query: { tokenId: token.id, kind: token.kind, value: '\x1b[1;1R' },
+  })
+  const response = await query
+  const beforeStop = writer.stats()
+  await writer.stop()
+  const afterStop = writer.stats()
+  const outputHash = stream.hash.digest('hex')
+  const errors: string[] = []
+  if (first.status !== 'written' || second.status !== 'written') errors.push('writer frames did not commit')
+  if (stale.status !== 'stale') errors.push('old generation frame was not rejected')
+  if (!queryAccepted || response.kind !== 'cursor') errors.push('query did not round-trip through writer/broker')
+  if (afterStop.queueDepth !== 0 || afterStop.pendingBytes !== 0 || afterStop.inFlight !== 0) errors.push('writer queue did not drain at cleanup')
+  if (afterStop.generation !== 1) errors.push('writer generation evidence is not 1')
+  if (afterStop.maxQueueDepth > 2 || afterStop.maxPendingBytes > 8 * 1024 * 1024) errors.push('writer queue bounds exceeded')
+  if (writer.lifecycleState() !== 'stopped') errors.push('writer cleanup did not reach stopped')
+  return {
+    status: errors.length === 0 ? 'pass' : 'fail',
+    owner: 'TerminalWriter',
+    generation: { initial: 0, barrier, final: afterStop.generation, staleRejected: stale.status === 'stale' },
+    query: { accepted: queryAccepted, kind: response.kind, rawResponseRetained: false },
+    queue: { beforeStop, afterStop, maxDepthLimit: 2, pendingBytesLimit: 8 * 1024 * 1024 },
+    cleanup: { lifecycle: writer.lifecycleState(), bytes: stream.bytes, writes: stream.writes, outputSha256: outputHash, rawBytes: false },
+    errors,
+  }
+}
+
+export async function checkOwnership(): Promise<CheckResult> {
+  const errors: string[] = []
+  const legacyPaths: string[] = []
+  for (const legacy of OWNERSHIP_LEGACY_ROOTS) {
+    if (await stat(path.join(repoRoot, legacy)).catch(() => null)) legacyPaths.push(legacy)
+  }
+  for (const legacy of legacyPaths) errors.push(`legacy output owner path remains: ${legacy}`)
+
+  let machine: OwnershipMachineBlock | null = null
+  try {
+    machine = extractOwnershipMachineBlock(await readFile(OWNERSHIP_DOC, 'utf8'))
+  } catch (error: any) {
+    errors.push(`ownership doc unreadable: ${String(error?.message || error)}`)
+  }
+  if (machine === null) errors.push('ownership doc has no schemaVersion 1 machine block')
+  else validateOwnershipMachine(machine, errors)
+
+  let graph: Awaited<ReturnType<typeof computeOwnershipProductionGraph>> = { files: [], edges: [] }
+  let hits: OwnershipHit[] = []
+  try {
+    const scan = await scanOwnershipProductionTree()
+    graph = scan.graph
+    hits = scan.hits
+  } catch (error: any) {
+    errors.push(`ownership production scan failed: ${String(error?.message || error)}`)
+  }
+
+  const currentHitHash = ownershipHitHash(hits)
+  const ownerEvidence: Array<Record<string, unknown>> = []
+  if (machine !== null) {
+    if (machine.hitHash !== currentHitHash) {
+      errors.push(`ownership hitHash ${machine.hitHash} does not match production scan ${currentHitHash}`)
+    }
+    errors.push(...ownershipRegistrationErrors(hits, machine.owners))
+    for (const owner of machine.owners) {
+      const ownerHits = hits.filter(hit => owner.files.includes(hit.file) && owner.kinds.includes(hit.kind))
+      if (ownerHits.length === 0) errors.push(`${owner.id}: registered owner has no scan hits`)
+      ownerEvidence.push({
+        id: owner.id,
+        owner: owner.owner,
+        kinds: owner.kinds,
+        files: owner.files,
+        hits: ownerHits.length,
+        lifecycle: owner.lifecycle,
+        backpressure: owner.backpressure,
+        cleanup: owner.cleanup,
+        generation: owner.generation,
+        queue: owner.queue,
+      })
+    }
+  }
+  for (const hit of hits) {
+    if (hit.file.includes('/controllers/') && ['stdout-write', 'stderr-write', 'console-write', 'terminal-stream-write'].includes(hit.kind)) {
+      errors.push(`controller directly writes output: ${hit.file}:${hit.line}`)
+    }
+  }
+  const forbiddenPhysicalWriters = graph.files.filter(file => OWNERSHIP_FORBIDDEN_PHYSICAL_WRITERS.includes(file as any))
+  for (const file of forbiddenPhysicalWriters) errors.push(`secondary physical terminal writer is production-reachable: ${file}`)
+
+  const writerDrill = await runOwnershipWriterDrill().catch((error: any) => ({ status: 'fail', errors: [String(error?.message || error)] }))
+  if (writerDrill.status !== 'pass') errors.push(`ownership writer drill failed: ${JSON.stringify(writerDrill.errors)}`)
+  const graphMaterial = graph.files.join('\n') + '\n--edges--\n' + graph.edges.map(edge => `${edge.importer}:${edge.specifier}->${edge.resolved}`).join('\n')
+  return {
+    status: errors.length === 0 ? 'pass' : 'fail',
+    details: {
+      ruleVersion: machine?.ruleVersion ?? null,
+      roots: [...OWNERSHIP_PRODUCTION_ROOTS],
+      graph: { files: graph.files.length, edges: graph.edges.length, sha256: sha256Hex(graphMaterial) },
+      hitHash: currentHitHash,
+      hits,
+      owners: ownerEvidence,
+      legacy: { roots: [...OWNERSHIP_LEGACY_ROOTS], hits: legacyPaths },
+      uniquePhysicalWriter: { forbidden: [...OWNERSHIP_FORBIDDEN_PHYSICAL_WRITERS], hits: forbiddenPhysicalWriters },
+      writer: writerDrill,
+      errors,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CI/workflow integration gate (WP-09c1; exact publish deferred to WP-09c2)
+// ---------------------------------------------------------------------------
+
+interface CiProbeResult {
+  readonly name: string
+  readonly command: readonly string[]
+  readonly exitCode: number | null
+  readonly signal: NodeJS.Signals | null
+  readonly artifactPath: string
+  readonly artifactSha256: string | null
+  readonly artifactStatus: string | null
+  readonly stdoutSha256: string
+  readonly stderrSha256: string
+}
+
+function executeProbe(command: string, args: readonly string[]): Promise<{
+  exitCode: number | null
+  signal: NodeJS.Signals | null
+  stdout: string
+  stderr: string
+}> {
+  return new Promise(resolve => {
+    execFile(command, [...args], { cwd: repoRoot, maxBuffer: 16 * 1024 * 1024 }, (error: any, stdout, stderr) => {
+      resolve({
+        exitCode: error === null ? 0 : typeof error?.code === 'number' ? error.code : null,
+        signal: error?.signal ?? null,
+        stdout: String(stdout ?? ''),
+        stderr: String(stderr ?? ''),
+      })
+    })
+  })
+}
+
+async function probeArtifact(pathname: string): Promise<{ status: string | null; sha256: string | null }> {
+  try {
+    const bytes = await readFile(pathname)
+    const value = JSON.parse(bytes.toString('utf8'))
+    const status = typeof value?.status === 'string'
+      ? value.status
+      : value?.kind === 'bench' && Array.isArray(value?.results) && value.error === undefined
+        ? 'pass'
+        : null
+    return { status, sha256: sha256Hex(bytes) }
+  } catch {
+    return { status: null, sha256: null }
+  }
+}
+
+async function runCiProbe(
+  name: string,
+  command: string,
+  args: readonly string[],
+  artifactPath: string,
+): Promise<CiProbeResult> {
+  const result = await executeProbe(command, args)
+  const artifact = await probeArtifact(artifactPath)
+  return {
+    name,
+    command: [command, ...args],
+    exitCode: result.exitCode,
+    signal: result.signal,
+    artifactPath,
+    artifactSha256: artifact.sha256,
+    artifactStatus: artifact.status,
+    stdoutSha256: sha256Hex(result.stdout),
+    stderrSha256: sha256Hex(result.stderr),
+  }
+}
+
+async function runCiIntegrationProbes(): Promise<CiProbeResult[]> {
+  const artifactRoot = path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'tui-v2')
+  await mkdir(artifactRoot, { recursive: true })
+  const directory = await mkdtemp(path.join(artifactRoot, 'ci-integration-probes-'))
+  const ownershipPath = path.join(directory, 'ownership.json')
+  const soakPath = path.join(directory, 'soak.json')
+  const benchPath = path.join(directory, 'bench.json')
+  const packagePath = path.join(directory, 'package-dry-run.json')
+  const node = process.execPath
+  const probes: CiProbeResult[] = []
+  probes.push(await runCiProbe('ownership', node, [
+    '--import', 'tsx/esm', path.join(repoRoot, 'scripts', 'verify-tui-v2.ts'),
+    '--check', 'ownership', '--output', ownershipPath,
+  ], ownershipPath))
+  probes.push(await runCiProbe('bounded-fake-soak', node, [
+    '--expose-gc', '--import', 'tsx/esm', path.join(repoRoot, 'scripts', 'soak-tui-v2.ts'),
+    '--minutes', '0.001', '--profile', 'unknown-conservative', '--seed', '1', '--output', soakPath,
+  ], soakPath))
+  probes.push(await runCiProbe('benchmark', node, [
+    '--expose-gc', '--import', 'tsx/esm', path.join(repoRoot, 'scripts', 'bench-tui-v2.ts'),
+    '--fixture', 'v2-clean-stop', '--iterations', '1', '--seed', '1', '--output', benchPath,
+  ], benchPath))
+
+  const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+  const packageResult = await executeProbe(pnpm, ['verify:package'])
+  const packageSummary = {
+    schemaVersion: 1,
+    status: packageResult.exitCode === 0 ? 'pass' : 'fail',
+    command: [pnpm, 'verify:package'],
+    exitCode: packageResult.exitCode,
+    signal: packageResult.signal,
+    stdoutSha256: sha256Hex(packageResult.stdout),
+    stderrSha256: sha256Hex(packageResult.stderr),
+    rawOutput: false,
+  }
+  await writeArtifactAtomic(packagePath, packageSummary)
+  probes.push({
+    name: 'package-dry-run',
+    command: packageSummary.command,
+    exitCode: packageResult.exitCode,
+    signal: packageResult.signal,
+    artifactPath: packagePath,
+    artifactSha256: sha256Hex(await readFile(packagePath)),
+    artifactStatus: packageSummary.status,
+    stdoutSha256: packageSummary.stdoutSha256,
+    stderrSha256: packageSummary.stderrSha256,
+  })
+  return probes
+}
+
+function collectWorkflowStrings(value: unknown, out: string[]): void {
+  if (typeof value === 'string') {
+    out.push(value)
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectWorkflowStrings(item, out)
+    return
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      out.push(key)
+      collectWorkflowStrings(nested, out)
+    }
+  }
+}
+
+export async function checkCiIntegration(ctx: CheckContext): Promise<CheckResult> {
+  const finalMode = ctx.final || process.env.TUI_V2_FINAL === '1'
+  const errors: string[] = []
+  const deferred: Array<{ id: string; reason: string; deferredTo: 'WP-09c2' }> = []
+  const workflowDirectory = path.join(repoRoot, '.github', 'workflows')
+  const workflowFiles = (await readdir(workflowDirectory))
+    .filter(file => file.endsWith('.yml') || file.endsWith('.yaml'))
+    .sort()
+  const { parse } = await import('yaml')
+  const workflows: Array<{ file: string; sha256: string; document: unknown; strings: string[]; source: string }> = []
+  for (const file of workflowFiles) {
+    const source = await readFile(path.join(workflowDirectory, file), 'utf8')
+    try {
+      const document = parse(source)
+      const strings: string[] = []
+      collectWorkflowStrings(document, strings)
+      workflows.push({ file: `.github/workflows/${file}`, sha256: sha256Hex(source), document, strings, source })
+    } catch (error: any) {
+      errors.push(`workflow ${file} is not valid YAML: ${String(error?.message || error)}`)
+    }
+  }
+  const workflowText = workflows.map(workflow => workflow.source).join('\n')
+  const ciWorkflow = workflows.find(workflow => workflow.file === '.github/workflows/ci.yml')
+  const publishWorkflow = workflows.find(workflow => workflow.file === '.github/workflows/publish.yml')
+  const hostWorkflowText = workflows
+    .filter(workflow => /tui-v2.*soak|soak.*tui-v2/iu.test(workflow.file + workflow.source))
+    .map(workflow => workflow.source)
+    .join('\n')
+  if (ciWorkflow === undefined) errors.push('ci workflow is missing')
+  if (publishWorkflow === undefined) errors.push('publish workflow is missing')
+
+  const manifest = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'))
+  const expectedScripts = {
+    'test:tui-v2': 'node scripts/test-tui-v2.mjs',
+    'verify:tui-v2': 'node --import tsx/esm scripts/verify-tui-v2.ts',
+    'bench:tui-v2': 'node --expose-gc --import tsx/esm scripts/bench-tui-v2.ts',
+    'soak:tui-v2': 'node --expose-gc --import tsx/esm scripts/soak-tui-v2.ts',
+  }
+  for (const [name, expected] of Object.entries(expectedScripts)) {
+    if (manifest?.scripts?.[name] !== expected) errors.push(`package script ${name} must be exactly ${expected}`)
+  }
+  if (manifest?.devDependencies?.['node-pty'] !== '1.1.0') errors.push('node-pty devDependency must be exact 1.1.0')
+  const workspace = await readFile(path.join(repoRoot, 'pnpm-workspace.yaml'), 'utf8')
+  if (!/^\s*node-pty:\s*true\s*$/mu.test(workspace)) errors.push('pnpm allowBuilds.node-pty must be true')
+
+  const staticContracts: Array<{ id: string; ok: boolean }> = []
+  const contract = (id: string, ok: boolean, message: string): void => {
+    staticContracts.push({ id, ok })
+    if (!ok) errors.push(message)
+  }
+  contract('node-22.19', /22\.19/u.test(workflowText), 'workflows do not cover Node 22.19')
+  contract('node-24', /node(?:-version)?[^\n]*24|node:\s*\[[^\]]*['"]?24/iu.test(workflowText), 'workflows do not cover Node 24')
+  contract('test-wrapper', /pnpm\s+test:tui-v2/u.test(workflowText), 'workflows do not run test:tui-v2 wrapper')
+  const wrapperSource = await readFile(path.join(repoRoot, 'scripts', 'test-tui-v2.mjs'), 'utf8')
+  const reporterSource = await readFile(path.join(repoRoot, 'scripts', 'tui-v2-test-reporter.mjs'), 'utf8')
+  contract('custom-reporter', /tui-v2-test-reporter\.mjs/u.test(wrapperSource) && /reporterVersion/u.test(reporterSource), 'custom test reporter contract is missing')
+  const requiredChecks = [
+    'baseline', 'regression-matrix', 'trace', 'fork', 'skeleton', 'controllers',
+    'fullscreen', 'inline', 'host-capabilities', 'v2-only', 'ownership', 'ci-integration',
+  ]
+  for (const check of requiredChecks) contract(`check-${check}`, workflowText.includes(check), `workflows do not invoke v2 check ${check}`)
+  contract('benchmark', /pnpm\s+bench:tui-v2/u.test(workflowText), 'workflows do not run bench:tui-v2')
+  contract('pr-soak-10m', /pnpm\s+soak:tui-v2[^\n]*--minutes\s+10\b/u.test(workflowText), 'PR workflow lacks exact --minutes 10 bounded soak command')
+  contract('upload-artifact', /actions\/upload-artifact@v4/u.test(workflowText), 'workflows do not upload v2 artifacts')
+  contract('package-dry-run', /pnpm\s+verify:package/u.test(workflowText), 'workflows do not run package dry-run verification')
+  for (const host of ['ubuntu-latest', 'macos-latest', 'windows-latest']) {
+    contract(`host-${host}`, hostWorkflowText.includes(host), `host soak workflow does not cover ${host}`)
+  }
+  contract('host-schedule', /schedule:/u.test(hostWorkflowText), 'host soak workflow lacks nightly schedule')
+  contract('host-release', /release:/u.test(hostWorkflowText), 'host soak workflow lacks release trigger')
+  contract('host-manual', /workflow_dispatch:/u.test(hostWorkflowText), 'host soak workflow lacks manual trigger')
+  contract('host-require-pty', /--require-pty/u.test(hostWorkflowText), 'host soak workflow does not require PTY')
+  contract('nightly-8h-chain', /\b240\b/u.test(hostWorkflowText) && /\b480\b/u.test(hostWorkflowText), 'nightly workflow lacks 2x240m/480m chain contract')
+  contract('release-24h-chain', /\b288\b/u.test(hostWorkflowText) && /\b1440\b/u.test(hostWorkflowText), 'release workflow lacks 5x288m/1440m chain contract')
+  contract('soak-chain-verifier', /scripts\/merge-tui-v2-soak\.ts/u.test(hostWorkflowText), 'host workflow lacks soak artifact chain verifier')
+
+  const publishSource = publishWorkflow?.source ?? ''
+  const exactPublish = /verify-tui-v2-tarball\.mjs/u.test(publishSource) &&
+    /npm\s+publish\s+["']?\$\{?tgz\}?|npm\s+publish\s+["']?\$tgz/iu.test(publishSource) &&
+    /--ignore-scripts/u.test(publishSource)
+  const ordinaryPublishHits = publishSource.split('\n')
+    .map((line, index) => ({ line: index + 1, text: line.trim() }))
+    .filter(hit => /\bnpm\s+publish\b/u.test(hit.text) && !/\$\{?tgz\}?|\.tgz/u.test(hit.text))
+  if (!exactPublish || ordinaryPublishHits.length > 0) {
+    deferred.push({
+      id: 'verified-tarball-publish',
+      reason: 'publish workflow does not yet consume the exact verified tgz and still contains ordinary npm publish',
+      deferredTo: 'WP-09c2',
+    })
+  }
+  if (finalMode) {
+    for (const item of deferred) errors.push(`final ci-integration deferred item: ${item.reason} (${item.deferredTo})`)
+  }
+
+  const probes = await runCiIntegrationProbes()
+  for (const probe of probes) {
+    if (probe.exitCode !== 0 || probe.artifactStatus !== 'pass' || probe.artifactSha256 === null) {
+      errors.push(`local CI probe ${probe.name} failed (exit=${probe.exitCode}, status=${probe.artifactStatus}, artifact=${probe.artifactPath})`)
+    }
+  }
+  return {
+    status: errors.length === 0 ? 'pass' : 'fail',
+    details: {
+      mode: finalMode ? 'final' : 'staged',
+      workflowCommit: await gitHead(),
+      workflows: workflows.map(workflow => ({ file: workflow.file, sha256: workflow.sha256 })),
+      staticContracts,
+      packageScripts: expectedScripts,
+      probes,
+      publish: { exactVerifiedTarball: exactPublish, ordinaryPublishHits, deferred },
+      errors,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// v2-only final legacy-clean gate + rollback preflight (WP-09b; rollback deferred to WP-09c2)
 // ---------------------------------------------------------------------------
 
 const retiredSourcePath = (...parts: string[]): string => parts.join('')
@@ -2008,7 +2705,7 @@ async function reviewBaselineDifferences(
 
 interface RollbackPreflight {
   readonly errors: readonly string[]
-  readonly deferred: readonly { readonly reason: string; readonly deferredTo: 'WP-09c' }[]
+  readonly deferred: readonly { readonly reason: string; readonly deferredTo: 'WP-09c2' }[]
   readonly details: Record<string, unknown>
 }
 
@@ -2016,12 +2713,12 @@ export async function checkRollbackManifest(manifestPath: string | null): Promis
   if (manifestPath === null || manifestPath === '') {
     return {
       errors: [],
-      deferred: [{ reason: 'no immutable rollback-manifest.json supplied in this work package', deferredTo: 'WP-09c' }],
+      deferred: [{ reason: 'no immutable rollback-manifest.json supplied in this work package', deferredTo: 'WP-09c2' }],
       details: { status: 'deferred', path: null },
     }
   }
   const errors: string[] = []
-  const deferred: { reason: string; deferredTo: 'WP-09c' }[] = []
+  const deferred: { reason: string; deferredTo: 'WP-09c2' }[] = []
   let value: any
   try {
     value = JSON.parse(await readFile(path.resolve(manifestPath), 'utf8'))
@@ -2074,7 +2771,7 @@ export async function checkRollbackManifest(manifestPath: string | null): Promis
       if (sha256Hex(bytes) !== sha256) errors.push('rollback tarball sha256 does not match manifest')
     } catch {
       tarballStatus = 'missing'
-      deferred.push({ reason: 'exact rollback tarball is not present beside the manifest', deferredTo: 'WP-09c' })
+      deferred.push({ reason: 'exact rollback tarball is not present beside the manifest', deferredTo: 'WP-09c2' })
     }
   }
   return {
@@ -2098,7 +2795,7 @@ export async function checkRollbackManifest(manifestPath: string | null): Promis
 export async function checkV2Only(ctx: CheckContext): Promise<CheckResult> {
   const finalMode = ctx.final || process.env.TUI_V2_FINAL === '1'
   const errors: string[] = []
-  const deferred: { reason: string; deferredTo: 'WP-09c' }[] = []
+  const deferred: { reason: string; deferredTo: 'WP-09c2' }[] = []
   const details: Record<string, unknown> = { mode: finalMode ? 'final' : 'staged', deferred }
 
   const boundaryHits: Record<string, { file: string; specifier: string }[]> = {}
@@ -2230,6 +2927,8 @@ const checks = new Map<string, (ctx: CheckContext) => Promise<CheckResult>>([
   ['fullscreen', () => checkFullscreen()],
   ['inline', () => checkInline()],
   ['host-capabilities', () => checkHostCapabilities()],
+  ['ownership', () => checkOwnership()],
+  ['ci-integration', (ctx) => checkCiIntegration(ctx)],
   ['v2-only', (ctx) => checkV2Only(ctx)],
 ])
 

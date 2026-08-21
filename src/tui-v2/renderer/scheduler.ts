@@ -76,6 +76,15 @@ export interface SchedulerDiagnostic {
   readonly stateRevision?: number
 }
 
+export interface RenderSchedulerStats {
+  readonly pendingFrames: 0 | 1
+  readonly executing: boolean
+  readonly timerActive: boolean
+  readonly rerunRequested: boolean
+  readonly resizeListeners: number
+  readonly committedRevision: number
+}
+
 export interface RenderScheduler<T extends ScheduledFrame> {
   readonly phase: SchedulerPhase
   start(): void
@@ -91,6 +100,7 @@ export interface RenderScheduler<T extends ScheduledFrame> {
   beginResizeTransaction(getState: () => T): boolean
   /** Revision watermark of the last completed render. */
   readonly committedRevision: number
+  diagnostics(): RenderSchedulerStats
   stop(): void
 }
 
@@ -177,6 +187,16 @@ export function createRenderScheduler<T extends ScheduledFrame>(
     },
     get committedRevision() {
       return committedRevision
+    },
+    diagnostics() {
+      return {
+        pendingFrames: pending === null ? 0 : 1,
+        executing,
+        timerActive: pendingTimer !== null,
+        rerunRequested,
+        resizeListeners: resizeListeners.length,
+        committedRevision,
+      }
     },
     start() {
       if (phase === 'created') phase = 'active'
