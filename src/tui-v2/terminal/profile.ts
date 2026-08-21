@@ -1,9 +1,9 @@
 /**
  * tui-v2 terminal profile contract (WP-02, plan §5.4).
  *
- * CONTRACT ONLY — capability probing and its 150 ms/300 ms timeout budget
- * land with the terminal layer in a later work package. Dependency rule
- * (§4.3): terminal contracts import nothing from model/renderer/components.
+ * This is the immutable profile input to `terminal/capabilities.ts`; probing
+ * uses the existing 150 ms/300 ms query budget. Dependency rule (§4.3):
+ * terminal contracts import nothing from model/renderer/components.
  *
  * `Capability` is `'yes' | 'no' | 'unknown'`; `unknown` must never be treated
  * as supported. When probing fails, the renderer disables advanced protocols
@@ -12,6 +12,8 @@
 
 export type Capability = 'yes' | 'no' | 'unknown'
 export type ImageProtocol = 'kitty' | 'iterm2' | null
+export type ProfileMouseTracking = 'off' | 'x10-1000' | 'normal-1002' | 'button-1002' | 'any-1003' | 'sgr-1006' | 'urxvt-1015'
+export type ProfileMouseEncoding = 'sgr-1006' | 'urxvt-1015' | 'x10'
 
 export interface TerminalProfile {
   id: string
@@ -39,6 +41,12 @@ export interface TerminalProfile {
   supportsProgress: Capability
   supportsTrueColor: Capability
   supportsMouse: Capability
+  /** Preferred tracking mode; absent means the lifecycle default. */
+  mouseTracking?: ProfileMouseTracking
+  /** Preferred encoding; absent means SGR when available. */
+  mouseEncoding?: ProfileMouseEncoding
+  /** Protocols accepted by the host fixture/detector. */
+  mouseProtocols?: readonly ProfileMouseEncoding[]
   supportsAlternateScreen: Capability
   imageProtocol: ImageProtocol | 'unknown'
   multiplexer: 'none' | 'tmux' | 'screen' | 'zellij' | 'unknown'

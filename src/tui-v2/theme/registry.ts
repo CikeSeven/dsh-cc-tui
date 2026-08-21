@@ -6,6 +6,7 @@
  */
 import { lineStyle, type LineStyle } from '../renderer/lines.js'
 import type { ComponentTheme } from '../components/theme.js'
+import type { TerminalProfile } from '../terminal/profile.js'
 
 export const THEME_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
 export type ThemeBase = 'default' | 'dark' | 'light' | 'ansi'
@@ -31,12 +32,36 @@ export interface ThemeRegistry {
   fallbackId(): string
 }
 
+export interface ProfileThemeResolution {
+  readonly theme: ComponentTheme
+  readonly degraded: boolean
+  readonly reason?: 'truecolor-unsupported'
+}
+
 const REQUIRED_ROLE_NAMES = [
   'text', 'subtle', 'accent', 'error', 'success', 'warning', 'code', 'link',
   'toolName', 'toolBackground', 'toolBackgroundExpanded', 'searchMatch', 'searchCurrent',
 ] as const
 
-const COLOR_RE = /^(?:#[0-9a-f]{3,8}|(?:ansi16|ansi256):[0-9]+|(?:black|red|green|yellow|blue|magenta|cyan|white|bright-black|bright-red|bright-green|bright-yellow|bright-blue|bright-magenta|bright-cyan|bright-white)|rgb:[0-9a-f]{6})$/i
+const COLOR_RE = /^(?:#[0-9a-f]{6}|(?:black|red|green|yellow|blue|magenta|cyan|white|bright-black|bright-red|bright-green|bright-yellow|bright-blue|bright-magenta|bright-cyan|bright-white)|rgb:[0-9a-f]{6})$/i
+const ANSI_COLOR_RE = /^ansi(16|256):(\d{1,3})$/i
+const TRUECOLOR_RE = /^(?:#|rgb:)([0-9a-f]{6})$/i
+
+function validColor(value: string): boolean {
+  if (COLOR_RE.test(value)) return true
+  const match = ANSI_COLOR_RE.exec(value)
+  if (match === null) return false
+  const index = Number.parseInt(match[2] as string, 10)
+  return match[1] === '16' ? index <= 15 : index <= 255
+}
+
+function freezeDeep<T>(value: T): T {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) freezeDeep(child)
+    Object.freeze(value)
+  }
+  return value
+}
 
 function isLineStyle(value: unknown): value is LineStyle {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false
@@ -46,7 +71,7 @@ function isLineStyle(value: unknown): value is LineStyle {
   }
   for (const key of ['foreground', 'background']) {
     const color = style[key]
-    if (color !== null && (typeof color !== 'string' || !COLOR_RE.test(color))) return false
+    if (color !== null && (typeof color !== 'string' || !validColor(color))) return false
   }
   return true
 }
@@ -76,12 +101,12 @@ function validateDescriptor(input: unknown): ThemeValidationResult {
     }
   }
   if (errors.length > 0) return { ok: false, errors }
-  const descriptor: ThemeDescriptor = {
+  const descriptor: ThemeDescriptor = freezeDeep({
     id: id as string,
     displayName: (displayName as string).trim().replace(/[\r\n]+/g, ' '),
     base: base as ThemeBase,
     ...(roles === undefined ? {} : { roles: roles as Partial<ComponentTheme['roles']> }),
-  }
+  })
   return { ok: true, descriptor, errors: [] }
 }
 
@@ -89,7 +114,7 @@ function fallbackTheme(id: string, base: ThemeBase): ComponentTheme {
   const neutral = lineStyle()
   const subtle = lineStyle({ foreground: base === 'light' ? 'ansi256:8' : 'bright-black' })
   const accent = lineStyle({ foreground: base === 'light' ? 'ansi256:12' : 'cyan' })
-  return Object.freeze({
+  return freezeDeep({
     id,
     roles: {
       text: neutral,
@@ -125,7 +150,7 @@ export function createThemeRegistry(options: {
     if (result.ok && result.descriptor !== undefined) {
       descriptors.set(result.descriptor.id, result.descriptor)
       const baseTheme = fallbackTheme(result.descriptor.id, result.descriptor.base)
-      themes.set(result.descriptor.id, Object.freeze({
+      themes.set(result.descriptor.id, freezeDeep({
         ...baseTheme,
         roles: { ...baseTheme.roles, ...(result.descriptor.roles ?? {}) },
       }))
@@ -137,7 +162,7 @@ export function createThemeRegistry(options: {
       if (!result.ok || result.descriptor === undefined) return result
       descriptors.set(result.descriptor.id, result.descriptor)
       const baseTheme = fallbackTheme(result.descriptor.id, result.descriptor.base)
-      themes.set(result.descriptor.id, Object.freeze({
+      themes.set(result.descriptor.id, freezeDeep({
         ...baseTheme,
         roles: { ...baseTheme.roles, ...(result.descriptor.roles ?? {}) },
       }))
@@ -147,7 +172,40 @@ export function createThemeRegistry(options: {
       return themes.get(id) ?? themes.get(fallbackValidated.descriptor!.id) as ComponentTheme
     },
     has: (id) => descriptors.has(id),
-    list: () => [...descriptors.values()].map((descriptor) => Object.freeze({ ...descriptor })),
+    list: () => [...descriptors.values()].map((descriptor) => freezeDeep({ ...descriptor })),
     fallbackId: () => fallbackValidated.descriptor!.id,
+  }
+}
+
+function downgradeTruecolor(color: string | null): { readonly color: string | null; readonly degraded: boolean } {
+  if (color === null) return { color: null, degraded: false }
+  const match = TRUECOLOR_RE.exec(color)
+  if (match === null) return { color, degraded: false }
+  const hex = match[1] as string
+  const r = Math.round(Number.parseInt(hex.slice(0, 2), 16) / 255 * 5)
+  const g = Math.round(Number.parseInt(hex.slice(2, 4), 16) / 255 * 5)
+  const b = Math.round(Number.parseInt(hex.slice(4, 6), 16) / 255 * 5)
+  return { color: `ansi256:${16 + 36 * r + 6 * g + b}`, degraded: true }
+}
+
+/**
+ * Resolve a validated theme against host color capability.  Truecolor roles
+ * are deterministically quantized to the ANSI 256 cube when the profile says
+ * `no` or `unknown`; no unproven truecolor sequence reaches the writer.
+ */
+export function resolveThemeForProfile(registry: ThemeRegistry, id: string, profile: TerminalProfile): ProfileThemeResolution {
+  const theme = registry.resolve(id)
+  if (profile.supportsTrueColor === 'yes') return { theme, degraded: false }
+  let degraded = false
+  const roles = Object.fromEntries(Object.entries(theme.roles).map(([role, style]) => {
+    const foreground = downgradeTruecolor(style.foreground)
+    const background = downgradeTruecolor(style.background)
+    degraded ||= foreground.degraded || background.degraded
+    return [role, { ...style, foreground: foreground.color, background: background.color }]
+  })) as ComponentTheme['roles']
+  return {
+    theme: freezeDeep({ ...theme, roles }),
+    degraded,
+    ...(degraded ? { reason: 'truecolor-unsupported' as const } : {}),
   }
 }

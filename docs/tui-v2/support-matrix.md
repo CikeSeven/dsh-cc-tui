@@ -1,4 +1,4 @@
-# tui-v2 终端模式与图片支持矩阵（WP-07/WP-08e2）
+# tui-v2 终端模式、宿主能力与图片支持矩阵（WP-07/WP-08e2/WP-08g）
 
 本文是 fullscreen（alt-screen）与 inline（main-screen）两种后端的**能力对账表**。文末的
 `json` 机器块由 `pnpm verify:tui-v2 -- --check inline` 解析，逐字段与
@@ -70,6 +70,18 @@ bundle 里 `resetScrollRegion()`（`CSI r`）按 xterm 语义会把光标 home �
 | notifications/theme/i18n | dock/picker 正常布局 | 有界 dock/append 反馈；overlay 可不可见但不静默 | Clock timeout、dedupe/sticky；theme registry/language capability 安全 fallback |
 
 上述 action 的 trace 只记录 `external-actions@v1` 的 bounded summary（kind/status/generation/count/hash），禁止 secrets、raw command/env、child output 原文和 clipboard/image bytes。详细 stdout/stderr owner 见 `docs/tui-v2-stdout-ownership.md`。
+
+## WP-08g terminal capability 支持边界
+
+| 能力 | fullscreen | inline | 语义 |
+| --- | --- | --- | --- |
+| mouse tracking | profile/capability 确认后使用完整 `MouseTrackingMode`（SGR 1006 默认，可选 urxvt 1015/X10） | wheel 可路由到 scrolling；selection/overlay 不可见时明确降级 | 1000/1002/1003 与 1006/1015 编码互斥清理；重复 signal/cleanup 幂等 |
+| focus/paste/Kitty keyboard | confirmed profile 才启用；Kitty query/enable 失败回退 legacy keys | 同一 input schema；高级失败不阻塞退出 | generation/token 不匹配的 late response 丢弃，timeout = conservative fallback |
+| OSC52 | confirmed policy 才由 trusted writer 输出 | 同一 gate；unknown/denied 明确 unsupported | trace 只写长度/hash，绝不写 clipboard bytes/raw OSC |
+| custom theme/i18n | validated immutable roles；profile 不确认 truecolor 时量化到 ANSI 256 | 同一 registry；overlay 差异仍按 inline 规则 | CJK/emoji/combining/control text 统一走 cells width pipeline，RTL 只保留逻辑顺序 |
+| Kitty/iTerm2 image | 仅 confirmed profile；sixel unsupported | placeholder/fallback，不发图片协议字节 | ImageStore/frame/trace 仅 hash/metadata |
+
+`host-capabilities@v1` 是 fake-stream/profile 证据，artifact 包含 snapshot、reason、query accepted/dropped、mouse cleanup、Kitty fallback、OSC52 bytes hash 和 `unsupported-by-host`/manual flags。真实 Windows/ConPTY、macOS/iTerm2、SSH、tmux、VS Code/JetBrains 终端与真实 PTY 仍是 manual/deferred，不能由 CI fixture 代称实测。
 
 ## 机器块（verify --check inline Part 4 对账用）
 

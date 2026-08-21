@@ -1635,6 +1635,112 @@ async function checkInline(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
+// host capability check (WP-08g): canonical snapshot + redacted protocol drills
+// ---------------------------------------------------------------------------
+
+async function checkHostCapabilities(): Promise<CheckResult> {
+  const errors: string[] = []
+  const { detectTerminalCapabilities, hashCapabilitySnapshot } = await import('../src/tui-v2/terminal/capabilities.js')
+  const { getProfile } = await import('../src/tui-v2/testkit/terminal-profiles.js')
+  const { encodeLifecycleOperation } = await import('../src/tui-v2/terminal/writer.js')
+  const { createMouseController } = await import('../src/tui-v2/controllers/mouse.js')
+  const ansi = await import('../src/tui-v2/terminal/ansi.js')
+  const { createKittyKeyboardNegotiator } = await import('../src/tui-v2/terminal/kitty-keyboard.js')
+  const { readTrace } = await import('../src/tui-v2/testkit/trace.js')
+
+  const profile = getProfile('kitty-sync')
+  const snapshot = detectTerminalCapabilities({
+    profile,
+    generation: 0,
+    stdinIsTTY: true,
+    // Only allowlisted values are examined and no value is copied into details.
+    environment: { TERM: profile.term, TERM_PROGRAM: 'kitty', SECRET_TOKEN: 'redacted' },
+    queries: [
+      {
+        token: { tokenId: 'q-host-1', generation: 0, kind: 'kitty-keyboard' },
+        status: 'response',
+        response: { tokenId: 'q-host-1', generation: 0, kind: 'kitty-keyboard', value: { flags: 1 }, receivedAt: 0 },
+      },
+      {
+        token: { tokenId: 'q-late', generation: 1, kind: 'kitty-keyboard' },
+        status: 'response',
+        response: { tokenId: 'q-late', generation: 1, kind: 'kitty-keyboard', value: { flags: 1 }, receivedAt: 0 },
+      },
+    ],
+  })
+  if (snapshot.queries.accepted.length !== 1) errors.push(`expected one accepted query, got ${snapshot.queries.accepted.length}`)
+  if (snapshot.queries.dropped.length !== 1) errors.push(`expected one dropped query, got ${snapshot.queries.dropped.length}`)
+  if (JSON.stringify(snapshot).includes('SECRET_TOKEN') || JSON.stringify(snapshot).includes('redacted')) errors.push('snapshot retained environment secret')
+
+  const mouseCleanup = encodeLifecycleOperation({ kind: 'lifecycle', action: 'mouse', enabled: false })
+  const mouseCleanupOk = mouseCleanup.includes('\x1b[?1000l') && mouseCleanup.includes('\x1b[?1006l') && mouseCleanup.includes('\x1b[?1015l')
+  if (!mouseCleanupOk) errors.push('mouse cleanup reset bundle is incomplete')
+  const mouseRoutes: string[] = []
+  const mouseProbe = createMouseController({
+    mode: 'fullscreen',
+    enabled: true,
+    supportedProtocols: ['sgr-1006'],
+    scrolling: { handleWheel: (direction) => { mouseRoutes.push(`wheel:${direction}`); return true } },
+    selection: { handle: (_event, payload) => { mouseRoutes.push(`pointer:${payload.action}`); return true } },
+    hitTest: () => 'selection',
+  })
+  const mouseEvent = (payload: Record<string, unknown>): any => ({
+    kind: 'mouse', sequence: 1, generation: 0,
+    payload: { protocol: 'sgr-1006', action: 'press', button: 'left', x: 0, y: 0, modifiers: { shift: false, alt: false, ctrl: false }, wheel: null, ...payload },
+  })
+  const wheelRouted = mouseProbe.handleEvent(mouseEvent({ action: 'wheel', wheel: 'up' }))
+  const pointerRouted = mouseProbe.handleEvent(mouseEvent({ action: 'press' }))
+  if (!wheelRouted || !pointerRouted || mouseRoutes.length !== 2) errors.push(`mouse route drill failed: ${JSON.stringify(mouseRoutes)}`)
+
+  const kittyClock = { now: () => 0, setTimeout: () => 0, clearTimeout: () => {} }
+  const kittyFallback = createKittyKeyboardNegotiator({
+    clock: kittyClock,
+    initialGeneration: 0,
+    generation: () => 0,
+    writer: {
+      query: async () => { throw new Error('query unavailable') },
+      writeControl: async () => ({ status: 'written' as const }),
+    },
+  })
+  const kitty = await kittyFallback.negotiate(0)
+  if (kitty.state !== 'fallback' || !kitty.legacyFallback) errors.push(`kitty fallback state is ${kitty.state}`)
+
+  const osc52Text = 'host-capability-clipboard'
+  const osc52Payload = Buffer.from(osc52Text, 'utf8').toString('base64')
+  const osc52Bytes = ansi.osc52Clipboard(osc52Payload)
+  const osc52Hash = sha256Hex(osc52Bytes)
+  if (osc52Bytes.includes(osc52Text)) errors.push('OSC52 artifact exposed clipboard text')
+
+  const tracePath = path.join(repoRoot, 'fixtures', 'tui-v2', 'traces', 'host-capabilities@v1.jsonl')
+  let traceLoaded = false
+  try {
+    const trace = await readTrace(tracePath)
+    traceLoaded = true
+    const raw = await readFile(tracePath, 'utf8')
+    if (/SECRET_TOKEN|clipboard bytes|aGVsbG8=|host-capability-clipboard/i.test(raw)) errors.push('host capability trace contains secret/raw payload')
+    if (trace.header.name !== 'host-capabilities@v1') errors.push(`unexpected host trace name ${trace.header.name}`)
+  } catch (error: any) {
+    errors.push(`host capability trace unreadable: ${String(error?.message || error)}`)
+  }
+
+  return {
+    status: errors.length === 0 ? 'pass' : 'fail',
+    details: {
+      snapshot,
+      snapshotHash: hashCapabilitySnapshot(snapshot),
+      query: { accepted: snapshot.queries.accepted.length, dropped: snapshot.queries.dropped.length },
+      mouse: { cleanupResetBundle: mouseCleanupOk, cleanupBytes: Buffer.byteLength(mouseCleanup, 'utf8'), wheelRouted, pointerRouted, routes: mouseRoutes.length },
+      kitty: { state: kitty.state, reason: kitty.reason, legacyFallback: kitty.legacyFallback },
+      osc52: { payloadChars: osc52Payload.length, bytes: Buffer.byteLength(osc52Bytes, 'utf8'), bytesHash: osc52Hash },
+      trace: { path: path.relative(repoRoot, tracePath), loaded: traceLoaded, rawPayload: false },
+      pty: { status: 'unsupported-by-host', runner: 'fake-stream-only' },
+      hosts: { windows: 'manual', macos: 'manual', ssh: 'manual', tmux: 'manual', vscode: 'manual' },
+      errors,
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
 // registry + CLI
 // ---------------------------------------------------------------------------
 
@@ -1647,6 +1753,7 @@ const checks = new Map<string, (ctx: CheckContext) => Promise<CheckResult>>([
   ['controllers', () => checkControllers()],
   ['fullscreen', () => checkFullscreen()],
   ['inline', () => checkInline()],
+  ['host-capabilities', () => checkHostCapabilities()],
 ])
 
 function defaultOutput(check: string): string {

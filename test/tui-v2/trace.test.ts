@@ -591,6 +591,7 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
       'editor.jsonl',
       'exit-error.jsonl',
       'external-actions@v1.jsonl',
+      'host-capabilities@v1.jsonl',
       'image-fallback@v1.jsonl',
       'inline-scrollback.jsonl',
       'interactive-overlays.jsonl',
@@ -618,7 +619,8 @@ test('trace fixtures: every corpus file loads, validates and is redacted', async
   for (const file of files) {
     const trace = await readTrace(path.join(fixturesDir, file))
     assert.equal(trace.header.traceVersion, 1, file)
-    assert.equal(trace.header.seed, 42, file)
+    if (file === 'host-capabilities@v1.jsonl') assert.equal(trace.header.seed, 808, file)
+    else assert.equal(trace.header.seed, 42, file)
     assert.equal(trace.header.generatorVersion, '1.0.0', file)
     assert.equal(trace.header.redactionVersion, 1, file)
     assert.equal(trace.header.oracle, 'differential-only', file)

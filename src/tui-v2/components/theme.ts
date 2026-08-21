@@ -4,8 +4,8 @@
  * Role -> LineStyle map shared by transcript, dialogs and search highlights.
  * Color strings use the canonical spellings of the width pipeline
  * (renderer/lines.ts) so they map onto `StyleDescriptor` 1:1. This is
- * deliberately NOT the legacy `src/theme.ts` palette; custom-theme loading is
- * a later WP-08 surface, while one deterministic default serves every profile.
+ * deliberately NOT the legacy `src/theme.ts` palette; custom themes are
+ * validated by `theme/registry.ts`, while one deterministic default serves every profile.
  *
  * Dependency rule (§4.3): components import renderer contracts only.
  */

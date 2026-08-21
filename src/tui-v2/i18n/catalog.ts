@@ -6,10 +6,12 @@
 import { sanitizeChildText } from '../capabilities/external-actions.js'
 
 export type LanguageId = 'zh' | 'en'
+export type TextDirection = 'ltr' | 'rtl'
 export type TranslationTable = Readonly<Record<string, Readonly<Partial<Record<LanguageId, string>>>>>
 
 export interface Translator {
   readonly language: LanguageId
+  readonly direction: TextDirection
   t(key: string, fallback?: string, params?: Readonly<Record<string, string | number>>): string
 }
 
@@ -17,9 +19,22 @@ export function isLanguageId(value: unknown): value is LanguageId {
   return value === 'zh' || value === 'en'
 }
 
+export function localeDirection(locale: string | undefined): TextDirection {
+  if (locale === undefined) return 'ltr'
+  const language = locale.trim().toLowerCase().split(/[-_.@]/u)[0]
+  return language === 'ar' || language === 'fa' || language === 'he' || language === 'ur' ? 'rtl' : 'ltr'
+}
+
+export function languageDirection(language: LanguageId): TextDirection {
+  // Built-in zh/en catalogs are LTR; arbitrary host locale metadata uses the
+  // explicit localeDirection helper. Rendering remains logical-order only.
+  return localeDirection(language)
+}
+
 export function createTranslator(language: LanguageId, table: TranslationTable): Translator {
   return {
     language,
+    direction: languageDirection(language),
     t(key, fallback, params = {}) {
       const raw = table[key]?.[language] ?? fallback ?? key
       const clean = sanitizeChildText(raw, { maxChars: 2000, maxLines: 4 }).text

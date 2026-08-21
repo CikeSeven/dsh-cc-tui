@@ -69,6 +69,9 @@ const UNICODE_AMBIGUOUS_NARROW: TerminalProfile = {
   supportsProgress: 'no',
   supportsTrueColor: 'no',
   supportsMouse: 'yes',
+  mouseTracking: 'sgr-1006',
+  mouseEncoding: 'sgr-1006',
+  mouseProtocols: ['sgr-1006', 'urxvt-1015', 'x10'],
   supportsAlternateScreen: 'yes',
   imageProtocol: null,
   multiplexer: 'none',
@@ -110,6 +113,9 @@ const KITTY_SYNC: TerminalProfile = {
   supportsProgress: 'no',
   supportsTrueColor: 'yes',
   supportsMouse: 'yes',
+  mouseTracking: 'sgr-1006',
+  mouseEncoding: 'sgr-1006',
+  mouseProtocols: ['sgr-1006', 'urxvt-1015', 'x10'],
   supportsAlternateScreen: 'yes',
   imageProtocol: 'kitty',
   multiplexer: 'none',
@@ -157,6 +163,9 @@ const TMUX: TerminalProfile = {
   supportsProgress: 'no',
   supportsTrueColor: 'yes',
   supportsMouse: 'yes',
+  mouseTracking: 'sgr-1006',
+  mouseEncoding: 'sgr-1006',
+  mouseProtocols: ['sgr-1006', 'urxvt-1015', 'x10'],
   supportsAlternateScreen: 'yes',
   imageProtocol: null,
   multiplexer: 'tmux',
@@ -189,6 +198,9 @@ const SSH: TerminalProfile = {
   supportsProgress: 'no',
   supportsTrueColor: 'unknown',
   supportsMouse: 'yes',
+  mouseTracking: 'sgr-1006',
+  mouseEncoding: 'sgr-1006',
+  mouseProtocols: ['sgr-1006', 'x10'],
   supportsAlternateScreen: 'yes',
   imageProtocol: null,
   multiplexer: 'none',
@@ -360,8 +372,15 @@ const PROFILE_LIST: readonly TerminalProfile[] = [
   unknownConservativeDefaults(),
 ]
 
+function freezeProfile(profile: TerminalProfile): TerminalProfile {
+  return Object.freeze({
+    ...profile,
+    ...(profile.mouseProtocols === undefined ? {} : { mouseProtocols: Object.freeze([...profile.mouseProtocols]) }),
+  })
+}
+
 export const PROFILES: ReadonlyMap<string, TerminalProfile> = new Map(
-  PROFILE_LIST.map((profile) => [profile.id, Object.freeze({ ...profile })]),
+  PROFILE_LIST.map((profile) => [profile.id, freezeProfile(profile)]),
 )
 
 export function getProfile(id: string): TerminalProfile {

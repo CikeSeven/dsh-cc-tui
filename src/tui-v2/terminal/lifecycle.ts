@@ -55,8 +55,10 @@
  * Dependency rule (§4.3): node + import type model/renderer contracts only.
  */
 import type { Clock, SerializableValue } from '../model/schema.js'
-import type { TerminalModeSnapshot } from '../renderer/frame.js'
+import type { MouseTrackingMode, TerminalModeSnapshot } from '../renderer/frame.js'
 import * as ansi from './ansi.js'
+import { QUERY_ATTEMPT_TIMEOUT_MS } from './query.js'
+import type { KittyKeyboardNegotiator } from './kitty-keyboard.js'
 import type { InputStdin, TerminalInputSource } from './input.js'
 import type { Capability, TerminalProfile } from './profile.js'
 import type {
@@ -136,11 +138,17 @@ export interface LifecycleDiagnostic {
   readonly details?: SerializableValue
 }
 
+export interface LifecycleMouseOptions {
+  readonly tracking: Exclude<MouseTrackingMode, 'off' | 'sgr-1006' | 'urxvt-1015'>
+  readonly encoding: 'sgr-1006' | 'urxvt-1015' | 'x10'
+}
+
 export interface LifecycleStartOptions {
   /** Default true. Requires profile.supportsAlternateScreen === 'yes'. */
   readonly alternateScreen?: boolean
   readonly bracketedPaste?: boolean
-  readonly mouse?: boolean
+  /** `true` uses the profile/default pair; strings retain legacy combined modes. */
+  readonly mouse?: boolean | MouseTrackingMode | LifecycleMouseOptions
   readonly focusReporting?: boolean
   readonly kittyKeyboard?: boolean
   readonly syncOutput?: boolean
@@ -166,6 +174,8 @@ export interface TerminalLifecycleOptions {
    */
   readonly processHost?: ProcessSignalHost
   readonly generation?: number
+  /** Optional query-backed Kitty keyboard negotiator; absent keeps legacy push/pop. */
+  readonly kittyKeyboardNegotiator?: KittyKeyboardNegotiator
   readonly onDiagnostic?: (diagnostic: LifecycleDiagnostic) => void
   readonly onRequestStop?: (reason: LifecycleStopReason) => void
   /** SIGCONT: a full redraw is required after revival. */
@@ -205,7 +215,7 @@ interface ModeTracking {
   rawInput: boolean
   alternateScreen: boolean
   bracketedPaste: boolean
-  mouse: boolean
+  mouse: MouseTrackingMode
   focusReporting: boolean
   kittyKeyboard: boolean
   syncOutput: boolean
@@ -226,8 +236,34 @@ export interface ProcessSignalHost {
 
 type LifecycleAction = Extract<TerminalLifecycleOperation, { kind: 'lifecycle' }>['action']
 
-function lifecycleOp(action: LifecycleAction, enabled: boolean): TerminalControlOperation {
-  return { kind: 'lifecycle', operation: { kind: 'lifecycle', action, enabled } }
+function lifecycleOp(action: LifecycleAction, enabled: boolean, mouseMode?: MouseTrackingMode, mouseEncoding?: LifecycleMouseOptions['encoding']): TerminalControlOperation {
+  return {
+    kind: 'lifecycle',
+    operation: {
+      kind: 'lifecycle',
+      action,
+      enabled,
+      ...(mouseMode === undefined ? {} : { mouseMode }),
+      ...(mouseEncoding === undefined ? {} : { mouseEncoding }),
+    },
+  }
+}
+
+function profileMouseOptions(profile: TerminalProfile): LifecycleMouseOptions | null {
+  const tracking = profile.mouseTracking ?? 'sgr-1006'
+  const encoding = profile.mouseEncoding ?? (tracking === 'urxvt-1015' ? 'urxvt-1015' : tracking === 'x10-1000' ? 'x10' : 'sgr-1006')
+  if (tracking === 'off') return null
+  if (tracking === 'sgr-1006' || tracking === 'urxvt-1015') {
+    if (encoding !== 'sgr-1006' && encoding !== 'urxvt-1015') return null
+    return { tracking: 'button-1002', encoding }
+  }
+  if (tracking === 'x10-1000') return encoding === 'x10' ? { tracking, encoding } : null
+  if (encoding !== 'sgr-1006' && encoding !== 'urxvt-1015') return null
+  return { tracking, encoding }
+}
+
+function canonicalMouseMode(mouse: LifecycleMouseOptions): MouseTrackingMode {
+  return mouse.encoding === 'sgr-1006' ? 'sgr-1006' : mouse.encoding === 'urxvt-1015' ? 'urxvt-1015' : 'x10-1000'
 }
 
 class TerminalLifecycleImpl implements TerminalLifecycle {
@@ -242,6 +278,7 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
   private readonly onRequestStop: TerminalLifecycleOptions['onRequestStop']
   private readonly onResume: TerminalLifecycleOptions['onResume']
   private readonly onProcessError: TerminalLifecycleOptions['onProcessError']
+  private readonly kittyKeyboardNegotiator: KittyKeyboardNegotiator | undefined
 
   private state: TerminalLifecycleState = 'created'
   private currentGeneration: number
@@ -253,7 +290,7 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
     rawInput: false,
     alternateScreen: false,
     bracketedPaste: false,
-    mouse: false,
+    mouse: 'off',
     focusReporting: false,
     kittyKeyboard: false,
     syncOutput: false,
@@ -279,6 +316,7 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
     this.onRequestStop = options.onRequestStop
     this.onResume = options.onResume
     this.onProcessError = options.onProcessError
+    this.kittyKeyboardNegotiator = options.kittyKeyboardNegotiator
     this.currentGeneration = options.generation ?? 0
   }
 
@@ -298,7 +336,7 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
     const want = {
       alternateScreen: options.alternateScreen ?? true,
       bracketedPaste: options.bracketedPaste ?? true,
-      mouse: options.mouse ?? true,
+      mouse: options.mouse === undefined ? true : options.mouse,
       focusReporting: options.focusReporting ?? true,
       kittyKeyboard: options.kittyKeyboard ?? true,
       syncOutput: options.syncOutput ?? true,
@@ -342,11 +380,28 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
         apply: () => (this.mode.bracketedPaste = true),
       })
     }
-    if (want.mouse) {
+    const mouseOptions: LifecycleMouseOptions | null = want.mouse === true
+      ? profileMouseOptions(this.profile)
+      : want.mouse === false || want.mouse === 'off'
+        ? null
+        : typeof want.mouse === 'string'
+          ? want.mouse === 'sgr-1006'
+            ? { tracking: 'button-1002', encoding: 'sgr-1006' }
+            : want.mouse === 'urxvt-1015'
+              ? { tracking: 'button-1002', encoding: 'urxvt-1015' }
+              : want.mouse === 'x10-1000'
+                ? { tracking: 'x10-1000', encoding: 'x10' }
+                : { tracking: want.mouse, encoding: 'sgr-1006' }
+          : want.mouse
+    if (want.mouse === true && this.profile.supportsMouse === 'yes' && mouseOptions === null) {
+      this.diagnostic('capability-skipped', 'mouse capability was denied because tracking/encoding configuration is invalid', { capability: 'supportsMouse' })
+    }
+    if (mouseOptions !== null) {
+      const mouseMode = canonicalMouseMode(mouseOptions)
       this.pushCapabilityStep(steps, 'supportsMouse', {
         name: 'mouse',
-        operation: lifecycleOp('mouse', true),
-        apply: () => (this.mode.mouse = true),
+        operation: lifecycleOp('mouse', true, mouseOptions.tracking, mouseOptions.encoding),
+        apply: () => (this.mode.mouse = mouseMode),
       })
     }
     if (want.focusReporting) {
@@ -356,10 +411,9 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
         apply: () => (this.mode.focusReporting = true),
       })
     }
-    if (want.kittyKeyboard) {
-      // No kitty action exists in the §5.6 lifecycle allowlist; the sequence
-      // lane carries it. Purpose 'pi-compatible': this is exactly the vendored
-      // ProcessTerminal negotiation sequence (push disambiguate flags = 1).
+    if (want.kittyKeyboard && this.kittyKeyboardNegotiator === undefined) {
+      // Compatibility path when no query transport is wired: this is exactly
+      // the established vendored push sequence.
       this.pushCapabilityStep(steps, 'supportsKittyKeyboard', {
         name: 'kitty-keyboard',
         operation: { kind: 'sequence', sequence: ansi.kittyKeyboardPush(1), purpose: 'pi-compatible' },
@@ -403,6 +457,24 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
     // Only now start the stdin tokenizer (modes are in place; query responses
     // and paste markers arriving from here on are parsed with full context).
     this.input.start()
+    if (want.kittyKeyboard && this.kittyKeyboardNegotiator !== undefined && this.profile.supportsKittyKeyboard === 'yes') {
+      // Negotiation is intentionally detached from the startup barrier: query
+      // timeout/failure must not delay the first frame or legacy key handling.
+      void this.kittyKeyboardNegotiator.negotiate(this.currentGeneration).then(
+        (negotiated) => {
+          if (negotiated.generation !== this.currentGeneration || this.state !== 'active') return
+          if (negotiated.state === 'active') {
+            this.mode.kittyKeyboard = true
+            this.input.setKittyKeyboardActive(true)
+          } else {
+            this.diagnostic('kitty-keyboard-fallback', 'Kitty keyboard negotiation failed; legacy key parsing remains active', {
+              reason: negotiated.reason,
+            })
+          }
+        },
+        () => this.diagnostic('kitty-keyboard-fallback', 'Kitty keyboard negotiation threw; legacy key parsing remains active', {}),
+      )
+    }
     this.state = 'active'
     this.diagnostic('active', 'terminal takeover complete', { profileId: this.profile.id })
     return { status: 'active' }
@@ -450,7 +522,23 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
 
     let deadlineHit = false
     if (this.tookOver) {
-      deadlineHit = await this.runCleanupSequence(preserveScreen, deadlineAt)
+      if (this.mode.kittyKeyboard && this.kittyKeyboardNegotiator !== undefined) {
+        const remaining = deadlineAt - this.clock.now()
+        if (remaining > 0) {
+          const negotiated = await this.withDeadline('kitty-keyboard-cleanup', this.kittyKeyboardNegotiator.disable(this.currentGeneration), Math.min(QUERY_ATTEMPT_TIMEOUT_MS, remaining))
+          if (negotiated.timedOut) {
+            deadlineHit = true
+            this.diagnostic('cleanup-op-timeout', 'Kitty keyboard cleanup did not settle; continuing best-effort stop', {})
+          }
+        } else {
+          deadlineHit = true
+        }
+        // Whether the optional transport succeeded or not, do not emit a
+        // second pop from the generic cleanup sequence.
+        this.mode.kittyKeyboard = false
+        this.input.setKittyKeyboardActive(false)
+      }
+      deadlineHit = (await this.runCleanupSequence(preserveScreen, deadlineAt)) || deadlineHit
     }
 
     // Wait for the writer queue to settle, then run the writer's own stop
@@ -513,8 +601,8 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
         },
       })
     }
-    if (this.mode.mouse) {
-      steps.push({ name: 'mouse-off', operation: lifecycleOp('mouse', false), apply: () => (this.mode.mouse = false) })
+    if (this.mode.mouse !== 'off') {
+      steps.push({ name: 'mouse-off', operation: lifecycleOp('mouse', false, 'off'), apply: () => (this.mode.mouse = 'off') })
     }
     if (this.mode.bracketedPaste) {
       steps.push({ name: 'paste-off', operation: lifecycleOp('paste', false), apply: () => (this.mode.bracketedPaste = false) })
@@ -578,11 +666,23 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
         error: { code: 'capability-refused', message: 'mouse support is not confirmed by the profile', generation: this.currentGeneration, recoverable: true },
       }
     }
-    const result = await this.withDeadline('mouse', this.writer.writeControl(lifecycleOp('mouse', enabled), this.currentGeneration), LIFECYCLE_OP_TIMEOUT_MS)
+    const mouse = enabled ? profileMouseOptions(this.profile) : null
+    if (enabled && mouse === null) {
+      this.diagnostic('capability-refused', 'mouse enable refused: profile tracking/encoding pair is invalid', { capability: 'mouse' })
+      return {
+        status: 'error',
+        error: { code: 'capability-refused', message: 'mouse tracking/encoding pair is invalid', generation: this.currentGeneration, recoverable: true },
+      }
+    }
+    const mode: MouseTrackingMode = mouse === null ? 'off' : canonicalMouseMode(mouse)
+    const result = await this.withDeadline('mouse', this.writer.writeControl(
+      lifecycleOp('mouse', enabled, mouse?.tracking ?? 'off', mouse?.encoding),
+      this.currentGeneration,
+    ), LIFECYCLE_OP_TIMEOUT_MS)
     if (result.timedOut) {
       return { status: 'error', error: { code: 'op-timeout', message: 'mouse toggle timed out', generation: this.currentGeneration, recoverable: true } }
     }
-    if (result.result !== null && result.result.status === 'written') this.mode.mouse = enabled
+    if (result.result !== null && result.result.status === 'written') this.mode.mouse = mode
     return result.result ?? { status: 'error', error: { code: 'op-failed', message: 'mouse toggle failed', generation: this.currentGeneration, recoverable: true } }
   }
 
@@ -622,7 +722,16 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
     const steps: Array<{ readonly name: string; readonly operation: TerminalControlOperation; readonly apply: () => void }> = []
     if (mode.alternateScreen) steps.push({ name: 'resume-alt', operation: lifecycleOp('enter-alt', true), apply: () => { this.mode.alternateScreen = true } })
     if (mode.bracketedPaste && this.profile.supportsBracketedPaste === 'yes') steps.push({ name: 'resume-paste', operation: lifecycleOp('paste', true), apply: () => { this.mode.bracketedPaste = true } })
-    if (mode.mouse !== 'off' && this.profile.supportsMouse === 'yes') steps.push({ name: 'resume-mouse', operation: lifecycleOp('mouse', true), apply: () => { this.mode.mouse = true } })
+    if (mode.mouse !== 'off' && this.profile.supportsMouse === 'yes') {
+      const mouse = mode.mouse === 'sgr-1006'
+        ? { tracking: 'button-1002' as const, encoding: 'sgr-1006' as const }
+        : mode.mouse === 'urxvt-1015'
+          ? { tracking: 'button-1002' as const, encoding: 'urxvt-1015' as const }
+          : mode.mouse === 'x10-1000'
+            ? { tracking: 'x10-1000' as const, encoding: 'x10' as const }
+            : { tracking: mode.mouse, encoding: 'sgr-1006' as const }
+      steps.push({ name: 'resume-mouse', operation: lifecycleOp('mouse', true, mouse.tracking, mouse.encoding), apply: () => { this.mode.mouse = mode.mouse } })
+    }
     if (mode.focusReporting && this.profile.supportsFocusReporting === 'yes') steps.push({ name: 'resume-focus', operation: lifecycleOp('focus', true), apply: () => { this.mode.focusReporting = true } })
     if (mode.kittyKeyboard && this.profile.supportsKittyKeyboard === 'yes') steps.push({ name: 'resume-kitty', operation: { kind: 'sequence', sequence: ansi.kittyKeyboardPush(1), purpose: 'pi-compatible' }, apply: () => { this.mode.kittyKeyboard = true; this.input.setKittyKeyboardActive(true) } })
     if (mode.syncOutput && this.profile.supportsSyncOutput === 'yes') steps.push({ name: 'resume-sync', operation: lifecycleOp('sync-output', true), apply: () => { this.mode.syncOutput = true } })
@@ -748,9 +857,9 @@ class TerminalLifecycleImpl implements TerminalLifecycle {
     return {
       alternateScreen: this.mode.alternateScreen,
       rawInput: this.mode.rawInput,
-      // The lifecycle mouse op enables 1002 tracking + 1006 encoding; the
-      // VT oracle normalizes that combination to the flat enum value below.
-      mouse: this.mode.mouse ? 'sgr-1006' : 'off',
+      // Preserve the full tracking/encoding mode selected for this session;
+      // `off` is distinct from every enabled protocol.
+      mouse: this.mode.mouse,
       bracketedPaste: this.mode.bracketedPaste,
       syncOutput: this.mode.syncOutput,
       autowrap: true,

@@ -55,6 +55,7 @@ function brand(raw: string): ControlSequence {
 
 const MAX_CURSOR_PARAM = 9999
 const MAX_IMAGE_PAYLOAD_BYTES = 8 * 1024 * 1024
+const MAX_OSC52_PAYLOAD_BYTES = 8 * 1024 * 1024
 const MAX_OSC8_URI_LENGTH = 2083
 const MAX_TITLE_LENGTH = 256
 
@@ -551,7 +552,9 @@ export const queryColorScheme = (): ControlSequence => brand(`${ESC}[?996n`)
 // ---------------------------------------------------------------------------
 
 export function osc52Clipboard(payloadBase64: string): ControlSequence {
-  return brand(`${ESC}]52;c;${requireBase64Payload(payloadBase64)}${BEL}`)
+  const payload = requireBase64Payload(payloadBase64)
+  if (payload.length > MAX_OSC52_PAYLOAD_BYTES) throw new RangeError(`OSC52 payload exceeds ${MAX_OSC52_PAYLOAD_BYTES} chars`)
+  return brand(`${ESC}]52;c;${payload}${BEL}`)
 }
 
 // ---------------------------------------------------------------------------

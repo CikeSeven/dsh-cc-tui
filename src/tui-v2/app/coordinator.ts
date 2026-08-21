@@ -113,7 +113,6 @@ import {
   createInputSource,
   type InputStdin,
   type KeyPayload,
-  type MousePayload,
   type ResizePayload,
 } from '../terminal/input.js';
 import {
@@ -122,8 +121,11 @@ import {
   type ProcessSignalHost,
   type TerminalLifecycle,
 } from '../terminal/lifecycle.js';
+import { capabilitySupport, detectTerminalCapabilities, type TerminalCapabilitySnapshot } from '../terminal/capabilities.js';
 import type { TerminalProfile } from '../terminal/profile.js';
 import { createScreenTakeover } from '../terminal/takeover.js';
+import { createQueryBroker } from '../terminal/query.js';
+import { createKittyKeyboardNegotiator } from '../terminal/kitty-keyboard.js';
 import { createTerminalWriter } from '../terminal/writer.js';
 import { createPluginRowComponent } from '../scenes/row-component.js';
 import { createPluginUIRuntime, type PluginUIRuntime, type PluginUIRuntimeDiagnostics } from '../scenes/runtime.js';
@@ -144,6 +146,7 @@ import { createStreamingController } from '../controllers/streaming.js';
 import { createTerminalLifecycleController } from '../controllers/terminal-lifecycle.js';
 import { createReplayController, type ReplayController } from '../controllers/replay.js';
 import { createScrollingController, type ScrollingController } from '../controllers/scrolling.js';
+import { createMouseController, type MouseController } from '../controllers/mouse.js';
 import { createSurfaceController, type SurfaceController } from '../controllers/surfaces.js';
 import {
   createCommandsController,
@@ -197,7 +200,7 @@ import { createExternalEditorController, type ExternalEditorController } from '.
 import { createUpdateController, type UpdateController, type UpdateRequest } from '../controllers/update.js';
 import { createNotificationController, type NotificationController, type NotificationView } from '../controllers/notifications.js';
 import { createPreferencesController, type PreferenceController } from '../controllers/preferences.js';
-import { createThemeRegistry } from '../theme/registry.js';
+import { createThemeRegistry, resolveThemeForProfile, type ThemeDescriptor } from '../theme/registry.js';
 import { isLanguageId } from '../i18n/catalog.js';
 
 export type CoordinatorPhase = 'created' | 'starting' | 'active' | 'stopping' | 'stopped' | 'failed';
@@ -251,9 +254,11 @@ export interface TuiV2CoordinatorOptions {
   /** The single byte sink (the ONLY place frames leave the process). */
   readonly stream: Writable;
   readonly profile: TerminalProfile;
+  readonly capabilities?: TerminalCapabilitySnapshot;
   readonly clock: Clock;
   readonly mode?: TerminalMode;
   readonly theme?: string;
+  readonly themeDescriptors?: readonly ThemeDescriptor[];
   readonly language?: string;
   readonly welcomeText?: string;
   readonly initialResetReason?: ResetReason;
@@ -313,6 +318,7 @@ export interface CoordinatorDiagnostics {
   readonly terminal: ReturnType<ReturnType<typeof createTerminalLifecycleController>['diagnostics']>;
   readonly replay: ReturnType<ReplayController['diagnostics']>;
   readonly scrolling: ReturnType<ScrollingController['diagnostics']>;
+  readonly mouse: ReturnType<MouseController['diagnostics']>;
   readonly commands: ReturnType<CommandsController['diagnostics']>;
   readonly dialogs: ReturnType<DialogsController['diagnostics']>;
   readonly interactiveOverlays: ReturnType<InteractiveOverlaysController['diagnostics']>;
@@ -338,6 +344,7 @@ export interface CoordinatorControllers {
   readonly terminal: ReturnType<typeof createTerminalLifecycleController>;
   readonly replay: ReplayController;
   readonly scrolling: ScrollingController;
+  readonly mouse: MouseController;
   readonly commands: CommandsController;
   readonly dialogs: DialogsController;
   readonly interactiveOverlays: InteractiveOverlaysController;
@@ -425,6 +432,12 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
 
   const width0 = options.stdout.columns ?? profile.columns;
   const height0 = options.stdout.rows ?? profile.rows;
+  const capabilities = options.capabilities ?? detectTerminalCapabilities({
+    profile,
+    generation: 0,
+    stdinIsTTY: options.stdin.isTTY === true,
+    rawModeAvailable: typeof options.stdin.setRawMode === 'function',
+  });
   const modeSelection = selectTerminalMode(profile, options.mode);
 
   let state: UiState = initialUiState({
@@ -447,6 +460,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   let lastFrameFullRedrawReason: string | null = null;
   /** Bytes stay process-local; AppEvents/trace receive only hash metadata. */
   const imageStore = createImageStore();
+  const queryBroker = createQueryBroker({ clock });
 
   const reducer: Reducer = createReducer({ clock });
   const meta = createEventMetaFactory({
@@ -459,9 +473,14 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
   // ------------------------------------------------------- editor binding
 
   const themeRegistry = createThemeRegistry({
-    initial: [{ id: 'default', displayName: 'Default', base: 'default', roles: DEFAULT_COMPONENT_THEME.roles }],
+    initial: [
+      { id: 'default', displayName: 'Default', base: 'default', roles: DEFAULT_COMPONENT_THEME.roles },
+      ...(options.themeDescriptors ?? []),
+    ],
   })
-  let theme = themeRegistry.resolve(options.theme ?? 'default')
+  const initialThemeResolution = resolveThemeForProfile(themeRegistry, options.theme ?? 'default', profile)
+  let theme = initialThemeResolution.theme
+  if (initialThemeResolution.degraded) diagnostic('theme/degraded', 'custom theme truecolor was quantized for the host profile', { reason: initialThemeResolution.reason ?? 'truecolor-unsupported', profileId: profile.id })
   const editorMirror = { text: '' };
   /** Renderer reference used by preference changes to invalidate caches. */
   let baseRendererForTheme: BaseRenderer | null = null
@@ -794,7 +813,12 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
         ...(change.kind === 'theme' ? { theme: change.value } : { language: change.value }),
       })
       if (change.kind === 'theme') {
-        theme = themeRegistry.resolve(change.value)
+        const resolution = resolveThemeForProfile(themeRegistry, change.value, profile)
+        theme = resolution.theme
+        if (resolution.degraded) {
+          diagnostic('theme/degraded', 'custom theme truecolor was quantized for the host profile', { reason: resolution.reason ?? 'truecolor-unsupported', profileId: profile.id })
+          notify('Theme colors were degraded for this terminal', { color: 'warning' })
+        }
         const rendererForTheme = baseRendererForTheme as BaseRenderer | null
         rendererForTheme?.applyEnvironmentChange({ themeChanged: true })
         if (phase === 'active') scheduler.requestRender('sync', getScheduledState)
@@ -1064,6 +1088,14 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     },
     onDiagnostic: (d) => diagnostic(`scroll/${d.code}`, d.message),
   });
+  const mouseController = createMouseController({
+    mode: modeSelection.ok ? modeSelection.mode : 'inline',
+    enabled: capabilitySupport(capabilities, 'mouse'),
+    supportedProtocols: capabilities.mouse.supportedProtocols.map((protocol) => protocol === 'sgr-1006' ? 'sgr-1006' : protocol === 'urxvt-1015' ? 'urxvt-1015' : 'x10'),
+    scrolling: scrollingController,
+    hitTest: () => state.focus.target === 'overlay' ? 'overlay' : state.focus.target === 'scene' ? 'cursor' : 'selection',
+    onDiagnostic: (d) => diagnostic(d.code, d.message, { mode: d.mode, ...(d.protocol === undefined ? {} : { protocol: d.protocol }) }),
+  });
 
   const dialogsController = createDialogsController({
     dispatch: (event) => streamingController.ingest(event),
@@ -1232,25 +1264,20 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     generation: 0,
     clock,
     profile,
+    queryBroker,
     onEvent: (event) => {
       try {
         if (event.kind === 'resize') {
           const payload = event.payload as ResizePayload;
           lifecycleController.handleResize(payload.columns, payload.rows);
         } else if (event.kind === 'mouse') {
-          const payload = event.payload as MousePayload;
-          // A plugin scene owns the pointer while it holds focus (§7.4).
+          // The mouse controller owns pointer routing; scene focus remains an
+          // explicit owner and never falls through to the editor.
           if (state.focus.target === 'scene') {
             pluginRuntime?.handleInput(event);
             return;
           }
-          // Wheel events scroll the transcript; other mouse events are
-          // counted-and-dropped (WP-05b surface).
-          if (payload.action === 'wheel' && (payload.wheel === 'up' || payload.wheel === 'down')) {
-            if (!scrollingController.handleWheel(payload.wheel)) inputController.handleEvent(event);
-          } else {
-            inputController.handleEvent(event);
-          }
+          mouseController.handleEvent(event);
         } else if (event.kind === 'key') {
           const payload = event.payload as KeyPayload;
           if (payload.eventType !== 'release' && payload.key === 'ctrl+t' && state.focus.target !== 'scene') {
@@ -1360,16 +1387,27 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     stream: foreignGuard?.writerStream ?? options.stream,
     clock,
     profile,
+    queryBroker,
+    queryTokenSink: (token) => input.registerQueryToken(token),
     imageStore,
   });
+  let lifecycle!: TerminalLifecycle;
+  const kittyKeyboardNegotiator = createKittyKeyboardNegotiator({
+    writer,
+    clock,
+    generation: () => lifecycle.generation(),
+    setInputActive: (active) => input.setKittyKeyboardActive(active),
+    onDiagnostic: (entry) => diagnostic(entry.code, entry.reason, { generation: entry.generation }),
+  });
 
-  const lifecycle: TerminalLifecycle = createTerminalLifecycle({
+  lifecycle = createTerminalLifecycle({
     writer,
     input,
     profile,
     clock,
     stdin: options.stdin,
     stdout: options.stdout,
+    kittyKeyboardNegotiator,
     ...(options.processHost !== undefined ? { processHost: options.processHost } : {}),
     onRequestStop: (reason) => lifecycleController.handleStopRequest(reason),
     onResume: () => lifecycleController.handleResume(),
@@ -1397,7 +1435,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
     clipboardController = createClipboardController({
       capability: options.clipboardCapability,
       generation: () => lifecycle.generation(),
-      profileSupportsOsc52: () => profile.supportsOsc52 === 'yes',
+      profileSupportsOsc52: () => capabilitySupport(capabilities, 'osc52'),
       writer,
       insertText: (text) => editorBinding.insertPaste?.(text),
       stageImage: async (input) => {
@@ -1677,11 +1715,17 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       }
       const result = await lifecycle.start({
         alternateScreen: modeSelection.mode === 'fullscreen',
-        bracketedPaste: profile.supportsBracketedPaste === 'yes',
-        mouse: false,
-        focusReporting: false,
-        kittyKeyboard: profile.supportsKittyKeyboard === 'yes',
-        syncOutput: profile.supportsSyncOutput === 'yes',
+        bracketedPaste: capabilitySupport(capabilities, 'bracketedPaste'),
+        mouse: capabilities.mouse.enabled !== 'yes' || capabilities.mouse.encoding === 'none'
+          ? false
+          : capabilities.mouse.encoding === 'x10'
+            ? { tracking: 'x10-1000', encoding: 'x10' }
+            : capabilities.mouse.encoding === 'urxvt-1015'
+              ? { tracking: 'button-1002', encoding: 'urxvt-1015' }
+              : { tracking: 'button-1002', encoding: 'sgr-1006' },
+        focusReporting: capabilitySupport(capabilities, 'focusReporting'),
+        kittyKeyboard: capabilitySupport(capabilities, 'kittyKeyboard'),
+        syncOutput: capabilitySupport(capabilities, 'syncOutput'),
         hideCursor: true,
       });
       if (result.status !== 'active') {
@@ -1806,6 +1850,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       terminal: lifecycleController,
       replay: replayController,
       scrolling: scrollingController,
+      mouse: mouseController,
       commands: commandsController,
       dialogs: dialogsController,
       interactiveOverlays: interactiveOverlaysController,
@@ -1838,6 +1883,7 @@ export function createTuiV2Coordinator(options: TuiV2CoordinatorOptions): TuiV2C
       terminal: lifecycleController.diagnostics(),
       replay: replayController.diagnostics(),
       scrolling: scrollingController.diagnostics(),
+      mouse: mouseController.diagnostics(),
       commands: commandsController.diagnostics(),
       dialogs: dialogsController.diagnostics(),
       interactiveOverlays: interactiveOverlaysController.diagnostics(),

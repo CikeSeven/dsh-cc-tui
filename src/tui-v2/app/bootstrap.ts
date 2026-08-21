@@ -34,6 +34,7 @@ import { readLangPref, writeLangPref, setLang, isLang } from '../../i18n.js';
 import type { TerminalMode } from '../model/schema.js';
 import type { ChannelCommands, ChannelUiAdapter } from '../controllers/session-events.js';
 import type { InputStdin } from '../terminal/input.js';
+import { detectTerminalCapabilities, type TerminalCapabilitySnapshot } from '../terminal/capabilities.js';
 import { unknownConservativeDefaults, type TerminalProfile } from '../terminal/profile.js';
 import {
   createTuiV2Coordinator,
@@ -41,6 +42,7 @@ import {
   type CoordinatorDiagnostic,
   type TuiV2Coordinator,
 } from './coordinator.js';
+import type { ThemeDescriptor } from '../theme/registry.js';
 
 export interface TuiV2AppOptions {
   readonly channel: CoordinatorChannel;
@@ -49,9 +51,12 @@ export interface TuiV2AppOptions {
   /** Present for interface completeness; the skeleton does not write it. */
   readonly stderr?: NodeJS.WriteStream;
   readonly profile?: TerminalProfile;
+  /** Optional precomputed snapshot for embedders; production derives one safely. */
+  readonly capabilities?: TerminalCapabilitySnapshot;
   readonly clock?: Clock;
   readonly mode?: TerminalMode;
   readonly theme?: string;
+  readonly themeDescriptors?: readonly ThemeDescriptor[];
   readonly language?: string;
   readonly welcomeText?: string;
   readonly trajectory?: boolean;
@@ -90,6 +95,13 @@ export function createTuiV2App(options: TuiV2AppOptions): TuiV2App {
     columns: stdout.columns ?? options.profile?.columns ?? 80,
     rows: stdout.rows ?? options.profile?.rows ?? 24,
   };
+  const capabilities = options.capabilities ?? detectTerminalCapabilities({
+    profile,
+    generation: 0,
+    stdinIsTTY: stdin.isTTY === true,
+    rawModeAvailable: typeof stdin.setRawMode === 'function',
+    environment: process.env,
+  })
   const startupTheme = options.theme ?? process.env.DSH_TUI_THEME ?? readThemePref() ?? 'default'
   const startupLanguage = isLang(process.env.DSH_TUI_LANG)
     ? process.env.DSH_TUI_LANG
@@ -100,9 +112,11 @@ export function createTuiV2App(options: TuiV2AppOptions): TuiV2App {
     stdout,
     stream: stdout as unknown as Writable,
     profile,
+    capabilities,
     clock: options.clock ?? realClock,
     ...(options.mode !== undefined ? { mode: options.mode } : {}),
     theme: startupTheme,
+    ...(options.themeDescriptors !== undefined ? { themeDescriptors: options.themeDescriptors } : {}),
     language: startupLanguage,
     ...(options.welcomeText !== undefined ? { welcomeText: options.welcomeText } : {}),
     ...(options.trajectory !== undefined ? { trajectory: options.trajectory } : {}),

@@ -116,7 +116,7 @@ import {
 // ---------------------------------------------------------------------------
 
 export type TerminalLifecycleOperation =
-  | { kind: 'lifecycle'; action: 'enter-raw' | 'exit-raw' | 'enter-alt' | 'exit-alt' | 'mouse' | 'paste' | 'focus' | 'sync-output' | 'cursor'; enabled: boolean }
+  | { kind: 'lifecycle'; action: 'enter-raw' | 'exit-raw' | 'enter-alt' | 'exit-alt' | 'mouse' | 'paste' | 'focus' | 'sync-output' | 'cursor'; enabled: boolean; mouseMode?: import('../renderer/frame.js').MouseTrackingMode; mouseEncoding?: 'sgr-1006' | 'urxvt-1015' | 'x10' }
   | { kind: 'cursor-move'; delta: number }
   | { kind: 'clear'; scope: 'line' | 'from-cursor' | 'screen' }
   | { kind: 'title'; value: string }
@@ -681,10 +681,28 @@ export function encodeLifecycleOperation(operation: TerminalLifecycleOperation):
           return operation.enabled ? ansi.decset(1049) : ansi.decrst(1049)
         case 'exit-alt':
           return operation.enabled ? ansi.decrst(1049) : ''
-        case 'mouse':
-          return operation.enabled
-            ? ansi.decset(1002) + ansi.decset(1006)
-            : ansi.decrst(1000) + ansi.decrst(1002) + ansi.decrst(1003) + ansi.decrst(1006) + ansi.decrst(1015)
+        case 'mouse': {
+          if (!operation.enabled) {
+            return ansi.decrst(1000) + ansi.decrst(1002) + ansi.decrst(1003) + ansi.decrst(1006) + ansi.decrst(1015)
+          }
+          const legacyMode = operation.mouseMode ?? 'sgr-1006'
+          const mode = legacyMode === 'sgr-1006' || legacyMode === 'urxvt-1015' ? 'button-1002' : legacyMode
+          const encoding = operation.mouseEncoding ?? (legacyMode === 'urxvt-1015' ? 'urxvt-1015' : legacyMode === 'x10-1000' ? 'x10' : 'sgr-1006')
+          const tracking: Record<string, number> = {
+            'x10-1000': 1000,
+            'normal-1002': 1002,
+            'button-1002': 1002,
+            'any-1003': 1003,
+          }
+          if (mode === 'off' || tracking[mode] === undefined) throw new TypeError(`unsupported mouse tracking mode '${String(mode)}'`)
+          if (encoding !== 'sgr-1006' && encoding !== 'urxvt-1015' && encoding !== 'x10') throw new TypeError(`unsupported mouse encoding '${String(encoding)}'`)
+          if (encoding === 'x10' && mode !== 'x10-1000') throw new TypeError('x10 encoding requires x10-1000 tracking')
+          if (mode === 'x10-1000' && encoding !== 'x10') throw new TypeError('x10-1000 tracking requires x10 encoding')
+          // Keep the established startup bytes byte-stable for the default pair.
+          if (mode === 'button-1002' && encoding === 'sgr-1006') return ansi.decset(1002) + ansi.decset(1006)
+          const encodingMode = encoding === 'sgr-1006' ? 1006 : encoding === 'urxvt-1015' ? 1015 : null
+          return ansi.decrst(1000) + ansi.decrst(1002) + ansi.decrst(1003) + ansi.decrst(1006) + ansi.decrst(1015) + ansi.decset(tracking[mode] as number) + (encodingMode === null ? '' : ansi.decset(encodingMode))
+        }
         case 'paste':
           return operation.enabled ? ansi.decset(2004) : ansi.decrst(2004)
         case 'focus':

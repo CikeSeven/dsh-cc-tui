@@ -19,7 +19,7 @@
 - disposition：`rewrite-v2`（旧入口删除，v2 fixture 替代）/ `remove` / `offline-baseline` /
   `unaffected`（不触及被迁移的渲染/插件面，原样保留并由 CI 持续证明；扩展原因见计划文档 15.1）。
 - status：`rewrite-v2` 行从 `open` 起步；`unaffected` 行当前 CI 已通过，记 `verified`。
-- 当前分布：severity {"P2":53,"P1":44,"P0":7}；disposition {"unaffected":52,"rewrite-v2":52}。
+- 当前分布：severity {"P2":53,"P1":49,"P0":8}；status {"verified":73,"open":32,"in-progress":5}；disposition {"unaffected":52,"rewrite-v2":57,"offline-baseline":1}。
 
 ## 机器可读矩阵
 
@@ -1419,10 +1419,36 @@
       "updatedAt": "2026-08-20T22:00:00.000Z",
       "traceId": "theme-i18n-notification@v1",
       "assertion": "bounded notification queue/dedupe/timeout and safe theme/language registry/picker semantics remain width-safe for CJK/emoji/control text",
-      "ciCommand": "node --test --import tsx/esm test/tui-v2/controllers-external-actions.test.ts test/tui-v2/components-external-actions.test.ts test/tui-v2/renderer-cells-width.test.ts",
+      "ciCommand": "node --test --import tsx/esm test/tui-v2/controllers-external-actions.test.ts test/tui-v2/components-external-actions.test.ts test/tui-v2/theme-i18n-width.test.ts test/tui-v2/renderer-cells-width.test.ts",
       "blockDefault": false,
       "deleteCondition": "theme/i18n picker integration and old theme/i18n scripts all pass before verified; no global preference import in v2 components",
       "disposition": "rewrite-v2"
+    },
+    {
+      "id": "REG-109",
+      "severity": "P1",
+      "owner": "tui-v2",
+      "status": "verified",
+      "updatedAt": "2026-08-21T00:00:00.000Z",
+      "traceId": "host-capabilities@v1",
+      "assertion": "fake-stream capability snapshot is canonical/immutable, query responses are generation-token fenced, mouse cleanup is complete, Kitty failure falls back to legacy keys, and OSC52 evidence is hash-only",
+      "ciCommand": "node --test --import tsx/esm test/tui-v2/terminal-capabilities.test.ts test/tui-v2/mouse-controller.test.ts test/tui-v2/kitty-keyboard.test.ts test/tui-v2/osc52-capability.test.ts && pnpm verify:tui-v2 -- --check host-capabilities",
+      "blockDefault": false,
+      "deleteCondition": "WP-09 retains the v2 terminal capability contracts and host-capabilities check; delete only with the terminal layer",
+      "disposition": "rewrite-v2"
+    },
+    {
+      "id": "REG-110",
+      "severity": "P1",
+      "owner": "tui-v2",
+      "status": "in-progress",
+      "updatedAt": "2026-08-21T00:00:00.000Z",
+      "traceId": "host-capabilities-real-host-manual@v1",
+      "assertion": "real Windows/ConPTY, macOS/iTerm2, SSH/tmux/VS Code/JetBrains hosts and real PTY runner validate capability negotiation and width behavior; CI fake profiles must not claim this coverage",
+      "ciCommand": "manual host matrix; pnpm verify:tui-v2 -- --check host-capabilities",
+      "blockDefault": false,
+      "deleteCondition": "Run and archive the declared real-host/PTY matrix with runner identity and unsupported-by-host evidence before changing to verified",
+      "disposition": "offline-baseline"
     },
     {
       "id": "REG-103",
