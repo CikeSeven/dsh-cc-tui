@@ -53,6 +53,7 @@
  */
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -71,6 +72,8 @@ interface CheckContext {
   output: string
   profile: string | null
   fixture: string | null
+  final: boolean
+  rollbackManifest: string | null
 }
 interface CheckResult {
   status: 'pass' | 'fail'
@@ -1741,6 +1744,314 @@ async function checkHostCapabilities(): Promise<CheckResult> {
 }
 
 // ---------------------------------------------------------------------------
+// v2-only staged/final gate + rollback preflight (WP-09a)
+// ---------------------------------------------------------------------------
+
+const V2_ONLY_FORBIDDEN_SPECIFIER = /(?:^|\/)tools\/tui-v2-baseline(?:\/|$)|^(?:react|react-reconciler|yoga|yoga-layout)(?:$|\/)/u
+const OLD_RENDERER_PACKAGE_SPECIFIER = /^(?:react|react-reconciler|yoga|yoga-layout)(?:$|\/)/u
+const V2_BOUNDARY_ROOTS = ['src/tui-v2'] as const
+const STAGED_V2_ONLY_ALLOWLIST = [
+  'src/ink/**',
+  'src/components/**',
+  'src/screens/**',
+  'src/native-ts/yoga-layout/**',
+  'src/ui.ts',
+  'src/dsh-adapter/plugin.ts',
+  'dependencies:react/react-reconciler',
+] as const
+const PRODUCTION_ENTRY_ROOTS = [
+  'src/index.ts',
+  'src/dsh-adapter/index.ts',
+  'src/dsh-adapter/plugin.ts',
+  'src/tui-v2/app/bootstrap.ts',
+] as const
+const UTC_DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u
+
+function sourceWithoutComments(source: string): string {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .split('\n')
+    .map((line) => line.replace(/(^|[^:])\/\/.*$/u, '$1'))
+    .join('\n')
+}
+
+function resolvesIntoLegacyRenderer(importer: string, specifier: string): boolean {
+  if (!specifier.startsWith('./') && !specifier.startsWith('../')) return false
+  const resolved = path.resolve(repoRoot, path.dirname(importer), specifier).split(path.sep).join('/')
+  const withoutJs = resolved.replace(/\.(?:mjs|cjs|jsx|js)$/u, '')
+  const srcRoot = path.join(repoRoot, 'src').split(path.sep).join('/')
+  return (
+    withoutJs === `${srcRoot}/ui` ||
+    withoutJs.startsWith(`${srcRoot}/ink/`) ||
+    withoutJs.startsWith(`${srcRoot}/screens/`) ||
+    withoutJs.startsWith(`${srcRoot}/components/`) ||
+    withoutJs.startsWith(`${srcRoot}/native-ts/yoga-layout/`)
+  )
+}
+
+async function scanImportBoundary(root: string, forbidden: RegExp): Promise<{ file: string; specifier: string }[]> {
+  const hits: { file: string; specifier: string }[] = []
+  const files = await walkCodeFiles(path.join(repoRoot, root), repoRoot)
+  for (const file of files) {
+    for (const specifier of await fileSpecifiers(file)) {
+      if (forbidden.test(specifier) || resolvesIntoLegacyRenderer(file, specifier)) hits.push({ file, specifier })
+    }
+  }
+  return hits
+}
+
+async function scanLegacySource(): Promise<{
+  switchHits: { file: string; line: number; text: string }[]
+  jsxHits: string[]
+  directHits: { file: string; specifier: string }[]
+}> {
+  const switchHits: { file: string; line: number; text: string }[] = []
+  const jsxHits: string[] = []
+  const directHits: { file: string; specifier: string }[] = []
+  const files = await walkCodeFiles(path.join(repoRoot, 'src'), repoRoot)
+  for (const extra of ['bin/dsh-tui.js', 'package.json']) {
+    if ((await stat(path.join(repoRoot, extra)).catch(() => null))?.isFile()) files.push(extra)
+  }
+  for (const file of files) {
+    const source = await readFile(path.join(repoRoot, file), 'utf8')
+    const clean = sourceWithoutComments(source)
+    clean.split('\n').forEach((line, index) => {
+      if (/DSH_TUI_RENDERER|renderer\s*(?:switch|selector)|(?:v1|v2)\s*renderer\s*(?:switch|fallback)/iu.test(line)) {
+        switchHits.push({ file, line: index + 1, text: line.trim().slice(0, 160) })
+      }
+    })
+    if (file.endsWith('.tsx') || /react\/jsx-runtime|jsxImportSource/iu.test(clean)) jsxHits.push(file)
+    for (const specifier of await fileSpecifiers(file)) {
+      if (OLD_RENDERER_PACKAGE_SPECIFIER.test(specifier) || resolvesIntoLegacyRenderer(file, specifier)) {
+        directHits.push({ file, specifier })
+      }
+    }
+  }
+  return { switchHits, jsxHits: [...new Set(jsxHits)].sort(), directHits }
+}
+
+function packageSurfaceViolations(): { files: string[]; exports: string[]; runtime: string[] } {
+  const manifestPath = path.join(repoRoot, 'package.json')
+  const packageJson = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>
+  const files = Array.isArray(packageJson.files)
+    ? packageJson.files.filter((item): item is string => typeof item === 'string' && /(^|\/)tools(?:\/|$)|tui-v2-baseline/u.test(item))
+    : []
+  const exports: string[] = []
+  const scanExports = (value: unknown, prefix = 'exports'): void => {
+    if (typeof value === 'string') {
+      if (/(^|\/)tools(?:\/|$)|tui-v2-baseline/u.test(value)) exports.push(`${prefix}:${value}`)
+      return
+    }
+    if (value !== null && typeof value === 'object') {
+      for (const [key, nested] of Object.entries(value as Record<string, unknown>)) scanExports(nested, `${prefix}.${key}`)
+    }
+  }
+  scanExports(packageJson.exports)
+  return { files, exports, runtime: [] }
+}
+
+interface RollbackPreflight {
+  readonly errors: readonly string[]
+  readonly deferred: readonly { readonly reason: string; readonly deferredTo: 'WP-09c' }[]
+  readonly details: Record<string, unknown>
+}
+
+export async function checkRollbackManifest(manifestPath: string | null): Promise<RollbackPreflight> {
+  if (manifestPath === null || manifestPath === '') {
+    return {
+      errors: [],
+      deferred: [{ reason: 'no immutable rollback-manifest.json supplied in this work package', deferredTo: 'WP-09c' }],
+      details: { status: 'deferred', path: null },
+    }
+  }
+  const errors: string[] = []
+  const deferred: { reason: string; deferredTo: 'WP-09c' }[] = []
+  let value: any
+  try {
+    value = JSON.parse(await readFile(path.resolve(manifestPath), 'utf8'))
+  } catch (error: any) {
+    return { errors: [`rollback manifest unreadable: ${String(error?.message || error)}`], deferred, details: { path: path.resolve(manifestPath) } }
+  }
+  const requiredString = (field: string): string => {
+    const current = field.split('.').reduce((cursor, key) => cursor?.[key], value)
+    if (typeof current !== 'string' || current === '') {
+      errors.push(`rollback manifest missing ${field}`)
+      return ''
+    }
+    return current
+  }
+  if (value?.schemaVersion !== 1) errors.push('rollback manifest schemaVersion must be 1')
+  const registry = requiredString('registry')
+  const packageName = requiredString('package')
+  const version = requiredString('version')
+  const tarball = requiredString('tarball')
+  const sha256 = requiredString('sha256')
+  if (sha256 !== '' && !/^[0-9a-f]{64}$/u.test(sha256)) errors.push('rollback manifest sha256 must be lowercase 64-hex')
+  if (tarball !== '' && path.basename(tarball) !== tarball) errors.push('rollback manifest tarball must be a basename')
+  if (registry !== '' && !/^[a-z][a-z0-9+.-]*:\/\//iu.test(registry)) errors.push('rollback manifest registry must be an absolute registry URL')
+  if (packageName !== '' && !/^@[^/]+\/[^/]+$/u.test(packageName)) errors.push('rollback manifest package must be scoped')
+  if (version !== '' && !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/u.test(version)) errors.push('rollback manifest version must be exact semver')
+  const signature = value?.signature
+  if (signature === null || typeof signature !== 'object') errors.push('rollback manifest signature is required')
+  else {
+    if (!['sigstore', 'gpg'].includes(signature.algorithm)) errors.push('rollback manifest signature.algorithm must be sigstore|gpg')
+    if (typeof signature.ref !== 'string' || signature.ref === '') errors.push('rollback manifest signature.ref is required')
+  }
+  const session = value?.sessionSchema
+  if (session === null || typeof session !== 'object' || !Number.isInteger(session.min) || !Number.isInteger(session.max) || session.min < 1 || session.max < session.min) {
+    errors.push('rollback manifest sessionSchema min/max are invalid')
+  }
+  const launcher = value?.launcher
+  if (launcher === null || typeof launcher !== 'object' || typeof launcher.command !== 'string' || launcher.command === '' || !Array.isArray(launcher.args) || !launcher.args.every((item: unknown) => typeof item === 'string') || !Number.isInteger(launcher.timeoutMs) || launcher.timeoutMs <= 0 || !Number.isInteger(launcher.retries) || launcher.retries < 0) {
+    errors.push('rollback manifest launcher contract is invalid')
+  }
+  const retention = value?.retention
+  if (retention === null || typeof retention !== 'object' || !Number.isInteger(retention.keepStableVersions) || retention.keepStableVersions < 1 || typeof retention.expiresAt !== 'string' || !UTC_DATE.test(retention.expiresAt)) {
+    errors.push('rollback manifest retention contract is invalid')
+  }
+  let tarballStatus: 'verified' | 'missing' | 'not-checked' = 'not-checked'
+  if (tarball !== '' && sha256 !== '' && errors.length === 0) {
+    const localTarball = path.join(path.dirname(path.resolve(manifestPath)), tarball)
+    try {
+      const bytes = await readFile(localTarball)
+      tarballStatus = 'verified'
+      if (sha256Hex(bytes) !== sha256) errors.push('rollback tarball sha256 does not match manifest')
+    } catch {
+      tarballStatus = 'missing'
+      deferred.push({ reason: 'exact rollback tarball is not present beside the manifest', deferredTo: 'WP-09c' })
+    }
+  }
+  return {
+    errors,
+    deferred,
+    details: {
+      path: path.resolve(manifestPath),
+      schemaVersion: value?.schemaVersion ?? null,
+      package: packageName || null,
+      version: version || null,
+      tarball: tarball || null,
+      tarballStatus,
+      signature: signature && typeof signature === 'object' ? { algorithm: signature.algorithm ?? null, refPresent: typeof signature.ref === 'string' && signature.ref !== '' } : null,
+      sessionSchema: session && typeof session === 'object' ? { min: session.min ?? null, max: session.max ?? null } : null,
+      launcher: launcher && typeof launcher === 'object' ? { command: launcher.command ?? null, timeoutMs: launcher.timeoutMs ?? null, retries: launcher.retries ?? null } : null,
+      retention: retention && typeof retention === 'object' ? { keepStableVersions: retention.keepStableVersions ?? null, expiresAt: retention.expiresAt ?? null } : null,
+    },
+  }
+}
+
+export async function checkV2Only(ctx: CheckContext): Promise<CheckResult> {
+  const finalMode = ctx.final || process.env.TUI_V2_FINAL === '1'
+  const errors: string[] = []
+  const deferred: { reason: string; deferredTo: 'WP-09b' | 'WP-09c' }[] = []
+  const details: Record<string, unknown> = { mode: finalMode ? 'final' : 'staged', deferred }
+
+  const boundaryHits: Record<string, { file: string; specifier: string }[]> = {}
+  for (const root of V2_BOUNDARY_ROOTS) {
+    boundaryHits[root] = await scanImportBoundary(root, V2_ONLY_FORBIDDEN_SPECIFIER)
+  }
+  const boundaryViolations = Object.values(boundaryHits).flat()
+  details.runtimeImportBoundary = {
+    roots: [...V2_BOUNDARY_ROOTS],
+    forbidden: ['tools/tui-v2-baseline', 'src/ink', 'src/ui', 'src/screens', 'legacy src/components', 'native-ts/yoga-layout', 'react', 'react-reconciler', 'yoga'],
+    violations: boundaryViolations,
+  }
+  for (const hit of boundaryViolations) errors.push(`v2-only runtime boundary: ${hit.file} imports ${hit.specifier}`)
+
+  const entryHits: { file: string; specifier: string }[] = []
+  for (const entry of PRODUCTION_ENTRY_ROOTS) {
+    if (!(await stat(path.join(repoRoot, entry)).catch(() => null))?.isFile()) continue
+    for (const specifier of await fileSpecifiers(entry)) {
+      if (/tools\/tui-v2-baseline|compare-harness|baseline\/capture/u.test(specifier)) entryHits.push({ file: entry, specifier })
+    }
+  }
+  details.productionBootstrap = { entries: [...PRODUCTION_ENTRY_ROOTS], compareImports: entryHits }
+  for (const hit of entryHits) errors.push(`production bootstrap imports offline compare: ${hit.file} -> ${hit.specifier}`)
+
+  const packageSurface = packageSurfaceViolations()
+  if (await stat(path.join(repoRoot, 'lib')).catch(() => null)) {
+    const runtimeFiles = await walkCodeFiles(path.join(repoRoot, 'lib'), repoRoot)
+    packageSurface.runtime.push(...runtimeFiles.filter((file) => /(^|\/)tools(?:\/|$)|tui-v2-baseline/u.test(file)))
+  }
+  details.packageRuntimeBoundary = packageSurface
+  for (const item of [...packageSurface.files, ...packageSurface.exports, ...packageSurface.runtime]) errors.push(`package/runtime contains offline baseline path: ${item}`)
+
+  const legacy = await scanLegacySource()
+  details.legacyScan = {
+    stagedAllowlist: [...STAGED_V2_ONLY_ALLOWLIST],
+    switchHits: legacy.switchHits.slice(0, 64),
+    jsxFiles: legacy.jsxHits.slice(0, 64),
+    directHotPathImports: legacy.directHits.slice(0, 64),
+    counts: { switches: legacy.switchHits.length, jsx: legacy.jsxHits.length, direct: legacy.directHits.length },
+  }
+  if (legacy.switchHits.length > 0) deferred.push({ reason: 'legacy renderer environment/switch remains in production source', deferredTo: 'WP-09b' })
+  if (legacy.jsxHits.length > 0 || legacy.directHits.length > 0 || (await stat(path.join(repoRoot, 'src', 'ink')).catch(() => null))) {
+    deferred.push({ reason: 'legacy React/Ink/Yoga source or direct hot path remains until old chain deletion', deferredTo: 'WP-09b' })
+  }
+
+  let bundle: {
+    readonly manifest: any
+    readonly artifact: any
+    readonly artifactPath: string
+    readonly missingSourceFiles: readonly string[]
+    readonly sourceMismatches: readonly string[]
+  } | null = null
+  try {
+    const baseline = await import('../tools/tui-v2-baseline/capture.js')
+    bundle = await baseline.loadAndVerifyBaselineBundle(path.join(repoRoot, 'tools', 'tui-v2-baseline', 'manifest.json'), repoRoot)
+    details.baseline = {
+      artifact: path.relative(repoRoot, bundle.artifactPath).split(path.sep).join('/'),
+      sourceCommit: bundle.manifest.source.commit,
+      sourceTreeSha256: bundle.manifest.source.treeSha256,
+      captures: bundle.artifact.captures.map((capture) => ({ traceId: capture.traceId, profile: capture.profile, width: capture.width, height: capture.height, frameCount: capture.frameCount, ansiBytesHash: capture.ansiBytesHash })),
+      missingSourceFiles: bundle.missingSourceFiles,
+      sourceMismatches: bundle.sourceMismatches,
+      sideEffects: bundle.manifest.sideEffects,
+    }
+    if (bundle.sourceMismatches.length > 0) errors.push(`baseline source hash mismatch: ${bundle.sourceMismatches.join(', ')}`)
+  } catch (error: any) {
+    errors.push(`baseline artifact validation failed: ${String(error?.message || error)}`)
+  }
+
+  if (bundle !== null) {
+    try {
+      const compare = await import('../tools/tui-v2-baseline/compare-harness.js')
+      const smokeDir = await mkdtemp(path.join(os.tmpdir(), 'tui-v2-v2-only-'))
+      const smokeOutput = path.join(smokeDir, 'baseline-compare.json')
+      const smoke = await compare.runCompareHarness({
+        repoRoot,
+        traceIds: [bundle.artifact.captures[0]?.traceId as string],
+        profile: bundle.artifact.captures[0]?.profile,
+        allowMismatches: !finalMode,
+        output: smokeOutput,
+      })
+      details.compareSmoke = {
+        status: smoke.status,
+        artifact: path.relative(repoRoot, smokeOutput).split(path.sep).join('/'),
+        traces: smoke.traces.map((trace) => ({ traceId: trace.traceId, status: trace.status, sideEffects: trace.sideEffects, v1: { frames: trace.v1.frameCount, bytes: trace.v1.ansiBytes, ansiBytesHash: trace.v1.ansiBytesHash }, v2: { frames: trace.v2.frames, bytes: trace.v2.bytes, ansiBytesHash: trace.v2.ansiBytesHash }, comparison: { grid: trace.comparison.grid.ok, cursor: trace.comparison.cursor.ok, modes: trace.comparison.modes.ok, width: trace.comparison.width.ok, height: trace.comparison.height.ok } })),
+        errors: smoke.errors,
+      }
+      if (smoke.status === 'fail' && finalMode) errors.push('baseline compare smoke failed in final mode')
+      if (smoke.status === 'fail' && !finalMode) deferred.push({ reason: 'baseline compare smoke has a mismatch requiring review', deferredTo: 'WP-09b' })
+    } catch (error: any) {
+      errors.push(`baseline compare smoke failed to execute: ${String(error?.message || error)}`)
+    }
+  }
+
+  const rollbackPath = ctx.rollbackManifest ?? process.env.TUI_V2_ROLLBACK_MANIFEST ?? null
+  const rollback = await checkRollbackManifest(rollbackPath)
+  details.rollback = rollback.details
+  deferred.push(...rollback.deferred)
+  errors.push(...rollback.errors)
+
+  if (finalMode && deferred.length > 0) {
+    for (const item of deferred) errors.push(`final v2-only deferred item: ${item.reason} (${item.deferredTo})`)
+  }
+  details.deferred = deferred
+  details.errors = errors
+  return { status: errors.length === 0 ? 'pass' : 'fail', details }
+}
+
+// ---------------------------------------------------------------------------
 // registry + CLI
 // ---------------------------------------------------------------------------
 
@@ -1754,6 +2065,7 @@ const checks = new Map<string, (ctx: CheckContext) => Promise<CheckResult>>([
   ['fullscreen', () => checkFullscreen()],
   ['inline', () => checkInline()],
   ['host-capabilities', () => checkHostCapabilities()],
+  ['v2-only', (ctx) => checkV2Only(ctx)],
 ])
 
 function defaultOutput(check: string): string {
@@ -1761,11 +2073,22 @@ function defaultOutput(check: string): string {
 }
 
 function parseArgs(argv: string[]) {
-  const out: { check: string | null; output: string | null; profile: string | null; fixture: string | null } = {
+  const out: {
+    check: string | null
+    output: string | null
+    profile: string | null
+    fixture: string | null
+    final: boolean
+    rollbackManifest: string | null
+    help: boolean
+  } = {
     check: null,
     output: null,
     profile: null,
     fixture: null,
+    final: false,
+    rollbackManifest: null,
+    help: false,
   }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -1775,10 +2098,23 @@ function parseArgs(argv: string[]) {
     else if (arg === '--output') out.output = argv[++i] ?? null
     else if (arg === '--profile') out.profile = argv[++i] ?? null
     else if (arg === '--fixture') out.fixture = argv[++i] ?? null
+    else if (arg === '--final') out.final = true
+    else if (arg === '--rollback-manifest') out.rollbackManifest = argv[++i] ?? null
+    else if (arg === '--help') out.help = true
     else throw new Error(`unknown argument: ${arg}`)
   }
-  if (!out.check) throw new Error('--check <name> is required')
+  if (!out.check && !out.help) throw new Error('--check <name> is required')
   return out
+}
+
+function verifierHelp(): string {
+  return [
+    'Usage: node --import tsx/esm scripts/verify-tui-v2.ts -- --check <name> [options]',
+    `Checks: ${[...checks.keys()].join(', ')}`,
+    'Options: --output <path> --profile <id> --fixture <path> --final',
+    '         --rollback-manifest <path> --help',
+    'TUI_V2_FINAL=1 enables strict v2-only semantics.',
+  ].join('\n')
 }
 
 async function main(): Promise<void> {
@@ -1806,6 +2142,15 @@ async function main(): Promise<void> {
   let exitCode = 1
   try {
     const args = parseArgs(rawArgs)
+    if (args.help) {
+      process.stdout.write(verifierHelp() + '\n')
+      artifact.check = 'help'
+      artifact.status = 'pass'
+      artifact.details = { checks: [...checks.keys()] }
+      outputPath = path.resolve(defaultOutput('help'))
+      exitCode = 0
+      return
+    }
     artifact.check = args.check
     outputPath = path.resolve(args.output ?? defaultOutput(args.check!))
 
@@ -1814,7 +2159,13 @@ async function main(): Promise<void> {
       artifact.details = { errors: [`unknown check: ${args.check}`, `available: ${[...checks.keys()].join(', ')}`] }
       return
     }
-    const result = await check({ output: outputPath, profile: args.profile, fixture: args.fixture })
+    const result = await check({
+      output: outputPath,
+      profile: args.profile,
+      fixture: args.fixture,
+      final: args.final,
+      rollbackManifest: args.rollbackManifest,
+    })
     artifact.status = result.status
     artifact.details = result.details
     exitCode = result.status === 'pass' ? 0 : 1

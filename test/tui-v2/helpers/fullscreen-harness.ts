@@ -39,6 +39,7 @@
  * compared against a VT snapshot project underline onto hyperlinked cells
  * (`vtBufferConvention`, plan §15.1 WP-06d).
  */
+import { createHash } from 'node:crypto'
 import type { AppEvent } from '../../../src/tui-v2/model/events.js'
 import { validateAppEvent } from '../../../src/tui-v2/model/events.js'
 import { createReducer, type Reducer } from '../../../src/tui-v2/model/reducer.js'
@@ -127,6 +128,11 @@ export interface TraceDifferentialResult extends RunStats {
   readonly ok: boolean
   readonly gridHash: string
   readonly vtHash: string
+  /** SHA-256 over the UTF-8 bytes emitted by all patch encodings. */
+  readonly ansiBytesHash: string
+  /** Opt-in final replay grids for offline compare tooling. */
+  readonly finalGrid?: CanonicalGridV1 | null
+  readonly finalVtGrid?: CanonicalGridV1
   readonly failures: readonly ScanFailure[]
 }
 
@@ -414,6 +420,8 @@ export interface TraceDifferentialOptions {
   readonly width?: number
   readonly height?: number
   readonly theme?: string
+  /** Return final canonical replay grids for the offline compare tool. */
+  readonly includeFinalGrids?: boolean
 }
 
 /**
@@ -483,6 +491,7 @@ export function runTraceDifferential(
   let previousFrame: Frame | null = null
   let grid: CanonicalGridV1 | null = null
   const vt = new VirtualTerminal(profile)
+  const ansiBytesHash = createHash('sha256')
   let pendingFullRedraw = true
   let fullRedrawReason: 'initial' | 'resize' | 'resume' | 'damage' | 'unknown-mode' | 'cleanup' = 'initial'
   let eventIndex = 0
@@ -558,6 +567,7 @@ export function runTraceDifferential(
     stats.modeOps += patch.operations.filter((op) => op.kind === 'mode').length
     stats.bytes += patch.bytes
     const { encoded, bytes } = encodePatchOperationsSync(patch.operations)
+    ansiBytesHash.update(encoded, 'utf8')
     if (bytes !== patch.bytes) {
       pushFailure(failures, {
         scope: 'patch-bytes',
@@ -597,6 +607,7 @@ export function runTraceDifferential(
     fullRedrawReason = 'unknown-mode'
   }
 
+  const finalVtGrid = vt.snapshot()
   return {
     trace: trace.header.name,
     profile: profileBase.id,
@@ -608,7 +619,9 @@ export function runTraceDifferential(
     maxRowWidth: stats.maxRowWidth,
     ok: failures.length === 0,
     gridHash: grid === null ? '' : gridSha256(grid),
-    vtHash: gridSha256(vt.snapshot()),
+    vtHash: gridSha256(finalVtGrid),
+    ansiBytesHash: ansiBytesHash.digest('hex'),
+    ...(options.includeFinalGrids ? { finalGrid: grid, finalVtGrid } : {}),
     failures,
   }
 }

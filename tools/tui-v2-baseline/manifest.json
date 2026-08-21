@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "tui-v2-baseline-manifest",
+  "captureBackend": "frozen-artifact",
+  "redactionVersion": 1,
+  "source": {
+    "commit": "5422c8d84f36f01907df5e2fcad2e0b8b6d7a2be",
+    "treeSha256": "3b7d9cd0a133d12ec489831522b0d89bcac347e704a1cadffcf0dd814dc59a7e",
+    "files": [
+      { "path": "src/ink/frame.ts", "sha256": "f1113f204e359d33b3e0593ae44863550f85073a0ac5b3643849b8ab42147434" },
+      { "path": "src/ink/ink.tsx", "sha256": "024ee9e01106da560d92eb1f08590d1e90f4f53683903df7330aa00cba92f4d2" },
+      { "path": "src/screens/Chat.tsx", "sha256": "79da191d9b3dd71c0d35f1e9c35bb4ba9d63a73d1d188506de533400969bef8a" },
+      { "path": "test/tui-v2/helpers/harness.tsx", "sha256": "44773da1cc4e3e55eec293b928d361cef481a04a566dcde9f6d89dddfd14e4c7" }
+    ],
+    "license": {
+      "spdx": "MIT",
+      "path": "LICENSE",
+      "sha256": "54f2c59427af6a22111dade86a39605a17826a7d44e98801c42e3ab21889f884"
+    }
+  },
+  "artifact": {
+    "path": "tools/tui-v2-baseline/artifacts/v1-capture@v1.json",
+    "sha256": "1c0ca53cd8e3d94a656e4c02c808566f34bf59b99d00f685e4b66715a5ddfd29"
+  },
+  "sideEffects": {
+    "allowed": ["fake-writer"],
+    "forbidden": ["stdout", "stderr", "subscription", "timer", "command", "session-write"],
+    "zeroAfterCapture": ["stdout", "stderr", "subscription", "timer", "command", "session-write"]
+  }
+}

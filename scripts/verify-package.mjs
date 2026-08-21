@@ -17,6 +17,10 @@ if (report === undefined || !Array.isArray(report.files)) {
 
 const manifest = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
 const packed = new Set(report.files.map(file => file.path.replaceAll('\\', '/')))
+const offlineBaselineFiles = [...packed].filter(path => path === 'tools' || path.startsWith('tools/'))
+if (offlineBaselineFiles.length > 0) {
+  throw new Error(`package unexpectedly contains offline baseline tools: ${offlineBaselineFiles.join(', ')}`)
+}
 const targets = new Set()
 
 const addTarget = value => {
