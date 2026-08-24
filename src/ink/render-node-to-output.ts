@@ -826,7 +826,11 @@ function renderNodeToOutput(
           }
         }
         // Capture previous scroll bounds BEFORE overwriting — the at-bottom
-        // follow check compares against last frame's max.
+        // follow check compares against last frame's max. The first resolved
+        // geometry is observable too: React consumers initially see zeroes
+        // until this paint establishes the real viewport and content extent.
+        const scrollGeometryWasUninitialized =
+          node.scrollHeight === undefined || node.scrollViewportHeight === undefined
         const prevScrollHeight = node.scrollHeight ?? scrollHeight
         const prevInnerHeight = node.scrollViewportHeight ?? innerHeight
         node.scrollHeight = scrollHeight
@@ -837,6 +841,7 @@ function renderNodeToOutput(
         node.scrollViewportTop = (y1 ?? y) + padTop
 
         const maxScroll = Math.max(0, scrollHeight - innerHeight)
+        let rendererScrollStateChanged = scrollGeometryWasUninitialized
         // scrollAnchor: scroll so the anchored element's top is at the
         // viewport top (plus offset). Yoga is FRESH — same calculateLayout
         // pass that just produced scrollHeight. Deterministic alternative
@@ -851,7 +856,9 @@ function renderNodeToOutput(
         if (node.scrollAnchor) {
           const anchorTop = node.scrollAnchor.el.yogaNode?.getComputedTop()
           if (anchorTop != null) {
-            node.scrollTop = anchorTop + node.scrollAnchor.offset
+            const anchoredTop = anchorTop + node.scrollAnchor.offset
+            if (anchoredTop !== (node.scrollTop ?? 0)) rendererScrollStateChanged = true
+            node.scrollTop = anchoredTop
             node.pendingScrollDelta = undefined
           }
           node.scrollAnchor = undefined
@@ -916,10 +923,11 @@ function renderNodeToOutput(
             scrollTopBeforeFollow >= prevMaxScroll
           ) {
             node.stickyScroll = true
-            node.onStickyRestore?.()
+            rendererScrollStateChanged = true
           }
         }
         const followDelta = (node.scrollTop ?? 0) - scrollTopBeforeFollow
+        if (followDelta !== 0) rendererScrollStateChanged = true
         if (followDelta > 0) {
           const vpTop = node.scrollViewportTop ?? 0
           followScrolls.push({
@@ -1002,7 +1010,9 @@ function renderNodeToOutput(
           Math.min(cMin ?? -Infinity, maxScroll),
           Math.min(scrollTop, Math.min(cMax ?? Infinity, maxScroll)),
         )
+        const storedScrollTop = node.scrollTop ?? 0
         node.scrollTop = scrollTop
+        if (sticky && scrollTop !== storedScrollTop) rendererScrollStateChanged = true
         // Clamp hitting top/bottom consumes any remainder. Set drainPending
         // only after clamp so a wasted no-op frame isn't scheduled.
         if (scrollTop !== cur) node.pendingScrollDelta = undefined
@@ -1066,8 +1076,9 @@ function renderNodeToOutput(
           scrollTop >= maxScroll
         ) {
           node.stickyScroll = true
-          node.onStickyRestore?.()
+          rendererScrollStateChanged = true
         }
+        if (rendererScrollStateChanged) node.onScrollChange?.()
         scrollTop = clamped
 
         if (content && contentYoga) {

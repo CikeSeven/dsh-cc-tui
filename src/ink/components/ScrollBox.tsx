@@ -46,10 +46,10 @@ export type ScrollBoxHandle = {
    */
   isSticky: () => boolean;
   /**
-   * Subscribe to imperative scroll changes (scrollTo/scrollBy/scrollToBottom).
-   * Does NOT fire for stickyScroll updates done by the Ink renderer — those
-   * happen during Ink's render phase after React has committed. Callers that
-   * care about the sticky case should treat "at bottom" as a fallback.
+   * Subscribe to observable scroll changes. Imperative mutations notify at
+   * the input edge; renderer-owned initial geometry, sticky follow, and
+   * positional sticky restores notify after paint. Notifications are
+   * frame-coalesced so subscribers never cause one React commit per event.
    */
   subscribe: (listener: () => void) => () => void;
   /**
@@ -296,9 +296,11 @@ function ScrollBox({
     domRef.current = el;
     if (el) {
       el.scrollTop ??= 0;
-      // Renderer-side sticky restores (positional re-pin at the bottom)
-      // must reach React subscribers too — see dom.ts onStickyRestore.
-      el.onStickyRestore = notify;
+      // Paint-time geometry/follow changes must reach React subscribers too.
+      // Use the same frame coalescing as imperative scroll input: a renderer
+      // pass may update position and sticky state together, but consumers need
+      // only the resulting snapshot.
+      el.onScrollChange = notifyCoalesced;
     }
   }} onWheel={handleWheel} style={{
     flexWrap: 'nowrap',

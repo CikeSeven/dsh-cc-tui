@@ -93,12 +93,11 @@ export type DOMElement = {
   scrollPrevMax?: number
   stickyScroll?: boolean
   // Renderer → React notification channel, set by ScrollBox to its
-  // subscriber-notify. Invoked when the RENDERER restores stickyScroll on
-  // its own (positional re-pin at the bottom) — imperative scrolls already
-  // notify via scrollMutated, but renderer-side restores would otherwise
-  // leave useSyncExternalStore snapshots stale (the new-messages pill
-  // never clears).
-  onStickyRestore?: () => void
+  // coalesced subscriber notifier. Invoked after renderer-owned scroll state
+  // changes (initial geometry, sticky follow, or positional sticky restore) —
+  // imperative scrolls already notify via scrollMutated, but paint-time changes
+  // would otherwise leave timeline/virtualization snapshots stale.
+  onScrollChange?: () => void
   // Set by ScrollBox.scrollToElement; render-node-to-output reads
   // el.yogaNode.getComputedTop() (FRESH — same Yoga pass as scrollHeight)
   // and sets scrollTop = top + offset, then clears this. Unlike an

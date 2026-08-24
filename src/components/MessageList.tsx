@@ -501,9 +501,11 @@ export function MessageList({
     }
   }
 
-  // Scrolling bypasses React (imperative DOM scrollTop): subscribe so the
-  // window follows the viewport.
-  React.useEffect(() => {
+  // Scrolling bypasses React (imperative DOM scrollTop), and sticky follow
+  // happens during Ink paint. Subscribe in the layout phase so the first
+  // renderer-owned follow cannot race ahead of the virtualization/timeline
+  // listener and leave React describing the pre-follow viewport.
+  React.useLayoutEffect(() => {
     if (!scrollHandle) return
     const tick = (): void =>{  setScrollTick(t => t + 1) }
     return scrollHandle.subscribe(tick)
@@ -531,6 +533,9 @@ export function MessageList({
   const scrollTop = scrollHandle?.getScrollTop() ?? 0
   const pending = scrollHandle?.getPendingDelta() ?? 0
   const viewport = scrollHandle?.getViewportHeight() ?? 24
+  // Omitted handle = legacy/standalone projection with fallback geometry;
+  // explicit null = Chat is still waiting for its ScrollBox ref.
+  const scrollGeometryReady = scrollHandle === undefined || (scrollHandle !== null && viewport > 0)
   const sticky = scrollHandle?.isSticky() ?? true
   const base = baseRef.current ?? DEFAULT_HEADER_LINES
 
@@ -860,6 +865,12 @@ export function MessageList({
   }
   const lastTimelineReportRef = React.useRef('')
   React.useEffect(() => {
+    // Before the first Ink paint the handle still reports a zero-height
+    // viewport and scrollTop=0. Publishing that provisional snapshot would
+    // pin the rail to turn 1 even though sticky follow paints the tail. The
+    // renderer notifies after establishing real geometry, then this effect
+    // publishes the matching viewport-derived state.
+    if (!scrollGeometryReady) return
     // O(1) signature: the memo key pins the turns' geometry identity
     // (heights/window/base/rows-length) and the three ids pin the
     // viewport-derived targets. Any top change bumps the geometry key, so
