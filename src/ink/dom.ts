@@ -62,11 +62,15 @@ export type DOMElement = {
   // mark dirty and defeat the blit optimization.
   _eventHandlers?: Record<string, unknown>
 
-  // Scroll state for overflow: 'scroll' boxes. scrollTop is the number of
-  // rows the content is scrolled down by. scrollHeight/scrollViewportHeight
-  // are computed at render time and stored for imperative access. stickyScroll
-  // auto-pins scrollTop to the bottom when content grows.
+  // Scroll state for overflow: 'scroll' boxes. scrollTop is the raw logical
+  // target consumed by virtualization and pending-scroll drain; it may run
+  // ahead of what the current mounted window can paint. renderScrollTop is
+  // the position actually used by the last rendered frame after virtual
+  // clamp. scrollHeight/scrollViewportHeight are computed at render time and
+  // stored for imperative access. stickyScroll auto-pins scrollTop to the
+  // bottom when content grows.
   scrollTop?: number
+  renderScrollTop?: number
   // Accumulated scroll delta not yet applied to scrollTop. The renderer
   // drains this at SCROLL_MAX_PER_FRAME rows/frame so fast flicks show
   // intermediate frames instead of one big jump. Direction reversal

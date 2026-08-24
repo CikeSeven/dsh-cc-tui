@@ -992,12 +992,12 @@ function renderNodeToOutput(
           shrunk && !sticky ? cur : Math.max(0, Math.min(cur, maxScroll))
         // Virtual-scroll clamp: if scrollTop raced past the currently-mounted
         // range (burst PageUp before React re-renders), render at the EDGE of
-        // the mounted children instead of blank spacer. Do NOT write back to
-        // node.scrollTop — the clamped value is for this paint only; the real
-        // scrollTop stays so React's next commit sees the target and mounts
-        // the right range. Not scheduling scrollDrainNode here keeps the
-        // clamp passive — React's commit → resetAfterCommit → onRender will
-        // paint again with fresh bounds.
+        // the mounted children instead of blank spacer. Keep the raw
+        // node.scrollTop target untouched so React's next commit sees it and
+        // mounts the right range; store the clamped value separately in
+        // node.renderScrollTop for this frame's visible-coordinate consumers.
+        // Not scheduling scrollDrainNode here keeps the clamp passive — React's
+        // commit → resetAfterCommit → onRender will paint again with fresh bounds.
         // Cap both bounds at maxScroll: the clamp bounds come from
         // MessageList's height ESTIMATES while maxScroll comes from the
         // frame's actual Yoga height. A width change resets the estimates
@@ -1010,6 +1010,9 @@ function renderNodeToOutput(
           Math.min(cMin ?? -Infinity, maxScroll),
           Math.min(scrollTop, Math.min(cMax ?? Infinity, maxScroll)),
         )
+        const previousRenderScrollTop = node.renderScrollTop
+        node.renderScrollTop = clamped
+        if (previousRenderScrollTop !== clamped) rendererScrollStateChanged = true
         const storedScrollTop = node.scrollTop ?? 0
         node.scrollTop = scrollTop
         if (sticky && scrollTop !== storedScrollTop) rendererScrollStateChanged = true

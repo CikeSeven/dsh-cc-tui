@@ -21,7 +21,11 @@ export type ScrollBoxHandle = {
    */
   scrollToElement: (el: DOMElement, offset?: number) => void;
   scrollToBottom: () => void;
+  /** Raw logical target used by virtualization and pending-scroll drain. */
   getScrollTop: () => number;
+  /** Actual viewport top painted by the last renderer frame after clamp.
+   * Legacy embed handles may omit it; concrete ScrollBox always provides it. */
+  getRenderScrollTop?: () => number;
   getPendingDelta: () => number;
   getScrollHeight: () => number;
   /**
@@ -75,9 +79,10 @@ export type ScrollBoxProps = Except<Styles, 'textWrap' | 'overflow' | 'overflowX
  * A Box with `overflow: scroll` and an imperative scroll API.
  *
  * Children are laid out at their full Yoga-computed height inside a
- * constrained container. At render time, only children intersecting the
- * visible window (scrollTop..scrollTop+height) are rendered (viewport
- * culling). Content is translated by -scrollTop and clipped to the box bounds.
+ * constrained container. At render time, the raw scrollTop selects the
+ * mounted/virtualized range, while the renderer's clamped renderScrollTop
+ * determines the visible window and content translation. Content is clipped
+ * to the box bounds.
  *
  * Works best inside a fullscreen (constrained-height root) Ink tree.
  */
@@ -228,6 +233,10 @@ function ScrollBox({
     },
     getScrollTop() {
       return domRef.current?.scrollTop ?? 0;
+    },
+    getRenderScrollTop() {
+      const el = domRef.current;
+      return el?.renderScrollTop ?? el?.scrollTop ?? 0;
     },
     getPendingDelta() {
       // Accumulated-but-not-yet-drained delta. useVirtualScroll needs

@@ -2474,7 +2474,7 @@ export function Chat({
       // `/` in transcript mode (Ctrl+O expanded, CC's REPL semantics:
       // search is active on the transcript screen where `/` isn't a command).
       if (expanded) {
-        searchAnchorRef.current = handle?.getScrollTop() ?? 0
+        searchAnchorRef.current = handle?.getRenderScrollTop?.() ?? 0
         setSearchQuery('')
         setSearchCursor(0)
         setSearchCurrent(0)

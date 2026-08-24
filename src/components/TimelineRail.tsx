@@ -144,9 +144,10 @@ export function TimelineRail({
   })) return null
 
   const activeIndex = turns.findIndex(t => t.id === activeId)
-  // Tail-pin the tick window while the viewport sits at the bottom
-  // (sticky flag OR positional) — newest ticks stay on screen.
-  const atBottom = handle.isSticky() || handle.getScrollTop() >= maxScroll
+  // Tail-pin the tick window only when the PAINTED viewport sits at the
+  // bottom. sticky is a logical target and may run ahead while virtualization
+  // clamps the current frame, so it is not a visual-position signal here.
+  const atBottom = (handle.getRenderScrollTop?.() ?? handle.getScrollTop()) >= maxScroll
   const geo = computeRailGeometry(
     turns.length,
     viewport,

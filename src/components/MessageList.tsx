@@ -228,18 +228,18 @@ export function MessageList({
    * viewport-derived navigation targets, all computed from the same
    * offsets[]/base geometry the mount window uses:
    *
-   *  - active: the LAST turn whose prompt top is at-or-above the viewport
-   *    top (the turn whose content owns the top row — the one being
+   *  - active: the LAST turn whose prompt top is at-or-above the PAINTED
+   *    viewport top (the turn whose content owns the top row — the one being
    *    read); the FIRST turn stands in while pre-turn content (logo /
    *    loaded-context) owns the top. Never null while any turn exists.
    *    Top-anchored on purpose (Grok timeline semantics), not
    *    "topmost visible prompt": the highlight moves only when a turn
    *    boundary crosses the viewport top, so it never leaps when nudging
    *    off the bottom, and the header/rail can never disagree.
-   *  - upId: nearest turn STRICTLY above the viewport top (▲ target).
-   *  - downId: nearest turn below the top whose top ≤ maxScroll — turns
-   *    past maxScroll can never own the top row (the renderer clamps
-   *    there), so naming them would make ▼ repeat itself forever.
+   *  - upId: nearest turn STRICTLY above the painted viewport top (▲ target).
+   *  - downId: nearest turn below the painted top whose top ≤ maxScroll — turns
+   *    past maxScroll can never own the top row (the renderer clamps the
+   *    painted position there), so naming them would make ▼ repeat itself forever.
    *
    * Reported post-commit, only when the signature changes.
    */
@@ -530,7 +530,11 @@ export function MessageList({
     total += heightOf(visibleRows[i])
   }
 
+  // Raw target for virtualization; it may be ahead of the frame currently
+  // visible while the renderer waits for the mounted window to catch up.
   const scrollTop = scrollHandle?.getScrollTop() ?? 0
+  // Rendered coordinate for timeline/unseen and other screen-space consumers.
+  const renderScrollTop = scrollHandle?.getRenderScrollTop?.() ?? scrollTop
   const pending = scrollHandle?.getPendingDelta() ?? 0
   const viewport = scrollHandle?.getViewportHeight() ?? 24
   // Omitted handle = legacy/standalone projection with fallback geometry;
@@ -734,17 +738,19 @@ export function MessageList({
   })
 
   // New-messages pill count: rows past the seen-anchor whose top edge is
-  // still below the viewport bottom. Same rows-space math as the window
-  // (offsets are rows-space, scrollTop content-space — subtract the header
-  // base). Decrements as the user scrolls down through the new rows; 0 once
-  // every new row has appeared on screen. Reported post-commit (parent
-  // setState with an unchanged value is a React no-op, so the per-render
-  // effect only re-renders on actual count changes).
+  // still below the PAINTED viewport bottom. Same rows-space math as the
+  // window (offsets are rows-space, renderScrollTop content-space — subtract
+  // the header base). Using the raw target here would mark rows as seen before
+  // virtualization's clamp has actually brought them on screen. Decrements as
+  // the user scrolls down through the new rows; 0 once every new row has
+  // appeared on screen. Reported post-commit (parent setState with an unchanged
+  // value is a React no-op, so the per-render effect only re-renders on actual
+  // count changes).
   let unseenCount = 0
   if (newSinceRowId !== null && newSinceRowId !== undefined) {
     const firstNew = visibleRows.findIndex(row => row.id > newSinceRowId)
     if (firstNew !== -1) {
-      const seenBottom = scrollTop + viewport - base
+      const seenBottom = renderScrollTop + viewport - base
       for (let i = firstNew; i < visibleRows.length; i++) {
         if (offsets[i]! >= seenBottom) unseenCount++
       }
@@ -769,12 +775,12 @@ export function MessageList({
   // turn boundary crosses the viewport top, never when a later prompt
   // merely becomes visible lower on screen, so it cannot leap when
   // nudging off the bottom and the header/rail can never disagree. The
-  // projected top (scrollTop + pending) is used so boundary crossings
-  // register during wheel bursts, not one drain frame late. Same
+  // last PAINTED top is used here: raw scrollTop + pending is a virtualization
+  // target and may sit beyond the currently mounted/clamped viewport. Same
   // rows-space math as the mount window (offsets are rows-space,
-  // scrollTop content-space — add the header base). downId additionally
-  // requires the turn's top ≤ maxScroll: the renderer clamps scrollTop
-  // there, so a turn past it could never own the top row, and naming it
+  // renderScrollTop content-space — add the header base). downId additionally
+  // requires the turn's top ≤ maxScroll: the renderer clamps the painted
+  // position there, so a turn past it could never own the top row, and naming it
   // would make ▼ repeat itself forever (the stuck-▼ bug). Reported
   // post-commit, only when the signature changes.
   let timelineTurns: TimelineTurn[] = []
@@ -835,12 +841,11 @@ export function MessageList({
     }
     timelineTurns = timelineMemoRef.current!.turns
     // (b) per-frame target scan — pure integer comparisons over the
-    // memoized list; viewTop is projected (scrollTop + pending) so
-    // boundary crossings register during wheel bursts, not one drain
-    // frame late. downId additionally requires top ≤ maxScroll: the
-    // renderer clamps scrollTop there, so a turn past it could never own
-    // the top row, and naming it would make ▼ repeat itself forever.
-    const viewTop = scrollTop + pending
+    // memoized list; viewTop is the last position actually painted after the
+    // renderer's virtual clamp. downId additionally requires top ≤ maxScroll:
+    // the renderer clamps the painted position there, so a turn past it could
+    // never own the top row, and naming it would make ▼ repeat itself forever.
+    const viewTop = renderScrollTop
     const maxScroll = Math.max(0, (scrollHandle?.getScrollHeight() ?? 0) - viewport)
     for (let i = 0; i < timelineTurns.length; i++) {
       const t = timelineTurns[i]!
