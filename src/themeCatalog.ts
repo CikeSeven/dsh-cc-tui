@@ -85,12 +85,15 @@ function runtimeEntries(
   seen: Set<string>,
 ): ThemeCatalogEntry[] {
   if (host === undefined) return []
-  let snapshot: readonly TuiThemeRegistration[]
+  let rawSnapshot: unknown
   try {
-    snapshot = host.getSnapshot()
+    rawSnapshot = host.getSnapshot()
   } catch {
     return []
   }
+  // A structural host may answer with anything (null, a Set, …); normalize
+  // non-arrays so catalog construction never crashes picker/completion render.
+  const snapshot: readonly TuiThemeRegistration[] = Array.isArray(rawSnapshot) ? rawSnapshot : []
   const entries: ThemeCatalogEntry[] = []
   // Registration order depends on plugin load timing. Sort the projection so
   // the picker and completion stay stable across equivalent compositions.

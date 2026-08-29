@@ -9,6 +9,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { TuiThemeHost } from '../src/dsh-adapter/themes.js'
 
 const home = mkdtempSync(join(tmpdir(), 'dshtui-runtime-theme-home-'))
 process.env.HOME = home
@@ -271,6 +272,18 @@ const noHostRoot = new Context()
 check('no-host accessor falls back cleanly', getHostThemes(noHostRoot.get('tuiThemes')) === undefined)
 check('no-host catalog contains no runtime entries', listThemeCatalog().every(entry => entry.source !== 'runtime'))
 check('no-host resolution falls back to unknown', resolveThemeEntry('probe:valid') === undefined)
+
+// A structural host may violate the typed contract; non-array snapshots must
+// degrade to zero runtime entries instead of throwing inside catalog build.
+const nullSnapshotHost = {
+  getSnapshot: () => null,
+  resolve: () => undefined,
+  subscribe: () => () => {},
+} as unknown as TuiThemeHost
+check(
+  'non-array snapshot degrades to no runtime entries',
+  listThemeCatalog(nullSnapshotHost).every(entry => entry.source !== 'runtime'),
+)
 await root.fiber.dispose()
 await noHostRoot.fiber.dispose()
 rmSync(home, { recursive: true, force: true })
