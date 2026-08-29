@@ -326,7 +326,13 @@ export class TuiThemeRuntime extends Service {
         emit(state)
         recordThemeEffect(caller, identity, 'release', entry.name, 'applied')
       }
-      if (!bindCallerEffect(caller, dispose)) return NOOP
+      // Binding can fail when the caller's activation is already tearing down;
+      // the entry is live at this point, so undo the registration before
+      // reporting failure — otherwise the theme outlives its plugin.
+      if (!bindCallerEffect(caller, dispose)) {
+        dispose()
+        return NOOP
+      }
       return dispose
     } catch {
       try {

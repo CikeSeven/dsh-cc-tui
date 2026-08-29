@@ -108,7 +108,8 @@ check('host resolver returns the registered palette', host.resolve('probe:valid'
 check('getTheme consults the runtime resolver', getTheme('probe:valid').claude === '#123456')
 check('runtime availability includes the registered name', isThemeAvailable('probe:valid'))
 check('static availability remains static-only', !isStaticThemeAvailable('probe:valid'))
-check('host resolver returns a stable palette identity', host.resolve('probe:valid') === host.resolve('probe:valid'))
+const stablePalette = host.resolve('probe:valid')
+check('host resolver returns a stable palette identity', stablePalette === host.resolve('probe:valid'))
 check('registration emits one host notification', notifications === 1)
 
 const longNameDisposer = pluginContext.tuiThemes.register({

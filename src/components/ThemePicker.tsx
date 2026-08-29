@@ -6,7 +6,8 @@ import { Select, type SelectOption } from './Select.js'
 import { HintLine } from './design-system/HintLine.js'
 import { type Theme } from '../theme.js'
 import { listThemeCatalog } from '../themeCatalog.js'
-import type { TuiThemeHost, TuiThemeRegistration } from '../dsh-adapter/themes.js'
+import type { TuiThemeHost } from '../dsh-adapter/themes.js'
+import { useRuntimeThemeSnapshot } from '../hooks/useRuntimeThemeSnapshot.js'
 import type { Color } from '../ink/styles.js'
 
 /** One double-block swatch character per preview key, in a row. */
@@ -14,8 +15,6 @@ const SWATCH = '██'
 
 /** Theme keys previewed in the picker, chosen for visual contrast. */
 const SWATCH_KEYS = ['claude', 'text', 'success'] as const
-const EMPTY_THEME_SNAPSHOT: readonly TuiThemeRegistration[] = Object.freeze([])
-const subscribeNoThemes = (_listener: () => void): (() => void) => () => {}
 
 function swatches(theme: Theme): React.ReactNode {
   return (
@@ -85,28 +84,7 @@ export function ThemePicker({
    *  the same code path as the keyboard Enter). */
   onPick?: (index: number) => void
 }): React.ReactNode {
-  const subscribeThemes = React.useCallback(
-    (listener: () => void): (() => void) => {
-      try {
-        return themeHost?.subscribe(listener) ?? subscribeNoThemes(listener)
-      } catch {
-        return subscribeNoThemes(listener)
-      }
-    },
-    [themeHost],
-  )
-  const getThemeSnapshot = React.useCallback((): readonly TuiThemeRegistration[] => {
-    try {
-      return themeHost?.getSnapshot() ?? EMPTY_THEME_SNAPSHOT
-    } catch {
-      return EMPTY_THEME_SNAPSHOT
-    }
-  }, [themeHost])
-  const runtimeThemeSnapshot = React.useSyncExternalStore(
-    subscribeThemes,
-    getThemeSnapshot,
-    getThemeSnapshot,
-  )
+  const runtimeThemeSnapshot = useRuntimeThemeSnapshot(themeHost)
   const options = React.useMemo(
     () => getThemeOptions(themeHost),
     [runtimeThemeSnapshot, themeHost],

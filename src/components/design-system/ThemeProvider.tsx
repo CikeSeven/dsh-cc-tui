@@ -8,7 +8,8 @@ import {
   AUTO_THEME_NAME,
 } from '../../theme.js'
 import { resolveCustomTheme } from '../../customTheme.js'
-import type { TuiThemeHost, TuiThemeRegistration } from '../../dsh-adapter/themes.js'
+import type { TuiThemeHost } from '../../dsh-adapter/themes.js'
+import { useRuntimeThemeSnapshot } from '../../hooks/useRuntimeThemeSnapshot.js'
 import { readThemePref, writeThemePref } from '../../themePrefs.js'
 import useStdin from '../../ink/hooks/use-stdin.js'
 import { oscColor } from '../../ink/terminal-querier.js'
@@ -48,9 +49,6 @@ import { logForDebugging } from '../../utils/debug.js'
 // registry; the optional runtime host resolver is installed by the Cordis
 // service. Together they serve every themed component and non-React rendering.
 registerCustomThemeResolver(resolveCustomTheme)
-
-const EMPTY_THEME_SNAPSHOT: readonly TuiThemeRegistration[] = Object.freeze([])
-const subscribeNoThemes = (_listener: () => void): (() => void) => () => {}
 
 type ThemeContextValue = {
   /** The active theme name: a built-in, static JSON, or runtime plugin theme. */
@@ -107,31 +105,7 @@ export function ThemeProvider({
   /** Optional runtime theme host; absent in headless/static embeds. */
   themeHost?: TuiThemeHost
 }): React.ReactNode {
-  const subscribeThemes = React.useCallback(
-    (listener: () => void): (() => void) => {
-      try {
-        return themeHost?.subscribe(listener) ?? subscribeNoThemes(listener)
-      } catch {
-        return subscribeNoThemes(listener)
-      }
-    },
-    [themeHost],
-  )
-  const getThemeSnapshot = React.useCallback((): readonly TuiThemeRegistration[] => {
-    try {
-      return themeHost?.getSnapshot() ?? EMPTY_THEME_SNAPSHOT
-    } catch {
-      return EMPTY_THEME_SNAPSHOT
-    }
-  }, [themeHost])
-  // Runtime registrations can arrive after the first render (and disappear
-  // during plugin teardown); use the host's stable snapshot to repaint without
-  // changing the static/headless path.
-  const runtimeThemeSnapshot = React.useSyncExternalStore(
-    subscribeThemes,
-    getThemeSnapshot,
-    getThemeSnapshot,
-  )
+  const runtimeThemeSnapshot = useRuntimeThemeSnapshot(themeHost)
   // Resolution happens once on mount: the forced chain (prop > env >
   // persisted) or null, which arms OSC 11 detection.
   const [forced] = useState<string | undefined>(() =>

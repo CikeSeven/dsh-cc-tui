@@ -2,7 +2,9 @@
 
 本文覆盖 Gentle Mist Blue（雾蓝）主题家族（内置三色板 + 静态用户主题 + 运行时
 插件主题）、启动解析与 /theme 热切换，以及 en/zh 双语 i18n 系统与 /lang 热换。
-历史行号均以审计基线 b2f4087 为准；运行时插件主题的当前契约以
+历史行号均以审计基线 b2f4087 为准；其中的 `CC_TUI_THEME` / `CC_TUI_LANG` 环境变量与
+`~/.dsh-cc/*` 路径同为基线时期旧名，现行为 `DSH_TUI_THEME` / `DSH_TUI_LANG` 与
+`~/.dsh-tui/*`（见[配置参考](../configuration.md)）。运行时插件主题的当前契约以
 [主题系统](../themes.md) 与[插件开发指南](../plugins.md)为准。
 
 ## 主题家族与键面

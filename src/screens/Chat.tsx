@@ -1152,10 +1152,9 @@ export function Chat({
         }
         if (parts.length > 0) {
           setHelpOpen(false)
-          const themeOptions = getThemeOptions(themeHost)
-          const selectedName = themeOptions.find(option => option.value === parts[0])?.value
-            ?? parts[0]
-          const ok = setTheme(selectedName)
+          // setTheme rejects unknown names via isThemeAvailable, so pass the
+          // raw argument instead of resolving it against the catalog first.
+          const ok = setTheme(parts[0])
           channel.notify(
             ok ? t('theme-switched-saved', { name: parts[0] }) : t('theme-unknown', { name: parts[0] }),
             { color: ok ? 'success' : 'error' },

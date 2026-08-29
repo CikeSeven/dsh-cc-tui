@@ -94,9 +94,17 @@ function runtimeEntries(
   const entries: ThemeCatalogEntry[] = []
   // Registration order depends on plugin load timing. Sort the projection so
   // the picker and completion stay stable across equivalent compositions.
-  const ordered = [...snapshot].sort((a, b) => a.name.localeCompare(b.name))
+  // Filter malformed entries first: a structural host's snapshot is untrusted,
+  // and the comparator must never see a non-string name. Compare on the
+  // lowercased key so ordering does not depend on the runtime ICU locale.
+  const ordered = snapshot
+    .filter(registration => typeof registration?.name === 'string')
+    .sort((a, b) => {
+      const ka = keyOf(a.name)
+      const kb = keyOf(b.name)
+      return ka < kb ? -1 : ka > kb ? 1 : 0
+    })
   for (const registration of ordered) {
-    if (typeof registration?.name !== 'string') continue
     const key = keyOf(registration.name)
     if (seen.has(key)) continue
     let palette: Theme | undefined
