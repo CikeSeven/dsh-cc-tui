@@ -14,6 +14,7 @@ import { isPlainReturnInput, modLabel } from '../utils/modifiers.js'
 import { actionMatches } from '../utils/keymap.js'
 import { formatTokens } from '../cc/format.js'
 import { homeDir } from '../utils/paths.js'
+import { useDefaultLaneWakeup } from '../hooks/useDefaultLaneWakeup.js'
 import type { LlmModelInfo, LlmProviderInfo } from '../dsh-adapter/types.js'
 import { cleanRenderText, cleanScalarText } from '../dsh-adapter/sanitize.js'
 import {
@@ -268,8 +269,13 @@ export function Chat({
   trajectorySeen?: boolean
 }) {
   const writeRaw = React.useContext(TerminalWriteContext)
-  // Re-render whenever the channel mutates; rows/status are read fresh below.
-  React.useSyncExternalStore(channel.subscribe, () => channel.version)
+  // Re-render whenever the channel mutates; rows/status are read fresh
+  // below. DefaultLane on purpose — useSyncExternalStore would force a
+  // SyncLane render per version bump; during fast streaming those sync
+  // renders preempt the in-flight DefaultLane render, every commit ends
+  // with work pending, and React's commit-end lane accounting feeds the
+  // nested-update counter until it throws error #185 (beta.3 crash).
+  useDefaultLaneWakeup(channel.subscribe)
   // Re-render on language switches so the whole UI hot-swaps its strings.
   React.useSyncExternalStore(subscribeLang, getLang)
   // The pending ask-user-question (DSH user-interaction seam): the model's

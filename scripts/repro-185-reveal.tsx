@@ -22,6 +22,16 @@
  * Env: SMOOTH=0 — control run with the reveal store disabled (same feed);
  *      FEEDERS="4,7,11,17" — feeder timer cadences (the tuning knob);
  *      COLS (default 110).
+ *
+ * Residual chain (fixed in the follow-up commit): with the reveal wakeup
+ * already on DefaultLane, a slow-terminal regime — DOC_SECTIONS=96
+ * FEEDERS=3,5,7,9 COLS=80 — still crashed #185 in ~12s of streaming: the
+ * Chat channel useSyncExternalStore kept forcing SyncLane renders per feed
+ * bump, and the timeline report effect re-dispatched setTimeline on every
+ * commit (its signature pinned to heightsVersion, bumped by the growing
+ * streamed row), so no commit ever ended clean. The follow-up moved the
+ * channel subscription to useDefaultLaneWakeup and made the timeline report
+ * value-deduped; the same config then survives a full 7-minute stream.
  */
 process.env.FORCE_COLOR = '3'
 process.env.TERM_PROGRAM = 'WezTerm'
