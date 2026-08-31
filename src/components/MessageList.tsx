@@ -22,7 +22,8 @@ import { stringWidth } from '../ink/stringWidth.js'
 import { truncateToWidth } from '../ink/truncateToWidth.js'
 import { clipPreview, type TimelineSnapshot, type TimelineTurn } from '../ink/timeline-rail.js'
 import type { ToolBackground } from '../tuiDisplayPrefs.js'
-import { getRevealVersion, revealLengthOf, revealTextOf, subscribeReveal } from './smoothReveal.js'
+import { getRevealVersion, revealLengthOf, revealTextOf } from './smoothReveal.js'
+import { useRevealVersion } from '../hooks/useRevealVersion.js'
 
 /**
  * Transcript rows rendered in the Claude Code visual language: user prompts
@@ -430,13 +431,17 @@ export function MessageList({
 
   // --- layout virtualization ---------------------------------------------
   const { columns, rows: termRows } = useTerminalSize()
-  // Smooth-reveal wakeups: the scheduler's tick bumps this store, re-running
+  // Smooth-reveal wakeups: the scheduler's tick bumps this hook, re-running
   // MessageList so the revealed `text`/line-count reads below feed fresh
   // values through the same MemoRow-prop pipeline an arriving chunk uses —
   // memo miss → re-render → post-commit height re-measure. Without this
   // subscription a reveal living in child state would change row heights
   // invisibly to the virtualization (stale cached heights → blank bands).
-  React.useSyncExternalStore(subscribeReveal, getRevealVersion)
+  // DefaultLane on purpose (useRevealVersion): a useSyncExternalStore wakeup
+  // would force a SyncLane render per 33ms tick, and each such commit ending
+  // with streaming work still pending feeds React's nested-update counter
+  // until error #185 kills the process (beta.3).
+  useRevealVersion()
   // Measured row heights, remembered after a row unmounts so virtualization
   // can compute total content height. Bounded: row ids grow monotonically
   // and rows are never removed from the transcript (foldRows keeps the
