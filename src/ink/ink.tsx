@@ -84,6 +84,13 @@ export default class Ink {
   private readonly log: LogUpdate;
   private readonly terminal: Terminal;
   private app: App | null = null;
+  // The last live App ref, kept for the shutdown phases: React detaches the
+  // ref (setAppRef(null)) while unmounting the tree, but concludeShutdown
+  // runs AFTER the tree is gone (unmount's finally, or the finishExit
+  // funnel behind an app-driven exit) and still needs the component for its
+  // raw-mode bookkeeping (borrow drain, cooked restore, readable-pump
+  // detach) — a null ref there would silently skip it and leak the pump.
+  private shutdownApp: App | undefined;
   private scheduleRender: (() => void) & {
     cancel?: () => void;
   };
@@ -1401,7 +1408,7 @@ export default class Ink {
           this.drainTimer = null;
         }
       },
-      () => this.app?.beginShutdown(),
+      () => (this.app ?? this.shutdownApp)?.beginShutdown(),
       // Shutdown bypasses the normal unmount path, so release the process
       // and stdout listeners here as well. Otherwise a SIGCONT or resize
       // arriving while an updater is running can re-enter the alternate
@@ -1460,8 +1467,10 @@ export default class Ink {
     };
     const steps: Array<() => void> = [
       // App's raw-off drains the raw-mode borrow count, which also removes
-      // the readable pump and unrefs stdin.
-      () => this.app?.concludeShutdown(),
+      // the readable pump and unrefs stdin. The ref itself is already null
+      // when the React teardown ran first (unmount's finally, finishExit
+      // behind an app-driven exit), so fall back to the last live ref.
+      () => (this.app ?? this.shutdownApp)?.concludeShutdown(),
       () => this.drainStdin(),
       () => {
         if (stdin.isTTY && stdin.isRaw && stdin.setRawMode) {
@@ -2184,6 +2193,7 @@ export default class Ink {
   };
   private setAppRef(app: App | null): void {
     this.app = app;
+    if (app !== null) this.shutdownApp = app;
   }
   /**
    * App-driven exits (Ctrl+C, error boundary, context exit()) always settle

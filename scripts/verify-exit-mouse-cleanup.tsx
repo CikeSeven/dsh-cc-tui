@@ -341,8 +341,14 @@ const sleep = (ms: number): Promise<void> =>
   }
   const stdout = new NoFdTty() as unknown as NodeJS.WriteStream
   const stdin = new FakeStdin()
+  // A real raw-mode borrower (useInput) so the unmount must actually detach
+  // the readable pump — without it the listener-leak checks below are vacuous.
+  const RawHolder = (): React.ReactElement => {
+    useInput(() => {})
+    return React.createElement(Text, null, 'holder')
+  }
   const instance = await render(
-    React.createElement(AlternateScreen, null, React.createElement(Text, null, 'no-fd cleanup target')),
+    React.createElement(AlternateScreen, null, React.createElement(RawHolder), React.createElement(Text, null, 'no-fd cleanup target')),
     {
       stdout,
       stdin: stdin as unknown as NodeJS.ReadStream,
@@ -359,6 +365,11 @@ const sleep = (ms: number): Promise<void> =>
     out.indexOf(EXIT_ALT_SCREEN) !== -1 && out.indexOf(EXIT_ALT_SCREEN) < out.indexOf(DISABLE_MOUSE_TRACKING))
   // An external (funnel-less) unmount must restore cooked mode itself.
   check('external unmount restores cooked mode (no funnel follows)', stdin.isRaw === false)
+  // ...and the App-level conclude must run even though React already nulled
+  // the ref during teardown: a leaked latched pump keeps draining a shared
+  // stdin in drain-only mode and starves the next mounted instance (#522 CI:
+  // verify-session-tree / verify-help-scroll remount-on-shared-stdin).
+  check('external unmount detaches the stdin readable pump', stdin.listenerCount('readable') === 0)
 }
 
 // ---------------------------------------------------------------------------
