@@ -105,6 +105,10 @@ const sleep = (ms: number): Promise<void> =>
     typeof instance.detachForShutdown === 'function',
   )
   check(
+    'render handle exposes beginShutdown/concludeShutdown (finishExit split phases)',
+    typeof instance.beginShutdown === 'function' && typeof instance.concludeShutdown === 'function',
+  )
+  check(
     'render handle exposes detachStdinForHandoff',
     typeof instance.detachStdinForHandoff === 'function',
   )
@@ -203,7 +207,99 @@ const sleep = (ms: number): Promise<void> =>
 }
 
 // ---------------------------------------------------------------------------
-// 4. serializeDiff keeps the empty-diff contract after the extraction.
+// 4. React error-boundary path: a throwing mount drives componentDidCatch →
+//    handleExit → Ink.unmount, which writes the synchronous cleanup itself
+//    and latches exitCleanupWritten. The finishExit funnel must then SKIP
+//    re-writing the mode resets (exactly one DISABLE_MOUSE_TRACKING and one
+//    EXIT_ALT_SCREEN in the fd trace) while still running latch → settle →
+//    conclude → handoff. finishExit never sees process.stdout swapped here,
+//    so the notice landing in the file also proves the funnel targets the
+//    runtime's own stream (stdout identity, #522).
+// ---------------------------------------------------------------------------
+{
+  const { finishExit } = await import('../src/dsh-adapter/plugin.js')
+  const tmpFile = join(tmpdir(), `dsh-tui-exit-boundary-${process.pid}.out`)
+  const tmpFd = openSync(tmpFile, 'w')
+  const stdout = fakeTTY({ fd: tmpFd })
+  const stdin = new FakeStdin()
+  const stderr = fakeTTY()
+
+  // Throw on the FIRST UPDATE, not on mount: a mount-time throw aborts the
+  // commit before AlternateScreen's insertion effect runs, so the app never
+  // enters the alt screen and the cleanup legitimately omits EXIT_ALT_SCREEN.
+  // The real error-boundary path (#522 crash reports) throws with the app
+  // already running — alt screen active, frames rendered.
+  const Bomb = (): React.ReactElement => {
+    const [boom, setBoom] = React.useState(false)
+    React.useEffect(() => { setBoom(true) }, [])
+    if (boom) throw new Error('render boom')
+    return React.createElement(Text, null, 'running before boom')
+  }
+
+  let renderThrew = false
+  let instance: Awaited<ReturnType<typeof render>> | undefined
+  try {
+    instance = await render(
+      React.createElement(AlternateScreen, null, React.createElement(Bomb)),
+      {
+        stdout,
+        stdin: stdin as unknown as NodeJS.ReadStream,
+        stderr,
+        exitOnCtrlC: false,
+        patchConsole: true,
+      },
+    )
+    // componentDidCatch → handleExit → Ink.unmount rejects the exit promise;
+    // awaiting it (with catch) is also the sync point for "unmount done".
+    await instance.waitUntilExit().catch(() => {})
+  } catch {
+    renderThrew = true
+  }
+
+  check('error boundary catches the throwing mount (render does not throw out)', !renderThrew && instance !== undefined)
+
+  if (instance) {
+    check('unmount already wrote the exit cleanup (hasWrittenExitCleanup latched)',
+      instance.hasWrittenExitCleanup === true)
+
+    const ctx = { logger: { debug() {} } } as never
+    let done = false
+    let finishThrew = false
+    try {
+      await finishExit(ctx, instance, true, 'hint-boundary', undefined, () => { done = true })
+    } catch {
+      finishThrew = true
+    }
+    closeSync(tmpFd)
+
+    const trace = readFileSync(tmpFile, 'utf8')
+    // React's error unwinding runs <AlternateScreen>'s insertion-effect
+    // cleanup (async writeRaw → stream buffer) before Ink.unmount's writeSync
+    // block, and setAltScreenActive(false) then suppresses unmount's
+    // redundant EXIT_ALT_SCREEN — so EXIT_ALT lands exactly once across BOTH
+    // channels (buffer + fd trace), while the fd trace alone proves whether
+    // finishExit double-wrote its cleanup block (a broken skip would add a
+    // second writeSync DISABLE_MOUSE_TRACKING to the file).
+    const combined = drain(stdout) + trace
+    const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1
+    check('finishExit survives the post-boundary funnel', !finishThrew && done)
+    check('fd trace has exactly one writeSync DISABLE (finishExit skip worked)',
+      count(trace, DISABLE_MOUSE_TRACKING) === 1)
+    check('EXIT_ALT_SCREEN reaches the terminal exactly once (no double write)',
+      count(combined, EXIT_ALT_SCREEN) === 1)
+    check('skip-branch still parks the notice on the runtime stream', trace.includes('hint-boundary'))
+    // The mount itself legitimately enables mouse tracking — the contract is
+    // that nothing re-enables it AFTER the final EXIT_ALT_SCREEN.
+    const postExitTail = combined.slice(combined.lastIndexOf(EXIT_ALT_SCREEN))
+    check('no ENABLE_MOUSE_TRACKING after the final EXIT_ALT_SCREEN', !postExitTail.includes(ENABLE_MOUSE_TRACKING))
+    check('concludeShutdown still ran in the finally (raw mode released)', stdin.isRaw === false)
+  } else {
+    closeSync(tmpFd)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. serializeDiff keeps the empty-diff contract after the extraction.
 // ---------------------------------------------------------------------------
 {
   const sink = new PassThrough() as unknown as NodeJS.WriteStream

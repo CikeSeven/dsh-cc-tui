@@ -189,6 +189,10 @@ export default class App extends PureComponent<Props, State> {
 	// Count how many components enabled raw mode to avoid disabling
 	// raw mode until all components don't need it anymore
 	rawModeEnabledCount = 0;
+	// Shutdown latch (set by beginShutdown): gates writeRaw and switches
+	// handleReadable to drain-only so no input is dispatched to React
+	// handlers during the exit funnel's settle window.
+	shutdownLatched = false;
 	internal_eventEmitter = new EventEmitter();
 	keyParseState = INITIAL_STATE;
 	// Timer for flushing incomplete escape sequences
@@ -307,6 +311,11 @@ export default class App extends PureComponent<Props, State> {
 	// <AlternateScreen>'s insertion effect every frame, flapping the alt
 	// screen on/off.
 	writeRaw = (data: string): void => {
+		// Shutdown gate: once beginShutdown latches, app-side raw writes
+		// (async OSC 52 clipboard callbacks, notification sequences) must not
+		// reach the terminal — they would land between DISABLE_MOUSE_TRACKING
+		// and the settle drain, or on the main screen after EXIT_ALT_SCREEN.
+		if (this.shutdownLatched) return;
 		if (data.includes("\x1b[?1049")) {
 			logMouseDebug("stdout:1049", { len: data.length, head: data.slice(0, 60) });
 		}
@@ -376,22 +385,71 @@ export default class App extends PureComponent<Props, State> {
 		this.detachForShutdown();
 	}
 
-	/** Release timers and stdin ownership without requiring a React unmount. */
+	/**
+	 * Release timers and stdin ownership without requiring a React unmount.
+	 * Composite of the two shutdown phases — componentWillUnmount and other
+	 * one-shot callers want both; the exit funnel (finishExit) calls the
+	 * phases separately so raw mode survives across its settle window.
+	 */
 	detachForShutdown() {
-		// Clear any pending timers
-		if (this.incompleteEscapeTimer) {
-			clearTimeout(this.incompleteEscapeTimer);
-			this.incompleteEscapeTimer = null;
+		this.beginShutdown();
+		this.concludeShutdown();
+	}
+
+	/**
+	 * Phase 1: stop input/output producers — clear pending timers, dispose
+	 * the querier, and latch the shutdown gate (writeRaw blocked, stdin
+	 * drained without dispatch) — WITHOUT touching raw mode. The exit funnel
+	 * sends its DISABLE/cleanup sequences and waits out its settle window
+	 * while still raw, so late mouse reports are consumed as input instead
+	 * of echoed by the kernel line discipline. querier.dispose() releases
+	 * pending raw-mode holds, but every hold sits on top of the app's own
+	 * useInput hold (a pending query implies rawModeEnabledCount >= 2), so
+	 * cooked mode cannot be reached from here. Idempotent, and each step is
+	 * isolated: a throwing dispose (raw-hold release on a revoked tty) must
+	 * not skip the remaining teardown.
+	 */
+	beginShutdown() {
+		if (this.shutdownLatched) return;
+		this.shutdownLatched = true;
+		const steps: Array<() => void> = [
+			// Clear any pending timers
+			() => {
+				if (this.incompleteEscapeTimer) {
+					clearTimeout(this.incompleteEscapeTimer);
+					this.incompleteEscapeTimer = null;
+				}
+			},
+			() => {
+				if (this.pendingHyperlinkTimer) {
+					clearTimeout(this.pendingHyperlinkTimer);
+					this.pendingHyperlinkTimer = null;
+				}
+			},
+			() => {
+				if (this.xtversionProbe) {
+					clearImmediate(this.xtversionProbe);
+					this.xtversionProbe = null;
+				}
+			},
+			() => this.querier.dispose(),
+		];
+		for (const step of steps) {
+			try {
+				step();
+			} catch (error) {
+				logError(error instanceof Error ? error : new Error(String(error)));
+			}
 		}
-		if (this.pendingHyperlinkTimer) {
-			clearTimeout(this.pendingHyperlinkTimer);
-			this.pendingHyperlinkTimer = null;
-		}
-		if (this.xtversionProbe) {
-			clearImmediate(this.xtversionProbe);
-			this.xtversionProbe = null;
-		}
-		this.querier.dispose();
+	}
+
+	/**
+	 * Phase 2: restore cooked mode — drains the raw-mode borrow count, which
+	 * also removes the readable pump and unrefs stdin. Must run LAST in the
+	 * exit funnel: once the tty flips back to canonical+echo, any mouse
+	 * report still in flight echoes as caret-notation garbage (issue #522).
+	 */
+	concludeShutdown() {
 		// ignore calling setRawMode on an handle stdin it cannot be called
 		if (this.isRawModeSupported()) {
 			while (this.rawModeEnabledCount > 0) this.handleSetRawMode(false);
@@ -566,6 +624,24 @@ export default class App extends PureComponent<Props, State> {
 		}
 	};
 	handleReadable = (): void => {
+		// Shutdown latch: drain-only. Bytes arriving during the exit funnel's
+		// settle window (late mouse reports, terminal replies) must still be
+		// consumed — otherwise the readable event spins and the bytes linger
+		// for the shell — but never dispatched: useInput handlers are output
+		// producers (a selection copy writes OSC 52, keys fire clipboard /
+		// notification side effects), and the writeRaw gate above only
+		// covers their write, not their other effects.
+		if (this.shutdownLatched) {
+			try {
+				let chunk;
+				while ((chunk = this.props.stdin.read()) !== null) {
+					void chunk;
+				}
+			} catch (error) {
+				logError(error);
+			}
+			return;
+		}
 		// Detect long stdin gaps (tmux attach, ssh reconnect, laptop wake).
 		// The terminal may have reset DEC private modes; re-assert mouse
 		// tracking. Checked before the read loop so one Date.now() covers

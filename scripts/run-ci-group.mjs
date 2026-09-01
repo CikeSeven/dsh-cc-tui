@@ -158,6 +158,11 @@ const GROUPS = {
 // 字节、不得拉回 raw mode——在途回复与鼠标事件由清理后的 re-drain
 // 吞掉，不再落入 shell。
     ["verify-exit-mouse-residue", ['node', '--import', 'tsx/esm', 'scripts/verify-exit-mouse-residue.tsx']],
+// 退出回显窗口回归（#522 的 SSH 慢链路门）：DISABLE_MOUSE 同步写在 raw
+// mode 仍持有时落盘，settle 窗也在 raw 态度过（cooked 恢复只在最后的
+// concludeShutdown）；写前 stdout 队列 barrier 排空预排队帧/ENABLE；
+// 写入失败（fd 与 stream 都抛）仍必进 conclude/handoff/done。
+    ["verify-exit-mouse-disable-order", ['node', '--import', 'tsx/esm', 'scripts/verify-exit-mouse-disable-order.tsx']],
 // 组件级拖拽协议回归：无修饰左键 press 捕获 drag target，首动 dragstart、
 // 连续 dragmove、release/focus-out/reset 收尾 dragend；未移动仍走 click，
 // 无 handler 与修饰键区域保留基线文本选择；真实 SGR 管线 + 最小滑块消费者。
