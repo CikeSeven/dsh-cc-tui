@@ -62,6 +62,13 @@ const SGR_MOUSE_PREFIX_RE = /^\[<\d+(?:;\d*){0,2}$/
 // Complete SGR tail exactly as the orphan branch expects it.
 // eslint-disable-next-line no-control-regex
 const SGR_MOUSE_TAIL_RE = /^\[<\d+;\d+;\d+[Mm]$/
+// Prefix variant (no $ anchor): matches a complete SGR report at the START
+// of a longer string, for streaming consumption of "report + suffix" tokens
+// (e.g. `;34Mabc` — the terminal batched the tail and the next keystrokes
+// into one read). The $-anchored SGR_MOUSE_TAIL_RE above stays for the
+// "token is exactly one report" path.
+// eslint-disable-next-line no-control-regex
+const SGR_MOUSE_TAIL_PREFIX_RE = /^\[<\d+;\d+;\d+[Mm]/
 
 // How long a held SGR mouse prefix waits for its continuation before being
 // discarded. The hold sentinel re-arms App's 50ms flush timer, so the hold
@@ -878,6 +885,12 @@ export function parseMultipleKeypresses(
       if (token.value === PASTE_START) {
         inPaste = true
         pasteBuffer = ''
+        // Bracketed paste is a terminal-controlled mode: report bytes are
+        // contiguous on the wire, so a held SGR prefix's report is dead
+        // once paste starts. Discard it — a late `;34M` arriving after the
+        // paste must not merge into a phantom press.
+        mouseTailHold = undefined
+        mouseTailHoldAt = undefined
       } else if (token.value === PASTE_END) {
         // Always emit a paste key, even for empty pastes. This allows
         // downstream handlers to detect empty pastes (e.g., for clipboard
@@ -885,6 +898,10 @@ export function parseMultipleKeypresses(
         keys.push(createPasteKey(pasteBuffer))
         inPaste = false
         pasteBuffer = ''
+        // Paste end is a terminal protocol boundary too — a held SGR prefix
+        // from before the paste cannot complete now.
+        mouseTailHold = undefined
+        mouseTailHoldAt = undefined
       } else if (inPaste) {
         // Sequences inside paste are treated as literal text
         pasteBuffer += token.value
@@ -1005,6 +1022,51 @@ export function parseMultipleKeypresses(
         mouseTailHoldAt = undefined
         const mouse = parseMouseEvent(resynthesized)
         keys.push(mouse ?? parseKeypress(resynthesized))
+      } else if (
+        mouseTailHold !== undefined &&
+        // Streaming completion: the token STARTS with the tail that completes
+        // the held prefix, but carries trailing bytes (e.g. `;34Mabc` — the
+        // terminal batched the tail and the next keystrokes into one read).
+        // Consume the report from the token's head, then re-process the
+        // suffix as ordinary input so it is not swallowed.
+        (() => {
+          const combined = mouseTailHold + token.value
+          const m = combined.match(SGR_MOUSE_TAIL_PREFIX_RE)
+          return m !== null && m.index === 0 && m[0].length < combined.length
+        })()
+      ) {
+        const combined = mouseTailHold + token.value
+        const m = combined.match(SGR_MOUSE_TAIL_PREFIX_RE)!
+        const reportEnd = m[0].length
+        const suffix = combined.slice(reportEnd)
+        const resynthesized = '\x1b' + combined.slice(0, reportEnd)
+        mouseTailHold = undefined
+        mouseTailHoldAt = undefined
+        const mouse = parseMouseEvent(resynthesized)
+        keys.push(mouse ?? parseKeypress(resynthesized))
+        // Re-process the suffix as ordinary input (typed text, another
+        // protocol start, …). Carry the CURRENT parser state (not
+        // INITIAL_STATE) so a suffix that is itself an incomplete protocol
+        // prefix (e.g. another split SGR report) is captured by the hold
+        // instead of lost.
+        const currentState: KeyParseState = {
+          mode: inPaste ? 'IN_PASTE' : 'NORMAL',
+          incomplete: '',
+          pasteBuffer,
+          win32HighSurrogate: win32Ctx.high,
+          win32AltHighSurrogate: win32Ctx.altHigh,
+          win32Paste,
+          win32Protocol,
+          mouseTailHold: undefined,
+          mouseTailHoldAt: undefined,
+          _tokenizer: tokenizer,
+        }
+        const [suffixKeys, suffixState] = parseMultipleKeypresses(currentState, suffix)
+        keys.push(...suffixKeys)
+        // Adopt any hold the suffix parsing captured (a new incomplete SGR
+        // prefix inside the suffix).
+        mouseTailHold = suffixState.mouseTailHold
+        mouseTailHoldAt = suffixState.mouseTailHoldAt
       } else if (
         SGR_MOUSE_PREFIX_RE.test(token.value) ||
         // Continuation of an active hold: with the prefix already captured,

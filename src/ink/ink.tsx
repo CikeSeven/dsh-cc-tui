@@ -1224,6 +1224,10 @@ export default class Ink {
         rows: this.terminalRows
       };
       this.resetFramesForAltScreen();
+      // Alt-screen reactivation is a safe boundary: the component just
+      // remounted, so no gesture can be in flight. Drain any deferred
+      // re-entry confirmed while the alt screen was inactive.
+      this.drainAltScreenReentry();
     } else {
       const saved = this.mainScreenFrameState;
       this.mainScreenFrameState = null;
@@ -1305,6 +1309,10 @@ export default class Ink {
     // blindly (idempotent) and re-enters alt only if the terminal answers
     // DECRPM with "1049 reset".
     this.probeAltScreenHealth();
+    // Drain any deferred re-entry: a >5s stdin gap is a safe boundary (no
+    // button can be held — the terminal would have sent motion events), and
+    // resume is exactly the moment a confirmed 1049 loss should heal.
+    this.drainAltScreenReentry();
     // Alt-screen re-entry — destructive (ERASE_SCREEN). Only for callers that
     // have a strong signal the terminal actually dropped mode 1049.
     if (includeAltScreen) {
@@ -1444,6 +1452,15 @@ export default class Ink {
    */
   private pointerGestureActive = false;
   /**
+   * Protocol-candidate latch: an SGR mouse prefix is in flight (parser hold
+   * or tokenizer incomplete buffer). Cleared by App on any complete event
+   * (mouse or key), ordinary text, paste/response boundary, or the 1s hold
+   * deadline. Distinct from pointerGestureActive: a split wheel report
+   * resolves to a ParsedKey (no physical button), and a stale candidate
+   * must not leave the probe permanently blocked.
+   */
+  private protocolCandidateActive = false;
+  /**
    * Set when a DECRPM reply confirmed "1049 reset" while a gesture was
    * latched. The re-entry (ENTER_ALT_SCREEN + ERASE_SCREEN + mouse
    * re-assert) is destructive mid-drag — it erases the screen under the
@@ -1451,16 +1468,69 @@ export default class Ink {
    * gesture's end and drained by setPointerGestureActive(false).
    */
   private pendingAltScreenReentry = false;
+  /**
+   * Set when probeAltScreenHealth was blocked by an active gesture. The
+   * probe is retried at the release tail (drainAltScreenReentry) with the
+   * original caller's skipMouseReassert semantics.
+   */
+  private pendingProbeRequest: { skipMouseReassert?: boolean } | undefined = undefined;
   setPointerGestureActive = (active: boolean): void => {
     this.pointerGestureActive = active;
-    if (active || !this.pendingAltScreenReentry) return;
+    // Do NOT drain pendingAltScreenReentry here: the gesture latch clears at
+    // the START of release handling, but the destructive re-entry must wait
+    // until the full release/click/drag tail completes (dispatchClick reads
+    // frontFrame for cellIsBlank / getHyperlinkAt — reenterAltScreen resets
+    // those frames synchronously). App calls drainAltScreenReentry() after
+    // the release tail instead.
+  };
+  setProtocolCandidateActive = (active: boolean): void => {
+    this.protocolCandidateActive = active;
+  };
+  /**
+   * Execute a deferred alt-screen re-entry, if one was confirmed while a
+   * gesture was latched. Called by App after the release tail completes.
+   * Only clears the pending flag when the re-entry actually runs — a pause
+   * or alt-screen exit during the gesture keeps the recovery signal alive
+   * for the next safe boundary (resume, focus, or a later release).
+   */
+  drainAltScreenReentry = (): void => {
+    if (!this.pendingAltScreenReentry) return;
+    if (this.isUnmounted || this.isPaused || !this.altScreenActive) return;
     this.pendingAltScreenReentry = false;
-    // The gesture ended with a confirmed alt-screen loss deferred — heal
-    // now, at a safe boundary (no button held). Re-check the lifecycle:
-    // the drag may have spanned an editor handoff or an alt-screen exit.
-    if (!this.isUnmounted && !this.isPaused && this.altScreenActive) {
-      this.reenterAltScreen();
+    this.reenterAltScreen();
+  };
+  /**
+   * Retry a health probe that was blocked by an active gesture. Called by
+   * App after the release tail completes, with the original caller's
+   * skipMouseReassert semantics preserved. The request is cleared ONLY
+   * after the probe actually writes — a throttle hit keeps it pending and
+   * schedules a retry once the 250ms window expires.
+   */
+  drainPendingProbe = (): void => {
+    const req = this.pendingProbeRequest;
+    if (!req) return;
+    const now = Date.now();
+    const throttleLeft = 250 - (now - this.lastHealthProbeAt);
+    if (throttleLeft > 0) {
+      // Still inside the throttle window: keep the request pending and
+      // schedule the retry for when the window closes. The timer is
+      // best-effort — a later drain (focus, release, resume) may fire
+      // first; the guard inside probeAltScreenHealth makes a duplicate
+      // harmless.
+      setTimeout(() => this.drainPendingProbe(), throttleLeft);
+      return;
     }
+    this.pendingProbeRequest = undefined;
+    this.probeAltScreenHealth(req);
+  };
+  /**
+   * Combined drain for the release tail: re-entry first (destructive),
+   * then the blocked probe retry (may discover a new 1049 loss and
+   * schedule the NEXT re-entry).
+   */
+  drainReleaseTail = (): void => {
+    this.drainAltScreenReentry();
+    this.drainPendingProbe();
   };
   probeAltScreenHealth = (options?: { skipMouseReassert?: boolean }): void => {
     // Shutdown latch: during the dispose window after detachForShutdown
@@ -1470,8 +1540,15 @@ export default class Ink {
     // the shell then echoes as SGR garbage (issue #522). isUnmounted is set
     // by detachForShutdown() before any cleanup sequence is written.
     if (this.isUnmounted) return;
-    // Gesture latch: never write while a button is held (see above).
-    if (this.pointerGestureActive) return;
+    // Dual latch: never write while a physical button is held OR while a
+    // protocol candidate (split SGR prefix) is in flight. The physical latch
+    // covers press→release; the candidate latch covers the window between
+    // the first byte of a report and its completion — a DECSET re-assert
+    // there corrupts the stream mid-parse.
+    if (this.pointerGestureActive || this.protocolCandidateActive) {
+      this.pendingProbeRequest = { ...options };
+      return;
+    }
     const now = Date.now();
     if (now - this.lastHealthProbeAt < 250) return;
     this.lastHealthProbeAt = now;
@@ -1499,10 +1576,11 @@ export default class Ink {
       // trigger the destructive re-entry.
       if (reply === undefined || (reply.status !== 2 && reply.status !== 4)) return;
       // The reply resolves asynchronously: focus/keyboard/resize issued the
-      // query, but a mouse press may have latched a gesture since. Re-entering
-      // now would erase the screen under the user's pointer and reset button
-      // tracking mid-drag — defer to the gesture's end instead.
-      if (this.pointerGestureActive) {
+      // query, but a mouse press may have latched a gesture since (or a
+      // protocol candidate may be in flight). Re-entering now would erase
+      // the screen under the user's pointer and reset button tracking
+      // mid-drag — defer to the gesture's end instead.
+      if (this.pointerGestureActive || this.protocolCandidateActive) {
         this.pendingAltScreenReentry = true;
         return;
       }
@@ -1517,7 +1595,14 @@ export default class Ink {
 
   /** Refocus = first observable moment after a conpty-side mode reset. */
   handleTerminalFocusProbe = (focused: boolean): void => {
-    if (focused) this.probeAltScreenHealth();
+    if (focused) {
+      this.probeAltScreenHealth();
+      // Refocus is a safe boundary: the OS delivered the focus event, so no
+      // button can be held (a held button would have generated motion or a
+      // release first). Drain any deferred re-entry confirmed while the
+      // window was unfocused.
+      this.drainAltScreenReentry();
+    }
   };
 
   /**
@@ -2139,7 +2224,7 @@ export default class Ink {
   }
   render(node: ReactNode): void {
     this.currentNode = node;
-    const tree = <App ref={this.setAppRef} stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onContextMenuAt={this.dispatchContextMenu} onHoverAt={this.dispatchHover} onWheelAt={this.dispatchWheelAt} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onDragTargetAt={this.findDragTargetAt} onDragDispatch={this.dispatchDrag} onPointerGestureChange={this.setPointerGestureActive} onStdinResume={this.reassertTerminalModes} onTerminalFocus={this.handleTerminalFocusProbe} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
+    const tree = <App ref={this.setAppRef} stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onContextMenuAt={this.dispatchContextMenu} onHoverAt={this.dispatchHover} onWheelAt={this.dispatchWheelAt} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onDragTargetAt={this.findDragTargetAt} onDragDispatch={this.dispatchDrag} onPointerGestureChange={this.setPointerGestureActive} onProtocolCandidateChange={this.setProtocolCandidateActive} onReleaseTail={this.drainReleaseTail} onStdinResume={this.reassertTerminalModes} onTerminalFocus={this.handleTerminalFocusProbe} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
         <TerminalWriteProvider value={this.writeRaw}>
           {node}
         </TerminalWriteProvider>

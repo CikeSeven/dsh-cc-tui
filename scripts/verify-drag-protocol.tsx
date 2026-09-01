@@ -484,13 +484,18 @@ const COLS = 100
 const ROWS = 30
 const term = new XTerm({ cols: COLS, rows: ROWS, scrollback: 0, allowProposedApi: true })
 // 全量 stdout 记录：I6 据此断言手势窗口内的协议写入为零。
+// 在公共 write() 入口同步记录，而非 _write()——Writable 的内部队列会把
+// 已调用的 write() 缓冲到 _write 回调之后，快照可能漏掉在途写入。
 const stdoutWrites: string[] = []
 class FakeStdout extends Writable {
   columns = COLS
   rows = ROWS
   isTTY = true
-  _write(chunk: unknown, _e: BufferEncoding, cb: () => void) {
+  write(chunk: any, encodingOrCb?: BufferEncoding | ((error: Error | null | undefined) => void), cb?: (error: Error | null | undefined) => void): boolean {
     stdoutWrites.push(String(chunk))
+    return super.write(chunk, encodingOrCb as BufferEncoding, cb)
+  }
+  _write(chunk: unknown, _e: BufferEncoding, cb: () => void) {
     term.write(String(chunk), cb)
   }
 }
@@ -875,6 +880,44 @@ check('场景渲染：DRAGPAD/PLAIN 标记定位', padPos.col >= 0 && plainPos.c
 }
 
 {
+  // I8b: 分段 press（SSH/ConPTY 拆段）+ idle gap —— 首段 `ESC[<0;18` 先到达，
+  // 尚未形成完整 press，但 P1-1 修复在 parser 捕获 SGR 前缀时即上闩。
+  // 旧代码 resume probe 在未上闩状态写入，motion 流死在拖拽中。
+  drainQuerier()
+  await sleep(300)
+  appInternals().lastStdinTime = Date.now() - 6000
+  dragEvents.length = 0
+  const splitStart = stdoutWrites.length
+  const pressSeq = `\x1b[<0;${padPos.col + 2};${padPos.row}M`
+  const cut = Math.floor(pressSeq.length / 2)
+  stdin.write(pressSeq.slice(0, cut)) // 首段：ESC[<0;18（未形成 ParsedMouse）
+  await sleep(120) // >50ms flush 窗口，hold 捕获
+  stdin.write(pressSeq.slice(cut)) // 尾段：;34M → 完整 press
+  await sleep(30)
+  motion(padPos.col + 5, padPos.row)
+  await sleep(30)
+  motion(padPos.col + 8, padPos.row)
+  await sleep(30)
+  const splitBeforeRelease = stdoutWrites.length
+  release(padPos.col + 8, padPos.row)
+  check(
+    'I8b 分段 press + gap 后 drag 事件流完整',
+    await settled(
+      () =>
+        dragEvents.map((e) => e.type).join(',') ===
+        'dragstart,dragmove,dragmove,dragend',
+    ),
+    dragEvents.map((e) => e.type).join(','),
+  )
+  const splitWindow = stdoutWrites.slice(splitStart, splitBeforeRelease).join('')
+  check(
+    'I8b 分段 press 窗口零探测写入（首段 hold 即上闩）',
+    !/\[\?(1000|1002|1003|1006)h/.test(splitWindow) && !splitWindow.includes('[?1049$p'),
+    JSON.stringify(splitWindow.match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+}
+
+{
   // I9: DECRQM 在途时按下鼠标，reset 回包在手势【中】到达 —— 旧代码的
   // Promise 回调无条件 reenterAltScreen()，?1049h + 2J 直接清屏并重置按键
   // 跟踪。修复：回调复检闩锁，手势中只登记 pendingAltScreenReentry，松手后
@@ -908,6 +951,7 @@ check('场景渲染：DRAGPAD/PLAIN 标记定位', padPos.col >= 0 && plainPos.c
   await sleep(30)
   motion(padPos.col + 8, padPos.row)
   release(padPos.col + 8, padPos.row)
+  await sleep(100) // 给 release 尾部的 drainReleaseTail 落的时间
   check(
     'I9 松手后在安全边界补做延期重入（?1049h + 清屏）',
     await settled(() => {
@@ -919,6 +963,39 @@ check('场景渲染：DRAGPAD/PLAIN 标记定位', padPos.col >= 0 && plainPos.c
   check(
     'I9 手势期间 drag 事件流完整',
     dragEvents.map((e) => e.type).join(',') === 'dragstart,dragmove,dragmove,dragend',
+    dragEvents.map((e) => e.type).join(','),
+  )
+}
+
+{
+  // I9b: dormant drag（press→无 motion→release→click）场景下，延期 re-entry
+  // 必须在 dispatchClick 之后执行——reenterAltScreen 同步清空 frontFrame，
+  // 若提前执行，dispatchClick 的 cellIsBlank / getHyperlinkAt 读到空帧。
+  drainQuerier()
+  await sleep(300)
+  const clickProbeStart = stdoutWrites.length
+  stdin.write('\x1b[I')
+  await settled(() => stdoutWrites.slice(clickProbeStart).join('').includes('[?1049$p'))
+  dragEvents.length = 0
+  press(padPos.col + 2, padPos.row)
+  await sleep(30)
+  const clickReplyStart = stdoutWrites.length
+  stdin.write('\x1b[?1049;2$y') // DECRPM: 1049 = reset
+  stdin.write('\x1b[?1;2c') // DA1 哨兵
+  await sleep(60)
+  release(padPos.col + 2, padPos.row) // 无 motion → dormant → click 路径
+  await sleep(100)
+  // re-entry 必须在 release 之后发生（click 路径的 dispatchClick 已完成）
+  const clickHeal = stdoutWrites.slice(clickReplyStart).join('')
+  check(
+    'I9b dormant click release 后补做延期重入（?1049h + 清屏）',
+    clickHeal.includes('[?1049h') && clickHeal.includes('[2J'),
+    JSON.stringify(clickHeal.match(/\[\?\d+[$hl][a-z]?|\[2J/g) ?? []),
+  )
+  // dormant press→release 无 motion → click 事件（非 drag）
+  check(
+    'I9b dormant 触发 click 而非 drag（press→release 无 motion）',
+    dragEvents.length === 1 && dragEvents[0]!.type === 'click',
     dragEvents.map((e) => e.type).join(','),
   )
 }
@@ -950,8 +1027,20 @@ check('场景渲染：DRAGPAD/PLAIN 标记定位', padPos.col >= 0 && plainPos.c
     await settled(() => dragEvents.at(-1)?.type === 'dragend'),
     dragEvents.map((e) => e.type).join(','),
   )
+  const beforeRelease = stdoutWrites.length
   release(padPos.col + 5, padPos.row) // 物理松手 → 解闩
-  await sleep(50)
+  await sleep(150) // 给 release 尾部的 drainReleaseTail + probe 落的时间
+  // I10c: release 尾部排空被 gesture 挡住的 resize probe —— P1-3 修复。
+  // resize 在按住期间被闩挡住并记入 pendingProbeRequest；release 后
+  // drainReleaseTail 重试它，probe 正常发出（可能发现 1049 丢失并补做
+  // re-entry）。窗口从 release 写入【之前】开始，包含 drainReleaseTail 的
+  // 同步写入。
+  const afterReleaseProbe = stdoutWrites.slice(beforeRelease).join('')
+  check(
+    'I10c release 后排空被挡的 resize probe（P1-3 恢复）',
+    /\[\?(1000|1002|1003|1006)h/.test(afterReleaseProbe) || afterReleaseProbe.includes('[?1049$p'),
+    JSON.stringify(afterReleaseProbe.match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
   // 还原几何并重新定位标记，后续用例不受影响
   stdout.columns = COLS
   stdout.emit('resize')
@@ -969,7 +1058,8 @@ check('场景渲染：DRAGPAD/PLAIN 标记定位', padPos.col >= 0 && plainPos.c
   // 查询、不盲写鼠标 DECSET（事件本身已证明 tracking 存活，
   // skipMouseReassert）。无按钮 motion 在 dispatch 前已解闩，不在手势内。
   drainQuerier()
-  await sleep(300)
+  await sleep(400) // 冷却 250ms 节流：I10c 的 probe 在 release 后发出，
+  // 需要确保 hover 的 probe 不在同一节流窗口内被吞
   const hoverStart = stdoutWrites.length
   stdin.write(`\x1b[<35;${padPos.col + 4};${padPos.row + 1}M`)
   check(
@@ -1002,6 +1092,73 @@ check('场景渲染：DRAGPAD/PLAIN 标记定位', padPos.col >= 0 && plainPos.c
     'I11b wheel probe 不盲写鼠标 DECSET（skipMouseReassert）',
     !/\[\?(1000|1002|1003|1006)h/.test(wheelWrites),
     JSON.stringify(wheelWrites.match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+}
+
+{
+  // I10b: 无手势时的 resize —— 正向对照：probe 正常发出（闩未上锁时
+  // handleResize 尾部的 health probe 必须写，否则 P1-1 的"resize 不解闩"
+  // 修复会把 resize 自愈也禁掉）。
+  drainQuerier()
+  await sleep(300)
+  const idleResizeStart = stdoutWrites.length
+  stdout.columns = COLS + 8
+  stdout.emit('resize')
+  check(
+    'I10b 无手势时 resize probe 正常发出（正向对照）',
+    await settled(() => {
+      const w = stdoutWrites.slice(idleResizeStart).join('')
+      return /\[\?(1000|1002|1003|1006)h/.test(w) || w.includes('[?1049$p')
+    }),
+    JSON.stringify(stdoutWrites.slice(idleResizeStart).join('').match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+  stdout.columns = COLS
+  stdout.emit('resize')
+  await settled(() => findMarker('DRAGPADMARKER').col >= 0)
+  const p = findMarker('DRAGPADMARKER')
+  padPos.col = p.col
+  padPos.row = p.row
+}
+
+{
+  // I11c: hover 安全边界喂入 reset 回包 —— 纯鼠标路径的完整自愈闭环：
+  // hover 触发 DECRQM 1049 查询 → 终端回 1049=reset → re-enter alt-screen。
+  // 这是 conpty 丢 1049 但 mouse tracking 存活的场景：hover 事件证明 tracking
+  // 活着（skipMouseReassert 不重写 DECSET），但 1049 查询发现 alt-screen 丢失，
+  // 必须补做 re-entry。
+  drainQuerier()
+  await sleep(300)
+  const hoverHealStart = stdoutWrites.length
+  stdin.write(`\x1b[<35;${padPos.col + 4};${padPos.row + 1}M`)
+  await settled(() => stdoutWrites.slice(hoverHealStart).join('').includes('[?1049$p'))
+  stdin.write('\x1b[?1049;2$y') // DECRPM: 1049 = reset
+  stdin.write('\x1b[?1;2c') // DA1 哨兵：让 probe 的 flush() 完成
+  check(
+    'I11c hover probe 收到 reset 回包后 re-enter alt-screen',
+    await settled(() => {
+      const w = stdoutWrites.slice(hoverHealStart).join('')
+      return w.includes('[?1049h') && w.includes('[2J')
+    }),
+    JSON.stringify(stdoutWrites.slice(hoverHealStart).join('').match(/\[\?\d+[$hl][a-z]?|\[2J/g) ?? []),
+  )
+}
+
+{
+  // I11d: wheel 安全边界喂入 reset 回包 —— 同类闭环，wheel 路径。
+  drainQuerier()
+  await sleep(300)
+  const wheelHealStart = stdoutWrites.length
+  stdin.write(`\x1b[<64;${padPos.col + 4};${padPos.row + 1}M`)
+  await settled(() => stdoutWrites.slice(wheelHealStart).join('').includes('[?1049$p'))
+  stdin.write('\x1b[?1049;2$y')
+  stdin.write('\x1b[?1;2c')
+  check(
+    'I11d wheel probe 收到 reset 回包后 re-enter alt-screen',
+    await settled(() => {
+      const w = stdoutWrites.slice(wheelHealStart).join('')
+      return w.includes('[?1049h') && w.includes('[2J')
+    }),
+    JSON.stringify(stdoutWrites.slice(wheelHealStart).join('').match(/\[\?\d+[$hl][a-z]?|\[2J/g) ?? []),
   )
 }
 
