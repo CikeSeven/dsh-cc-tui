@@ -295,7 +295,11 @@ TypeScript 源的脚本在头部声明 `node --import tsx/esm <script>` 形式�
   诊断。用 opt-in 的 stderr/调试路径（如 `DSH_TUI_DEBUG`）或既有
   `DSH_TUI_RENDER_LOG` 帧捕获。
 - 在成功、错误、中断与收尾时都保持 raw 模式、光标、alt-screen、同步输出、
-  鼠标、焦点与终端查询的清理。
+  鼠标、焦点与终端查询的清理。raw 模式的物理恢复（`setRawMode(false)`）
+  只归退出漏斗的 conclude 阶段（`finishExit` → `concludeShutdown`）：
+  error boundary 与 Ctrl+C 路径不得自行释放；React 错误解卷若在闩锁前
+  已释放，`beginShutdown` 会重新获取（仅 tty 本地模式，不重发启用序列），
+  保证 settle 窗在 raw 态度过（#522）。
 - 避免渲染期无界集合或每 token/每帧分配。流式会话长命，本仓库对先前的 OOM
   与滚动性能失败有明确回归。
 - 布局改动不得让 transcript 内容挤掉输入行与状态行。改动相关路径时演练

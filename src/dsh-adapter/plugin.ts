@@ -1539,6 +1539,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     funnel.markTeardown()
     channel.releaseContributions()
     instance?.unmount()
+    // Safety net for the crash-then-teardown race: an app-driven unmount
+    // DEFERS the cooked-mode restore to finishExit, but markTeardown makes
+    // the funnel swallow that exit — without this, raw mode would leak on
+    // the live process. Idempotent (shutdownPhase guard); a plain teardown
+    // already concluded inside unmount().
+    try {
+      instance?.concludeShutdown?.()
+    } catch {
+      ctx.logger.debug('dsh-tui: teardown conclude failed; terminal may be left raw')
+    }
   })
 
   // The TUI is the front door: when the user unmounts it (Ctrl+C), dispose
@@ -1778,10 +1788,41 @@ type InkShutdownState = {
 }
 
 /**
+ * In-flight guard for finishExit: the exit funnel serializes USER exits, but
+ * finishExit is exported and process-level — concurrent callers (racing exit
+ * actions, embedder helpers) must not re-run the cleanup/handoff. A second
+ * call while one is running simply awaits the first; its done() is
+ * deliberately NOT invoked — the process-level exit action belongs to the
+ * exit that actually ran the terminal cleanup.
+ */
+let activeFinishExit: Promise<void> | undefined
+
+/**
  * Finish terminal I/O before handing control to a process-level exit action.
  * Exported for scripts/verify-shutdown-fallback.
  */
 export async function finishExit(
+  ctx: Context,
+  instance: Awaited<ReturnType<typeof render>> | undefined,
+  fullscreen: boolean,
+  notice: string | undefined,
+  stderrNotice: string | undefined,
+  done: () => void,
+): Promise<void> {
+  if (activeFinishExit !== undefined) {
+    ctx.logger.debug('dsh-tui: exit already in flight; awaiting it instead of re-running terminal cleanup')
+    return activeFinishExit
+  }
+  const run = finishExitOnce(ctx, instance, fullscreen, notice, stderrNotice, done)
+  activeFinishExit = run
+  try {
+    await run
+  } finally {
+    if (activeFinishExit === run) activeFinishExit = undefined
+  }
+}
+
+async function finishExitOnce(
   ctx: Context,
   instance: Awaited<ReturnType<typeof render>> | undefined,
   fullscreen: boolean,
@@ -1871,8 +1912,9 @@ export async function finishExit(
     const suffix = notice === undefined ? '' : `${notice}\n`
     if (runtime?.hasWrittenExitCleanup === true) {
       // React error-boundary / signal-exit path: Ink.unmount already wrote
-      // the mode resets (and released raw mode before the funnel could hold
-      // it). Re-writing DISABLE_MOUSE_TRACKING / EXIT_ALT_SCREEN here would
+      // the mode resets (with raw mode still held — the cooked restore is
+      // deferred to the concludeShutdown in this funnel's finally).
+      // Re-writing DISABLE_MOUSE_TRACKING / EXIT_ALT_SCREEN here would
       // double-reset the terminal; only the cursor park and notice remain.
       writer.write(`${cursor}\r\n${suffix}`)
     } else {

@@ -100,6 +100,13 @@ export default class Ink {
   // DISABLE_MOUSE_TRACKING / EXIT_ALT_SCREEN and only parks the cursor and
   // prints the notice.
   private exitCleanupWritten = false;
+  // Set when the exit was driven by the app itself (Ctrl+C, error boundary,
+  // a component calling exit()): the plugin's exit funnel observes the
+  // settled exit promise and runs finishExit, which owns the cooked-mode
+  // restore (concludeShutdown) after its raw-mode settle window. External
+  // unmounts (host teardown, signal-exit) have no funnel behind them, so
+  // unmount() restores cooked mode itself.
+  private appDrivenExit = false;
   private isPaused = false;
   private readonly container: FiberRoot;
   private rootNode: dom.DOMElement;
@@ -2178,9 +2185,19 @@ export default class Ink {
   private setAppRef(app: App | null): void {
     this.app = app;
   }
+  /**
+   * App-driven exits (Ctrl+C, error boundary, context exit()) always settle
+   * the exit promise, and the plugin's funnel answers every such settle with
+   * finishExit — so unmount() must DEFER the cooked-mode restore to that
+   * funnel (its raw-mode settle window depends on it, #522).
+   */
+  private handleAppExit = (error?: Error): void => {
+    this.appDrivenExit = true;
+    this.unmount(error);
+  };
   render(node: ReactNode): void {
     this.currentNode = node;
-    const tree = <App ref={this.setAppRef} stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onContextMenuAt={this.dispatchContextMenu} onHoverAt={this.dispatchHover} onWheelAt={this.dispatchWheelAt} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onDragTargetAt={this.findDragTargetAt} onDragDispatch={this.dispatchDrag} onStdinResume={this.reassertTerminalModes} onTerminalFocus={this.handleTerminalFocusProbe} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
+    const tree = <App ref={this.setAppRef} stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.handleAppExit} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onContextMenuAt={this.dispatchContextMenu} onHoverAt={this.dispatchHover} onWheelAt={this.dispatchWheelAt} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onDragTargetAt={this.findDragTargetAt} onDragDispatch={this.dispatchDrag} onStdinResume={this.reassertTerminalModes} onTerminalFocus={this.handleTerminalFocusProbe} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
         <TerminalWriteProvider value={this.writeRaw}>
           {node}
         </TerminalWriteProvider>
@@ -2238,7 +2255,16 @@ export default class Ink {
         // Node's TTY WriteStream exposes .fd; the NodeJS.WriteStream interface
         // doesn't declare it, hence the local intersection cast.
         const stdoutWithFd = this.options.stdout as NodeJS.WriteStream & { fd?: number | null };
-        const stdoutFd = typeof stdoutWithFd.fd === 'number' ? stdoutWithFd.fd : 1;
+        const stdoutFd = typeof stdoutWithFd.fd === 'number' ? stdoutWithFd.fd : undefined;
+        // With no usable fd (TTY-like custom streams, wrapped embedders) fall
+        // back to the stream's OWN ordered queue — never a hard-coded
+        // writeSync(1): fd 1 belongs to the host process, so the cleanup
+        // would bypass the target stream entirely while the enable writes
+        // reached it (#522). Queueing also keeps these bytes behind any
+        // in-flight frames, preserving the frame → EXIT_ALT_SCREEN order.
+        const emit = stdoutFd === undefined
+          ? (text: string): void => { this.options.stdout.write(text); }
+          : (text: string): void => { writeSync(stdoutFd, text); };
         // Any segment failure leaves exitCleanupWritten false, so the
         // finishExit funnel rewrites the whole block (all sequences are
         // idempotent resets) rather than trusting a partial cleanup.
@@ -2250,12 +2276,12 @@ export default class Ink {
           // switch to the main screen, painting misplaced residue over the
           // shell (issue #522).
           if (lastFrame !== '') {
-            writeSync(stdoutFd, lastFrame);
+            emit(lastFrame);
           }
           if (this.altScreenActive) {
             // <AlternateScreen>'s unmount effect won't run during signal-exit.
             // Exit alt screen FIRST so other cleanup sequences go to the main screen.
-            writeSync(stdoutFd, EXIT_ALT_SCREEN);
+            emit(EXIT_ALT_SCREEN);
           }
         } catch (segmentError) {
           cleanupFailed = true;
@@ -2265,7 +2291,7 @@ export default class Ink {
           // Disable mouse tracking — unconditional because altScreenActive can be
           // stale if AlternateScreen's unmount (which flips the flag) raced a
           // blocked event loop + SIGINT. No-op if tracking was never enabled.
-          writeSync(stdoutFd, DISABLE_MOUSE_TRACKING);
+          emit(DISABLE_MOUSE_TRACKING);
           // Drain stdin so in-flight mouse events don't leak to the shell
           this.drainStdin();
         } catch (segmentError) {
@@ -2274,20 +2300,20 @@ export default class Ink {
         }
         try {
           // Disable extended key reporting (both kitty and modifyOtherKeys)
-          writeSync(stdoutFd, DISABLE_MODIFY_OTHER_KEYS);
-          writeSync(stdoutFd, DISABLE_KITTY_KEYBOARD);
+          emit(DISABLE_MODIFY_OTHER_KEYS);
+          emit(DISABLE_KITTY_KEYBOARD);
           // Disable win32-input-mode (no-op where never enabled)
-          writeSync(stdoutFd, DISABLE_WIN32_INPUT_MODE);
+          emit(DISABLE_WIN32_INPUT_MODE);
           // Disable focus events (DECSET 1004)
-          writeSync(stdoutFd, DFE);
+          emit(DFE);
           // Disable bracketed paste mode
-          writeSync(stdoutFd, DBP);
+          emit(DBP);
           // Show cursor
-          writeSync(stdoutFd, SHOW_CURSOR);
+          emit(SHOW_CURSOR);
           // Clear iTerm2 progress bar
-          writeSync(stdoutFd, CLEAR_ITERM2_PROGRESS);
+          emit(CLEAR_ITERM2_PROGRESS);
           // Clear tab status (OSC 21337) so a stale dot doesn't linger
-          if (supportsTabStatus()) writeSync(stdoutFd, wrapForMultiplexer(CLEAR_TAB_STATUS));
+          if (supportsTabStatus()) emit(wrapForMultiplexer(CLEAR_TAB_STATUS));
         } catch (segmentError) {
           cleanupFailed = true;
           logError(segmentError instanceof Error ? segmentError : new Error(String(segmentError)));
@@ -2310,6 +2336,19 @@ export default class Ink {
       reconciler.updateContainerSync(null, this.container, null, noop);
       // @ts-ignore -- ported CC build; type drift tolerated flushSyncWork exists in react-reconciler but not in @types/react-reconciler
       reconciler.flushSyncWork();
+      // Cooked-mode restore: app-driven exits defer it to the exit funnel
+      // (finishExit holds raw mode across its post-cleanup settle window,
+      // #522); external unmounts (host teardown, signal-exit) have no funnel
+      // behind them, so restore cooked mode here. Idempotent via the
+      // shutdownPhase guard, and the React teardown above already ran
+      // App.componentWillUnmount's beginShutdown latch.
+      if (!this.appDrivenExit) {
+        try {
+          this.concludeShutdown();
+        } catch (concludeError) {
+          logError(concludeError instanceof Error ? concludeError : new Error(String(concludeError)));
+        }
+      }
       instances.delete(this.options.stdout);
 
       // Free the root yoga node, then clear its reference. Children are already

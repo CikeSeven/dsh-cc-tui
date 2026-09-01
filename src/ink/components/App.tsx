@@ -193,6 +193,12 @@ export default class App extends PureComponent<Props, State> {
 	// handleReadable to drain-only so no input is dispatched to React
 	// handlers during the exit funnel's settle window.
 	shutdownLatched = false;
+	// Whether the tty is physically in raw mode. Separate from the borrow
+	// count because the shutdown latch DEFERS the physical release: React
+	// effect cleanups during unmount drain the count to zero while the exit
+	// funnel is still spending its settle window in raw mode (#522) — the
+	// actual setRawMode(false) then happens in concludeShutdown.
+	private rawModePhysicallyHeld = false;
 	internal_eventEmitter = new EventEmitter();
 	keyParseState = INITIAL_STATE;
 	// Timer for flushing incomplete escape sequences
@@ -382,13 +388,17 @@ export default class App extends PureComponent<Props, State> {
 		if (this.props.stdout.isTTY) {
 			this.props.stdout.write(SHOW_CURSOR);
 		}
-		this.detachForShutdown();
+		// Latch only: the cooked-mode restore is owned by the exit funnel
+		// (finishExit's concludeShutdown) so it happens after the raw-mode
+		// settle window. Ink.unmount concludes itself when NO funnel follows
+		// (host teardown / signal-exit).
+		this.beginShutdown();
 	}
 
 	/**
 	 * Release timers and stdin ownership without requiring a React unmount.
-	 * Composite of the two shutdown phases — componentWillUnmount and other
-	 * one-shot callers want both; the exit funnel (finishExit) calls the
+	 * Composite of the two shutdown phases for one-shot callers that must
+	 * restore cooked mode themselves; the exit funnel (finishExit) calls the
 	 * phases separately so raw mode survives across its settle window.
 	 */
 	detachForShutdown() {
@@ -433,6 +443,25 @@ export default class App extends PureComponent<Props, State> {
 				}
 			},
 			() => this.querier.dispose(),
+			// React's error unwinding runs the throwing subtree's effect
+			// cleanups BEFORE the boundary's componentDidCatch — so by the time
+			// handleExit latches, a useInput cleanup may already have drained
+			// the borrow count and physically released raw mode. The settle
+			// window contract (cleanup consumed while raw, #522) matters MORE
+			// on exactly that crash path, so re-acquire raw mode here if it
+			// was lost: tty-local only (no mode-enable escape sequences —
+			// re-emitting EBP/EFE/kitty after the cleanup's disables would be
+			// the residue bug through another door), with the readable pump
+			// re-attached in the latched drain-only mode. concludeShutdown
+			// performs the final release either way.
+			() => {
+				if (!this.isRawModeSupported() || this.rawModePhysicallyHeld) return;
+				const { stdin } = this.props;
+				stdin.ref();
+				stdin.setRawMode(true);
+				this.rawModePhysicallyHeld = true;
+				stdin.addListener("readable", this.handleReadable);
+			},
 		];
 		for (const step of steps) {
 			try {
@@ -453,6 +482,10 @@ export default class App extends PureComponent<Props, State> {
 		// ignore calling setRawMode on an handle stdin it cannot be called
 		if (this.isRawModeSupported()) {
 			while (this.rawModeEnabledCount > 0) this.handleSetRawMode(false);
+			// The count may already be drained (React effect cleanups during
+			// unmount ran while latched and only deferred the release) — the
+			// physical restore is owed regardless.
+			this.releaseRawModePhysical();
 		}
 	}
 	override componentDidCatch(error: Error) {
@@ -473,6 +506,10 @@ export default class App extends PureComponent<Props, State> {
 		}
 		stdin.setEncoding("utf8");
 		if (isEnabled) {
+			// Post-latch the tty's raw state is owned by the shutdown funnel:
+			// new borrowers get nothing, and their symmetric cleanups no-op on
+			// the zero count below.
+			if (this.shutdownLatched) return;
 			// Ensure raw mode is enabled only once
 			if (this.rawModeEnabledCount === 0) {
 				// Stop early input capture right before we add our own readable handler.
@@ -482,6 +519,7 @@ export default class App extends PureComponent<Props, State> {
 				stopCapturingEarlyInput();
 				stdin.ref();
 				stdin.setRawMode(true);
+				this.rawModePhysicallyHeld = true;
 				stdin.addListener("readable", this.handleReadable);
 				// Enable bracketed paste mode
 				this.props.stdout.write(EBP);
@@ -548,11 +586,29 @@ export default class App extends PureComponent<Props, State> {
 			this.props.stdout.write(DFE);
 			// Disable bracketed paste mode
 			this.props.stdout.write(DBP);
-			stdin.setRawMode(false);
-			stdin.removeListener("readable", this.handleReadable);
-			stdin.unref();
+			// Latched: the exit funnel keeps raw mode held across its settle
+			// window (#522) — the physical release is owed to
+			// concludeShutdown, which the funnel runs LAST.
+			if (!this.shutdownLatched) this.releaseRawModePhysical();
 		}
 	};
+
+	/**
+	 * The actual cooked-mode restore (setRawMode(false) + pump detach). Split
+	 * from the borrow bookkeeping so the shutdown latch can defer it: once
+	 * beginShutdown latches, draining the count updates bookkeeping only, and
+	 * concludeShutdown performs the physical release as the funnel's LAST
+	 * step — after the settle window gave the terminal time to consume the
+	 * disable bytes (#522).
+	 */
+	private releaseRawModePhysical(): void {
+		if (!this.rawModePhysicallyHeld) return;
+		this.rawModePhysicallyHeld = false;
+		const { stdin } = this.props;
+		stdin.setRawMode(false);
+		stdin.removeListener("readable", this.handleReadable);
+		stdin.unref();
+	}
 
 	// Helper to flush incomplete escape sequences
 	flushIncomplete = (): void => {
@@ -693,9 +749,15 @@ export default class App extends PureComponent<Props, State> {
 		// keyboard protocol terminals (Ghostty, iTerm2, kitty, WezTerm)
 	};
 	handleExit = (error?: Error): void => {
-		if (this.isRawModeSupported()) {
-			this.handleSetRawMode(false);
-		}
+		// Latch producers immediately (writeRaw gated, stdin drained without
+		// dispatch) but DO NOT release raw mode here: the exit funnel owns the
+		// raw-mode lifecycle end to end — cleanup bytes must be written (and
+		// the settle window spent) while raw is still held, or late mouse
+		// reports echo as caret garbage once cooked+echo returns (#522).
+		// Raw is released by concludeShutdown: Ink.unmount runs it for
+		// funnel-less exits (teardown / signal-exit), finishExit's finally
+		// runs it for every funneled exit — including this one.
+		this.beginShutdown();
 		this.props.onExit(error);
 	};
 	handleTerminalFocus = (isFocused: boolean): void => {

@@ -384,6 +384,12 @@ the required credentials.
   such as `DSH_TUI_DEBUG`, or the existing `DSH_TUI_RENDER_LOG` frame capture.
 - Preserve raw-mode, cursor, alternate-screen, synchronized-output, mouse,
   focus, and terminal-query cleanup on success, error, interrupt, and teardown.
+  The physical raw-mode restore (`setRawMode(false)`) belongs solely to the
+  exit funnel's conclude phase (`finishExit` → `concludeShutdown`): the
+  error-boundary and Ctrl+C paths must never release it themselves; when
+  React's error unwinding already released it before the latch,
+  `beginShutdown` re-acquires raw mode (tty-local only — no mode-enable
+  sequences are re-emitted) so the settle window is still spent raw (#522).
 - Avoid render-time unbounded collections or per-token/per-frame allocations.
   Streaming sessions are long lived, and this repository has explicit
   regressions for prior OOM and scroll-performance failures.

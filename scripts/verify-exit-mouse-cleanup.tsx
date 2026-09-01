@@ -23,7 +23,7 @@ import { closeSync, openSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
-import { render, AlternateScreen, Text } from '../src/ui.js'
+import { render, AlternateScreen, Text, useInput } from '../src/ui.js'
 import instances from '../src/ink/instances.js'
 import {
   DISABLE_MOUSE_TRACKING,
@@ -44,9 +44,12 @@ const check = (name: string, ok: boolean) => {
 class FakeStdin extends PassThrough {
   isTTY = true
   isRaw = false
+  /** Physical raw-mode transitions with timestamps (performance.now()). */
+  rawTransitions: Array<{ value: boolean; at: number }> = []
 
   setRawMode(value: boolean): this {
     this.isRaw = value
+    this.rawTransitions.push({ value, at: performance.now() })
     return this
   }
 
@@ -228,7 +231,15 @@ const sleep = (ms: number): Promise<void> =>
   // commit before AlternateScreen's insertion effect runs, so the app never
   // enters the alt screen and the cleanup legitimately omits EXIT_ALT_SCREEN.
   // The real error-boundary path (#522 crash reports) throws with the app
-  // already running — alt screen active, frames rendered.
+  // already running — alt screen active, frames rendered. RawHolder is the
+  // realistic raw-mode borrower (PromptInput's useInput): its effect cleanup
+  // runs DURING React's error unwinding — before componentDidCatch — so it
+  // physically releases raw mode before the shutdown latch exists, and the
+  // latch must re-acquire it for the settle window.
+  const RawHolder = (): React.ReactElement => {
+    useInput(() => {})
+    return React.createElement(Text, null, 'raw holder')
+  }
   const Bomb = (): React.ReactElement => {
     const [boom, setBoom] = React.useState(false)
     React.useEffect(() => { setBoom(true) }, [])
@@ -240,7 +251,7 @@ const sleep = (ms: number): Promise<void> =>
   let instance: Awaited<ReturnType<typeof render>> | undefined
   try {
     instance = await render(
-      React.createElement(AlternateScreen, null, React.createElement(Bomb)),
+      React.createElement(AlternateScreen, null, React.createElement(RawHolder), React.createElement(Bomb)),
       {
         stdout,
         stdin: stdin as unknown as NodeJS.ReadStream,
@@ -262,9 +273,18 @@ const sleep = (ms: number): Promise<void> =>
     check('unmount already wrote the exit cleanup (hasWrittenExitCleanup latched)',
       instance.hasWrittenExitCleanup === true)
 
+    // Mid-point, finishExit not yet called: the crash-unmount must have kept
+    // (re-acquired) raw mode — the settle window is only meaningful raw —
+    // and the cleanup bytes must have been written in that state (#522:
+    // cooked+echo before the terminal processes DISABLE is the echo bug).
+    const midTrace = readFileSync(tmpFile, 'utf8')
+    check('raw mode survives the crash-unmount (settle-window precondition)', stdin.isRaw === true)
+    check('crash-unmount wrote DISABLE while raw mode was held', midTrace.includes(DISABLE_MOUSE_TRACKING))
+
     const ctx = { logger: { debug() {} } } as never
     let done = false
     let finishThrew = false
+    const finishStart = performance.now()
     try {
       await finishExit(ctx, instance, true, 'hint-boundary', undefined, () => { done = true })
     } catch {
@@ -293,13 +313,56 @@ const sleep = (ms: number): Promise<void> =>
     const postExitTail = combined.slice(combined.lastIndexOf(EXIT_ALT_SCREEN))
     check('no ENABLE_MOUSE_TRACKING after the final EXIT_ALT_SCREEN', !postExitTail.includes(ENABLE_MOUSE_TRACKING))
     check('concludeShutdown still ran in the finally (raw mode released)', stdin.isRaw === false)
+    // The physical raw-off must happen INSIDE finishExit, after its 150ms
+    // raw-mode settle window — never before the funnel (the pre-fix path
+    // released it in App.handleExit, ahead of the cleanup write itself).
+    const lastOff = stdin.rawTransitions.filter(t => !t.value).at(-1)
+    check('raw-off happened only after the settle window (finishExit-owned)',
+      lastOff !== undefined && lastOff.at - finishStart >= 140)
   } else {
     closeSync(tmpFd)
   }
 }
 
 // ---------------------------------------------------------------------------
-// 5. serializeDiff keeps the empty-diff contract after the extraction.
+// 5. unmount() on a TTY-like stream WITHOUT an fd must write the cleanup to
+//    the stream's own ordered queue — never writeSync(1): fd 1 belongs to
+//    the host process, so a wrapped/embedder stream would lose every reset
+//    while its enable writes still reached the TTY (#522 review). The queued
+//    fallback also preserves frame → EXIT_ALT_SCREEN ordering for free.
+//    (Pre-fix, this stream captured NOTHING — the bytes went to real fd 1.)
+// ---------------------------------------------------------------------------
+{
+  class NoFdTty extends PassThrough {
+    isTTY = true
+    columns = 40
+    rows = 10
+    // Explicitly no `fd` property.
+  }
+  const stdout = new NoFdTty() as unknown as NodeJS.WriteStream
+  const stdin = new FakeStdin()
+  const instance = await render(
+    React.createElement(AlternateScreen, null, React.createElement(Text, null, 'no-fd cleanup target')),
+    {
+      stdout,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      exitOnCtrlC: false,
+      patchConsole: true,
+    },
+  )
+  drain(stdout)
+  instance.unmount()
+  const out = drain(stdout)
+  check('no-fd unmount writes EXIT_ALT_SCREEN to the stream itself', out.includes(EXIT_ALT_SCREEN))
+  check('no-fd unmount writes DISABLE_MOUSE_TRACKING to the stream itself', out.includes(DISABLE_MOUSE_TRACKING))
+  check('no-fd unmount orders EXIT_ALT_SCREEN before DISABLE',
+    out.indexOf(EXIT_ALT_SCREEN) !== -1 && out.indexOf(EXIT_ALT_SCREEN) < out.indexOf(DISABLE_MOUSE_TRACKING))
+  // An external (funnel-less) unmount must restore cooked mode itself.
+  check('external unmount restores cooked mode (no funnel follows)', stdin.isRaw === false)
+}
+
+// ---------------------------------------------------------------------------
+// 6. serializeDiff keeps the empty-diff contract after the extraction.
 // ---------------------------------------------------------------------------
 {
   const sink = new PassThrough() as unknown as NodeJS.WriteStream
