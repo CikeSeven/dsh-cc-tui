@@ -1433,7 +1433,36 @@ export default class Ink {
    * left the app broken until the user gave up).
    */
   private lastHealthProbeAt = 0;
-  probeAltScreenHealth = (): void => {
+  /**
+   * True while a mouse button is held (press seen, no release/reset yet).
+   * Set by App via setPointerGestureActive. The health probe must not write
+   * while a gesture is in flight: the blind ENABLE_MOUSE_TRACKING re-assert
+   * mid-drag resets button tracking on some emulators (WezTerm, xterm.js
+   * family), silently killing the gesture's motion stream, and a DECRQM
+   * "1049 reset" reply resolving mid-drag would erase the screen under the
+   * user's pointer.
+   */
+  private pointerGestureActive = false;
+  /**
+   * Set when a DECRPM reply confirmed "1049 reset" while a gesture was
+   * latched. The re-entry (ENTER_ALT_SCREEN + ERASE_SCREEN + mouse
+   * re-assert) is destructive mid-drag — it erases the screen under the
+   * user's pointer and resets button tracking — so it is deferred to the
+   * gesture's end and drained by setPointerGestureActive(false).
+   */
+  private pendingAltScreenReentry = false;
+  setPointerGestureActive = (active: boolean): void => {
+    this.pointerGestureActive = active;
+    if (active || !this.pendingAltScreenReentry) return;
+    this.pendingAltScreenReentry = false;
+    // The gesture ended with a confirmed alt-screen loss deferred — heal
+    // now, at a safe boundary (no button held). Re-check the lifecycle:
+    // the drag may have spanned an editor handoff or an alt-screen exit.
+    if (!this.isUnmounted && !this.isPaused && this.altScreenActive) {
+      this.reenterAltScreen();
+    }
+  };
+  probeAltScreenHealth = (options?: { skipMouseReassert?: boolean }): void => {
     // Shutdown latch: during the dispose window after detachForShutdown
     // (up to the 5s fallback exit) stray input, focus, resize or a pending
     // DECRPM reply would otherwise re-write ENABLE_MOUSE_TRACKING AFTER the
@@ -1441,11 +1470,19 @@ export default class Ink {
     // the shell then echoes as SGR garbage (issue #522). isUnmounted is set
     // by detachForShutdown() before any cleanup sequence is written.
     if (this.isUnmounted) return;
+    // Gesture latch: never write while a button is held (see above).
+    if (this.pointerGestureActive) return;
     const now = Date.now();
     if (now - this.lastHealthProbeAt < 250) return;
     this.lastHealthProbeAt = now;
     if (!this.options.stdout.isTTY || this.isPaused || !this.altScreenActive) return;
-    if (this.altScreenMouseTracking) {
+    // Mouse-driven callers pass skipMouseReassert: the event that triggered
+    // the probe already proves tracking is alive, so the blind DECSET
+    // re-assert is pure risk near gestures — only the 1049 query below is
+    // worth sending (conpty can drop 1049 while mouse tracking survives;
+    // without a mouse-path probe a mouse-only user never recovers, since
+    // mouse input keeps lastStdinTime fresh and starves the >5s gap path).
+    if (this.altScreenMouseTracking && !options?.skipMouseReassert) {
       this.options.stdout.write(ENABLE_MOUSE_TRACKING);
     }
     const querier = this.app?.querier;
@@ -1460,9 +1497,19 @@ export default class Ink {
       // DECRPM status: 1/3 = set, 2/4 = reset, 0/undefined = unknown.
       // Heal only on a POSITIVE reset — an unanswered probe must not
       // trigger the destructive re-entry.
-      if (reply !== undefined && (reply.status === 2 || reply.status === 4)) {
-        this.reenterAltScreen();
+      if (reply === undefined || (reply.status !== 2 && reply.status !== 4)) return;
+      // The reply resolves asynchronously: focus/keyboard/resize issued the
+      // query, but a mouse press may have latched a gesture since. Re-entering
+      // now would erase the screen under the user's pointer and reset button
+      // tracking mid-drag — defer to the gesture's end instead.
+      if (this.pointerGestureActive) {
+        this.pendingAltScreenReentry = true;
+        return;
       }
+      // Same re-check for the wider world: the probe ran with alt-screen
+      // active, but an exit or editor handoff may have landed meanwhile.
+      if (this.isUnmounted || this.isPaused || !this.altScreenActive) return;
+      this.reenterAltScreen();
     }).catch(() => {
       /* probe is best-effort; the next trigger retries */
     });
@@ -1788,11 +1835,15 @@ export default class Ink {
    * on ClickEvent.shift/alt/ctrl.
    */
   dispatchClick(col: number, row: number, button = 0): boolean {
-    // Interaction-level health probe: the first click after a conpty-side
-    // mode drop triggers the heal (probe is throttled + no-op on healthy
-    // screens). Runs before the gate so a dropped 1049 is re-entered
-    // within a round trip instead of the click silently missing.
-    this.probeAltScreenHealth();
+    // Safe-boundary probe: clicks are dispatched from the RELEASE tail,
+    // after App cleared the gesture latch — no button is held here. A
+    // received mouse report proves tracking is alive but says nothing about
+    // mode 1049 (conpty drops them independently), and mouse input keeps
+    // lastStdinTime fresh so the >5s stdin-gap path never fires for a
+    // mouse-only user — without a mouse-path probe, a silently dropped
+    // alt-screen would never recover. skipMouseReassert: the arriving event
+    // already proves tracking, so only the DECRQM 1049 query is sent.
+    this.probeAltScreenHealth({ skipMouseReassert: true });
     if (!this.altScreenActive) {
       logMouseDebug('dispatchClick skipped — alt screen inactive', { col, row });
       return false;
@@ -1811,7 +1862,10 @@ export default class Ink {
    * modifier bits land on ContextMenuEvent.shift/alt/ctrl.
    */
   dispatchContextMenu(col: number, row: number, button = 0): boolean {
-    this.probeAltScreenHealth();
+    // No probe: this runs at right-PRESS time, inside the gesture window
+    // (App latches before dispatching) — the probe would be latch-blocked
+    // here anyway. Recovery lives at the safe boundaries (click release,
+    // hover, wheel — see dispatchClick).
     if (!this.altScreenActive) {
       logMouseDebug('dispatchContextMenu skipped — alt screen inactive', { col, row });
       return false;
@@ -1834,7 +1888,11 @@ export default class Ink {
     deltaX = 0,
     button = 0,
   ): boolean {
-    this.probeAltScreenHealth();
+    // Safe-boundary probe (skipMouseReassert — see dispatchClick). Wheel is
+    // the recovery entry for mouse-only users on mode-1002-only terminals,
+    // where no-button hover motion never arrives: SGR wheel reports carry
+    // no held-button state and never engage the gesture latch.
+    this.probeAltScreenHealth({ skipMouseReassert: true });
     if (!this.altScreenActive) return false;
     const handled = dispatchWheel(this.rootNode, col, row, deltaY, deltaX, button);
     if (handled) {
@@ -1843,7 +1901,10 @@ export default class Ink {
     return handled;
   }
   dispatchHover(col: number, row: number): void {
-    this.probeAltScreenHealth();
+    // Safe-boundary probe (skipMouseReassert — see dispatchClick). Hover is
+    // no-button motion; App already cleared the gesture latch before routing
+    // here, so no button can be held.
+    this.probeAltScreenHealth({ skipMouseReassert: true });
     if (!this.altScreenActive) return;
     dispatchHover(this.rootNode, col, row, this.hoveredNodes);
   }
@@ -1856,7 +1917,13 @@ export default class Ink {
    * baseline selection/click path untouched.
    */
   findDragTargetAt(col: number, row: number): dom.DOMElement | null {
-    this.probeAltScreenHealth();
+    // No probe: this runs AT PRESS TIME, inside the gesture window — a
+    // probe here writes the blind ENABLE_MOUSE_TRACKING re-assert + DECRQM
+    // query while the user is holding the button, and some emulators
+    // (WezTerm, xterm.js family) reset button tracking on DECSET re-assert,
+    // killing the drag's motion stream mid-gesture (field-confirmed: drags
+    // intermittently produced zero motion events). Recovery lives at the
+    // safe boundaries (see dispatchClick).
     if (!this.altScreenActive) return null;
     const target = findDragTarget(this.rootNode, col, row);
     logMouseDebug('findDragTargetAt', { col, row, found: Boolean(target) });
@@ -1868,7 +1935,9 @@ export default class Ink {
    * dispatchClick.
    */
   dispatchDrag(target: dom.DOMElement, event: DragEvent): void {
-    this.probeAltScreenHealth();
+    // No probe: dragmove IS mid-gesture by definition (gesture latched) —
+    // a re-assert write here kills the very motion stream that feeds it
+    // (see dispatchClick for the safe-boundary probes).
     if (!this.altScreenActive) return;
     logMouseDebug('dispatchDrag', { type: event.type, col: event.col, row: event.row });
     bubbleDragEvent(target, event);
@@ -2070,7 +2139,7 @@ export default class Ink {
   }
   render(node: ReactNode): void {
     this.currentNode = node;
-    const tree = <App ref={this.setAppRef} stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onContextMenuAt={this.dispatchContextMenu} onHoverAt={this.dispatchHover} onWheelAt={this.dispatchWheelAt} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onDragTargetAt={this.findDragTargetAt} onDragDispatch={this.dispatchDrag} onStdinResume={this.reassertTerminalModes} onTerminalFocus={this.handleTerminalFocusProbe} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
+    const tree = <App ref={this.setAppRef} stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onContextMenuAt={this.dispatchContextMenu} onHoverAt={this.dispatchHover} onWheelAt={this.dispatchWheelAt} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onDragTargetAt={this.findDragTargetAt} onDragDispatch={this.dispatchDrag} onPointerGestureChange={this.setPointerGestureActive} onStdinResume={this.reassertTerminalModes} onTerminalFocus={this.handleTerminalFocusProbe} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
         <TerminalWriteProvider value={this.writeRaw}>
           {node}
         </TerminalWriteProvider>

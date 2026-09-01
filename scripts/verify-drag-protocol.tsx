@@ -18,7 +18,16 @@
  *   I2 press 原地不动→release：无 drag 事件、onClick 触发；
  *   I3 drag 中 FOCUS_OUT：收到 dragend；
  *   I4 localCol/localRow 相对坐标正确；
- *   I5 最小消费者：drag 协议实现的数值滑块（拖动改值）。
+ *   I5 最小消费者：drag 协议实现的数值滑块（拖动改值）；
+ *   I6 手势窗口零协议写入（press 路径探测回归 + 手势闩），松手后探测恢复；
+ *   I7 退出 AlternateScreen 时孤儿 drag 会话收尾 dragend。
+ *   I8 >5s 空闲后首个输入是 SGR press：resume 重断言延后到批次解析后，
+ *      被闩挡住；
+ *   I9 DECRQM 在途时按下鼠标、reset 回包手势中到达：闩挡重入，松手后在
+ *      安全边界补做；
+ *   I10 手势中 resize：几何重置不解除物理闩，resize probe 不得写；
+ *   I11 纯鼠标用户的 1049 自愈入口：hover/wheel 触发安全边界 probe，且
+ *      只发 DECRQM 查询、不盲写鼠标 DECSET（skipMouseReassert）。
  *
  * 运行：node --import tsx/esm scripts/verify-drag-protocol.tsx
  */
@@ -38,6 +47,7 @@ const [
   { nodeCache },
   { createSelectionState, hasSelection, updateSelection },
   { dispatchDragEvent, findDragTarget },
+  { default: instances },
   { settle, settled, sleep },
 ] = await Promise.all([
   import('node:stream'),
@@ -51,6 +61,7 @@ const [
   import('../src/ink/node-cache.js'),
   import('../src/ink/selection.js'),
   import('../src/ink/hit-test.js'),
+  import('../src/ink/instances.js'),
   import('./lib/term-test.mjs'),
 ])
 
@@ -472,11 +483,14 @@ function mouse(button: number, action: 'press' | 'release', col: number, row: nu
 const COLS = 100
 const ROWS = 30
 const term = new XTerm({ cols: COLS, rows: ROWS, scrollback: 0, allowProposedApi: true })
+// 全量 stdout 记录：I6 据此断言手势窗口内的协议写入为零。
+const stdoutWrites: string[] = []
 class FakeStdout extends Writable {
   columns = COLS
   rows = ROWS
   isTTY = true
   _write(chunk: unknown, _e: BufferEncoding, cb: () => void) {
+    stdoutWrites.push(String(chunk))
     term.write(String(chunk), cb)
   }
 }
@@ -606,6 +620,35 @@ const x10 = (button: number, c: number, r: number) => stdin.write(
   `\x1b[M${String.fromCharCode(button + 32)}${String.fromCharCode(c + 1 + 32)}${String.fromCharCode(r + 1 + 32)}`,
 )
 
+// 直达 Ink 内部 App 实例（测试专用）：戳 lastStdinTime 伪造 stdin 空闲间隔、
+// 清空 querier 在途队列。
+type AppInternals = {
+  lastStdinTime: number
+  querier?: {
+    queue: Array<
+      | { kind: 'query'; resolve: (r: unknown) => void; releaseRawMode: () => void }
+      | { kind: 'sentinel'; resolve: () => void; releaseRawMode: () => void }
+    >
+  }
+}
+function appInternals(): AppInternals {
+  const ink = instances.get(stdout) as unknown as { app: AppInternals | null }
+  if (!ink?.app) throw new Error('App instance not reachable')
+  return ink.app
+}
+// headless xterm 的查询应答不会被喂回 stdin，历史 probe 的在途 query/sentinel
+// 永不到期；本用例注入的 DECRPM/DA1 回包按 FIFO 会先被它们吃掉。测试前清空
+// （语义同 querier.dispose()，但不置 disposed 标记），让回包精确落位。
+function drainQuerier(): void {
+  const q = appInternals().querier
+  if (!q) return
+  for (const p of q.queue.splice(0)) {
+    if (p.kind === 'query') p.resolve(undefined)
+    else p.resolve()
+    p.releaseRawMode()
+  }
+}
+
 const padPos = { col: -1, row: -1 }
 const plainPos = { col: -1, row: -1 }
 await settled(() => {
@@ -734,7 +777,236 @@ check('场景渲染：DRAGPAD/PLAIN 标记定位', padPos.col >= 0 && plainPos.c
 }
 
 {
-  // I6: leaving AlternateScreen settles dragend before the active-screen gate
+  // I6: 手势窗口零协议写入（beta.1 现场回归的硬断言）+ 手势闩。
+  // 背景：beta.1 的 #611 把 probeAltScreenHealth 挂上了 press 路径
+  // （findDragTargetAt），按下瞬间盲写鼠标 DECSET 重断言
+  // （\x1b[?1000h?1002h?1003h?1006h）+ DECRQM 查询（\x1b[?1049$p）。
+  // WezTerm/xterm.js 系终端在按键按住期间收到 DECSET 重断言会重置按键
+  // 跟踪，该次拖拽的 motion 流被静默掐断——用户表现为"拖好多次才选中
+  // 一次"。探测本身有 250ms 节流，所以是否写入取决于按下距上次探测的
+  // 间隔——这正是"时灵时不灵"的竞态来源。
+  // 本用例：先静默 300ms 让节流冷却（press 时探测必发——修复前），再
+  // press→FOCUS_IN（探测的另一触发源，检验手势闩）→motion→release，
+  // 断言整个手势窗口 stdout 无任何探测写入，且 drag 事件流完整。
+  // 窗口在 release 写入【之前】截断：release 处理后闩解除，此后 probe 在
+  // 安全边界恢复属正确行为（I6b 专门验证），不能计入禁止窗口——否则修复
+  // 在 release 后立即做安全 probe 的正确实现反而会被判 FAIL。
+  await sleep(300) // 让 250ms 探测节流彻底冷却
+  dragEvents.length = 0
+  const gestureStart = stdoutWrites.length
+  press(padPos.col + 2, padPos.row)
+  await sleep(30)
+  stdin.write('\x1b[I') // FOCUS_IN：平时必触发探测；按住期间必须被闩挡住
+  await sleep(30)
+  motion(padPos.col + 5, padPos.row)
+  await sleep(30)
+  motion(padPos.col + 8, padPos.row)
+  await sleep(30)
+  const beforeRelease = stdoutWrites.length
+  release(padPos.col + 8, padPos.row)
+  check(
+    'I6 手势期间 drag 事件流完整（精确序列+终点坐标）',
+    await settled(
+      () =>
+        dragEvents.map((e) => e.type).join(',') ===
+          'dragstart,dragmove,dragmove,dragend' &&
+        dragEvents[3]!.col === padPos.col + 8 &&
+        dragEvents[3]!.row === padPos.row,
+    ),
+    dragEvents.map((e) => `${e.type}@${e.col},${e.row}`).join(' '),
+  )
+  const duringGesture = stdoutWrites.slice(gestureStart, beforeRelease).join('')
+  check(
+    'I6 手势窗口（press→release 前）零探测写入（无 DECSET 重断言 / DECRQM）',
+    !/\[\?(1000|1002|1003|1006)h/.test(duringGesture) && !duringGesture.includes('[?1049$p'),
+    JSON.stringify(duringGesture.match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+}
+{
+  // I6b: 松手后闩解除——FOCUS_IN 探测恢复盲写（证明闩不是永久禁用探测，
+  // conpty 自愈路径仍然可用）。
+  await sleep(300) // 再次冷却节流，确保本次 focus 必触发
+  const mark = stdoutWrites.length
+  stdin.write('\x1b[I')
+  await settled(() => /\[\?1006h|\[\?1049\$p/.test(stdoutWrites.slice(mark).join('')))
+  const afterRelease = stdoutWrites.slice(mark).join('')
+  check(
+    'I6b 松手后 FOCUS_IN 探测恢复',
+    /\[\?1006h/.test(afterRelease) || afterRelease.includes('[?1049$p'),
+    JSON.stringify(afterRelease.match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+}
+
+{
+  // I8: >5s 空闲后的首个输入就是 SGR press —— 物理按键已经按下，但闩只有
+  // 在该批次被解析后才上锁。旧代码在读循环【之前】触发 onStdinResume，
+  // 盲写 ENABLE_MOUSE_TRACKING 正落在 press 与首个 motion 之间
+  // （WezTerm/xterm.js 系终端的 motion 流就此静默丢失）。修复：resume 延到
+  // 批次解析之后，此时闩已上锁，probe 被挡住。lastStdinTime 是 public
+  // 字段，直接戳回 6s 前，省一次真实的 5s 睡眠。
+  drainQuerier()
+  await sleep(300) // 节流冷却：resume 若没被闩挡住，probe 必发
+  appInternals().lastStdinTime = Date.now() - 6000
+  dragEvents.length = 0
+  const gapStart = stdoutWrites.length
+  press(padPos.col + 2, padPos.row)
+  await sleep(30)
+  motion(padPos.col + 5, padPos.row)
+  await sleep(30)
+  motion(padPos.col + 8, padPos.row)
+  await sleep(30)
+  const gapBeforeRelease = stdoutWrites.length
+  release(padPos.col + 8, padPos.row)
+  check(
+    'I8 空闲-gap 后 press 起的手势 drag 事件流完整',
+    await settled(
+      () =>
+        dragEvents.map((e) => e.type).join(',') ===
+        'dragstart,dragmove,dragmove,dragend',
+    ),
+    dragEvents.map((e) => e.type).join(','),
+  )
+  const gapWindow = stdoutWrites.slice(gapStart, gapBeforeRelease).join('')
+  check(
+    'I8 gap→press 窗口零探测写入（resume 延到批次后被闩挡住）',
+    !/\[\?(1000|1002|1003|1006)h/.test(gapWindow) && !gapWindow.includes('[?1049$p'),
+    JSON.stringify(gapWindow.match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+}
+
+{
+  // I9: DECRQM 在途时按下鼠标，reset 回包在手势【中】到达 —— 旧代码的
+  // Promise 回调无条件 reenterAltScreen()，?1049h + 2J 直接清屏并重置按键
+  // 跟踪。修复：回调复检闩锁，手势中只登记 pendingAltScreenReentry，松手后
+  // 在安全边界补做。drainQuerier 先清掉历史 probe 的在途 query（headless
+  // xterm 不应答查询，它们会按 FIFO 抢走本用例注入的回包）。
+  drainQuerier()
+  await sleep(300) // 节流冷却，确保 FOCUS_IN 必发 probe
+  const probeStart = stdoutWrites.length
+  stdin.write('\x1b[I')
+  check(
+    'I9 FOCUS_IN 探测照常发出 DECRQM 1049 查询',
+    await settled(() => stdoutWrites.slice(probeStart).join('').includes('[?1049$p')),
+    JSON.stringify(stdoutWrites.slice(probeStart).join('').match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+  dragEvents.length = 0
+  press(padPos.col + 2, padPos.row)
+  await sleep(30)
+  const replyStart = stdoutWrites.length
+  stdin.write('\x1b[?1049;2$y') // DECRPM 回包：1049 = reset
+  stdin.write('\x1b[?1;2c') // DA1 哨兵应答：让 probe 的 flush() 完成
+  await sleep(60) // 给 promise 回调（微任务+settled）落的时间
+  const midGesture = stdoutWrites.slice(replyStart).join('')
+  check(
+    'I9 手势中收到 reset 回包不重入（无 ?1049h / 2J / 鼠标重断言）',
+    !midGesture.includes('[?1049h') &&
+      !midGesture.includes('[2J') &&
+      !/\[\?(1000|1002|1003|1006)h/.test(midGesture),
+    JSON.stringify(midGesture.match(/\[\?\d+[$hl][a-z]?|\[2J/g) ?? []),
+  )
+  motion(padPos.col + 5, padPos.row)
+  await sleep(30)
+  motion(padPos.col + 8, padPos.row)
+  release(padPos.col + 8, padPos.row)
+  check(
+    'I9 松手后在安全边界补做延期重入（?1049h + 清屏）',
+    await settled(() => {
+      const w = stdoutWrites.slice(replyStart).join('')
+      return w.includes('[?1049h') && w.includes('[2J')
+    }),
+    JSON.stringify(stdoutWrites.slice(replyStart).join('').match(/\[\?\d+[$hl][a-z]?|\[2J/g) ?? []),
+  )
+  check(
+    'I9 手势期间 drag 事件流完整',
+    dragEvents.map((e) => e.type).join(',') === 'dragstart,dragmove,dragmove,dragend',
+    dragEvents.map((e) => e.type).join(','),
+  )
+}
+
+{
+  // I10: 手势中 resize —— 几何重置把逻辑拖拽收尾（dragend），但物理按键
+  // 并未松开：闩必须保持，resize handler 自己的 health probe 不得写。
+  // 旧代码 resetPointerState 顺带解闩，同一 handleResize 尾部的 probe
+  // 立刻漏写。
+  drainQuerier()
+  await sleep(300)
+  dragEvents.length = 0
+  press(padPos.col + 2, padPos.row)
+  await sleep(30)
+  motion(padPos.col + 5, padPos.row)
+  await settled(() => dragEvents.some((e) => e.type === 'dragmove'))
+  const resizeStart = stdoutWrites.length
+  stdout.columns = COLS + 12
+  stdout.emit('resize')
+  await sleep(100)
+  const duringResize = stdoutWrites.slice(resizeStart).join('')
+  check(
+    'I10 resize 期间零探测写入（闩不因几何重置解除）',
+    !/\[\?(1000|1002|1003|1006)h/.test(duringResize) && !duringResize.includes('[?1049$p'),
+    JSON.stringify(duringResize.match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+  check(
+    'I10 resize 把进行中的 drag 收尾为 dragend',
+    await settled(() => dragEvents.at(-1)?.type === 'dragend'),
+    dragEvents.map((e) => e.type).join(','),
+  )
+  release(padPos.col + 5, padPos.row) // 物理松手 → 解闩
+  await sleep(50)
+  // 还原几何并重新定位标记，后续用例不受影响
+  stdout.columns = COLS
+  stdout.emit('resize')
+  await settled(() => findMarker('DRAGPADMARKER').col >= 0)
+  const p = findMarker('DRAGPADMARKER')
+  padPos.col = p.col
+  padPos.row = p.row
+}
+
+{
+  // I11: 纯鼠标用户的 1049 自愈入口。收到鼠标事件只证明 tracking 活着，
+  // 证明不了 1049 还在（conpty 可独立丢 1049）；而鼠标输入不断刷新
+  // lastStdinTime，>5s gap 路径对纯鼠标用户永不触发。修复：在安全边界
+  // （无按钮 hover、wheel、click release）恢复 probe，但只发 DECRQM 1049
+  // 查询、不盲写鼠标 DECSET（事件本身已证明 tracking 存活，
+  // skipMouseReassert）。无按钮 motion 在 dispatch 前已解闩，不在手势内。
+  drainQuerier()
+  await sleep(300)
+  const hoverStart = stdoutWrites.length
+  stdin.write(`\x1b[<35;${padPos.col + 4};${padPos.row + 1}M`)
+  check(
+    'I11 无按钮 hover 触发 DECRQM 1049 查询',
+    await settled(() => stdoutWrites.slice(hoverStart).join('').includes('[?1049$p')),
+    JSON.stringify(stdoutWrites.slice(hoverStart).join('').match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+  const hoverWrites = stdoutWrites.slice(hoverStart).join('')
+  check(
+    'I11 hover probe 不盲写鼠标 DECSET（skipMouseReassert）',
+    !/\[\?(1000|1002|1003|1006)h/.test(hoverWrites),
+    JSON.stringify(hoverWrites.match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+}
+
+{
+  // I11b: wheel 是同类安全边界，且是 1002-only 终端（无 hover motion）上
+  // 纯鼠标用户的唯一恢复入口：SGR wheel 报告不携带按住状态、从不上闩。
+  drainQuerier()
+  await sleep(300)
+  const wheelStart = stdoutWrites.length
+  stdin.write(`\x1b[<64;${padPos.col + 4};${padPos.row + 1}M`)
+  check(
+    'I11b wheel 触发 DECRQM 1049 查询',
+    await settled(() => stdoutWrites.slice(wheelStart).join('').includes('[?1049$p')),
+    JSON.stringify(stdoutWrites.slice(wheelStart).join('').match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+  const wheelWrites = stdoutWrites.slice(wheelStart).join('')
+  check(
+    'I11b wheel probe 不盲写鼠标 DECSET（skipMouseReassert）',
+    !/\[\?(1000|1002|1003|1006)h/.test(wheelWrites),
+    JSON.stringify(wheelWrites.match(/\[\?\d+[$hl][a-z]?/g) ?? []),
+  )
+}
+
+{
+  // I7: leaving AlternateScreen settles dragend before the active-screen gate
   // closes. The consumer must not be left with a captured gesture.
   dragEvents.length = 0
   press(padPos.col + 2, padPos.row)
@@ -742,7 +1014,7 @@ check('场景渲染：DRAGPAD/PLAIN 标记定位', padPos.col >= 0 && plainPos.c
   await settled(() => dragEvents.some(event => event.type === 'dragmove'))
   inst.rerender(<PlainScene />)
   check(
-    'I6 AlternateScreen 退出仍派发 cleanup dragend',
+    'I7 AlternateScreen 退出仍派发 cleanup dragend',
     await settled(() => dragEvents.at(-1)?.type === 'dragend'),
     dragEvents.map(event => event.type).join(','),
   )

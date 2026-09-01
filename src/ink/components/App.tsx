@@ -145,6 +145,13 @@ type Props = {
 	// session target (bubbles through its ancestors). No-op outside
 	// fullscreen (Ink gates on altScreenActive). Optional like above.
 	readonly onDragDispatch?: (target: DOMElement, event: DragEvent) => void;
+	// Gesture latch for Ink's alt-screen health probe: true while a mouse
+	// button is held (press seen, no release/reset yet), false otherwise.
+	// Ink must not write its blind mode re-assert / DECRQM query mid-gesture
+	// — some emulators reset button tracking on DECSET re-assert, silently
+	// killing the gesture's motion stream. Optional so testing.tsx doesn't
+	// need to stub it.
+	readonly onPointerGestureChange?: (active: boolean) => void;
 	// Called when stdin data arrives after a >STDIN_RESUME_GAP_MS gap.
 	// Ink re-asserts terminal modes: extended key reporting, and (when in
 	// fullscreen) re-enters alt-screen + mouse tracking. Idempotent on the
@@ -277,9 +284,13 @@ export default class App extends PureComponent<Props, State> {
 		this.lastClickRow = -1;
 		this.lastHoverCol = -1;
 		this.lastHoverRow = -1;
-		// A drag session spanning a screen swap has no release coming —
-		// settle it (dragend if started) before the geometry it was
-		// captured against is gone.
+		// Do NOT clear the pointer gesture latch here. A geometry reset
+		// (resize, screen swap) cancels the LOGICAL drag/selection below, but
+		// says nothing about the physical button — the user may still be
+		// holding it, and Ink's health probe writes (blind DECSET re-assert,
+		// DECRQM) must stay barred until a confirmed termination signal:
+		// release, no-button motion, or focus-out. Unlatching here let the
+		// resize handler's own probe write mid-gesture.
 		this.finishDragSession();
 		if (this.pendingHyperlinkTimer) {
 			clearTimeout(this.pendingHyperlinkTimer);
@@ -568,12 +579,9 @@ export default class App extends PureComponent<Props, State> {
 	handleReadable = (): void => {
 		// Detect long stdin gaps (tmux attach, ssh reconnect, laptop wake).
 		// The terminal may have reset DEC private modes; re-assert mouse
-		// tracking. Checked before the read loop so one Date.now() covers
-		// all chunks in this readable event.
+		// tracking. One Date.now() covers all chunks in this readable event.
 		const now = Date.now();
-		if (now - this.lastStdinTime > STDIN_RESUME_GAP_MS) {
-			this.props.onStdinResume?.();
-		}
+		const resumedAfterGap = now - this.lastStdinTime > STDIN_RESUME_GAP_MS;
 		this.lastStdinTime = now;
 		try {
 			let chunk;
@@ -604,6 +612,17 @@ export default class App extends PureComponent<Props, State> {
 				);
 				stdin.addListener("readable", this.handleReadable);
 			}
+		}
+		// Fire the resume hook only AFTER this batch is parsed. When the first
+		// post-gap input is an SGR mouse press, the physical button is already
+		// down — but the press only reaches handleMouseEvent (which engages
+		// Ink's gesture latch) inside processInput above. Firing before the
+		// read loop would let reassertTerminalModes write its blind
+		// ENABLE_MOUSE_TRACKING re-assert mid-press, which resets button
+		// tracking on WezTerm/xterm.js-family emulators and silently kills
+		// the gesture's motion stream.
+		if (resumedAfterGap) {
+			this.props.onStdinResume?.();
 		}
 	};
 	handleInput = (input: string | undefined): void => {
@@ -764,6 +783,10 @@ function processKeysInBatch(
 		}
 		if (sequence === FOCUS_OUT) {
 			app.handleTerminalFocus(false);
+			// Gesture latch: focus loss means no release event is coming for
+			// a held button (released outside the window or swallowed by the
+			// OS) — unlatch so the health probe may write again.
+			app.props.onPointerGestureChange?.(false);
 			// Drag protocol: focus loss also orphans an in-flight drag
 			// session — settle it with a dragend (if started) like the
 			// selection recovery below.
@@ -872,6 +895,10 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
 				finishSelection(sel);
 				app.props.onSelectionChange();
 			}
+			// Gesture latch: no-button motion proves no button is held — if a
+			// release was lost the latch is stale; unlatch so the health
+			// probe may write again.
+			app.props.onPointerGestureChange?.(false);
 			// Drag protocol: no-button motion during a drag session means
 			// the release was dropped (pointer left the window) — settle
 			// the session before the hover path takes over.
@@ -889,6 +916,12 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
 		if ((m.button & 0x20) === 0 && app.dragSession) {
 			app.finishDragSession();
 		}
+		// Gesture latch: a real button press (the no-button-motion case
+		// returned above; drag-motion presses keep the existing latch).
+		// Ink's health probe must not write its blind mode re-assert while a
+		// button is held — some emulators reset button tracking on DECSET
+		// re-assert, silently killing the gesture's motion stream.
+		app.props.onPointerGestureChange?.(true);
 		if (baseButton !== 0) {
 			// Non-left press breaks the multi-click chain.
 			app.clickCount = 0;
@@ -1043,6 +1076,9 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
 	// low button bits. Some terminals encode release as button=3 (legacy
 	// "no button") or retain the motion bit. A started session still needs
 	// dragend; a dormant press still needs its ordinary click replay.
+	// Gesture latch: any release ends the held-button state regardless of
+	// encoding — unlatch so the health probe may write again.
+	app.props.onPointerGestureChange?.(false);
 	let replayedDormantDrag = false;
 	if (app.dragSession) {
 		const session = app.dragSession;
