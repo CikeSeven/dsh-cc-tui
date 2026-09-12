@@ -28,17 +28,39 @@ const leaf = createTextNode(text)
 insertBeforeNode(node, leaf, node.childNodes[0])
 insertBeforeNode(parent, node, parent.childNodes[0])
 assert.ok(node.yogaNode instanceof YogaLayoutNode)
+const yoga = node.yogaNode.yoga
+const measure = yoga.measureFunc
+assert.ok(measure)
+let measureCalls = 0
+yoga.measureFunc = (...args) => {
+  measureCalls++
+  return measure(...args)
+}
+const originalWidth = 96.03921568627452
 try {
-  for (const width of [96.03921568627452, 60.5, 100, 96.03921568627452]) {
+  // Each width needs two Yoga cache slots. A third distinct width would
+  // evict the first one before the return, silently testing a cache miss.
+  for (const [index, width] of [originalWidth, 60.5, originalWidth].entries()) {
+    const before = measureCalls
     parent.yogaNode!.setWidth(width)
     for (let pass = 0; pass < 4; pass++) {
       parent.yogaNode!.calculateLayout(width)
-      const measuredWidth = node.yogaNode.getComputedMeasureWidth()
-      assert.ok(Number.isFinite(measuredWidth))
+      const measuredWidth: number = node.yogaNode.getComputedMeasureWidth()
+      assert.equal(measuredWidth, width)
       const paintedRows = wrapText(leaf.nodeValue, measuredWidth, 'wrap').split('\n').length
       assert.equal(node.yogaNode.getComputedHeight(), paintedRows, 'warm layout must restore both height and its measurement width')
     }
-    setTextNodeValue(leaf, leaf.nodeValue + '\nappended tail')
+    if (index === 2) assert.equal(measureCalls, before, 'the width round trip must restore a cached measurement')
+    else assert.ok(measureCalls > before)
+  }
+  const beforeAppend = measureCalls
+  setTextNodeValue(leaf, leaf.nodeValue + '\nappended tail')
+  for (const width of [originalWidth, 100]) {
+    parent.yogaNode!.setWidth(width)
+    parent.yogaNode!.calculateLayout(width)
+    assert.ok(measureCalls > beforeAppend, 'appending invalidates cached text dimensions')
+    assert.equal(node.yogaNode.getComputedMeasureWidth(), width)
+    assert.equal(node.yogaNode.getComputedHeight(), wrapText(leaf.nodeValue, width, 'wrap').split('\n').length, 'appended text must be measured at the current width')
   }
 } finally {
   parent.yogaNode!.freeRecursive()

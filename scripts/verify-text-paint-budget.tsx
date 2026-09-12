@@ -6,13 +6,14 @@ process.env.FORCE_COLOR = '3'
 process.env.DSH_TUI_THEME = 'dark'
 import assert from 'node:assert/strict'
 
-const [React, { PassThrough, Writable }, { Box, Text, ScrollBox, AlternateScreen, render }, { default: Output }, { createNode, createTextNode, insertBeforeNode }, { default: renderNode, resetLayoutShifted, didLayoutShift }, { createScreen, StylePool, CharPool, HyperlinkPool }, { scanPositions }, { default: instances }, { settled }] = await Promise.all([
+const [React, { PassThrough, Writable }, { Box, Text, ScrollBox, AlternateScreen, render }, { default: Output }, { createNode, createTextNode, insertBeforeNode, appendChildNode }, { default: renderNode, resetLayoutShifted, didLayoutShift }, { createScreen, StylePool, CharPool, HyperlinkPool }, { scanPositions }, { default: instances }, { settled }] = await Promise.all([
   import('react'), import('node:stream'), import('../src/ui.js'),
   import('../src/ink/output.js'), import('../src/ink/dom.js'), import('../src/ink/render-node-to-output.js'),
   import('../src/ink/screen.js'), import('../src/ink/render-to-screen.js'),
   import('../src/ink/instances.js'), import('./lib/term-test.mjs'),
 ])
 import type { Frame } from '../src/ink/frame.js'
+import type { Screen } from '../src/ink/screen.js'
 
 const node = createNode('ink-text')
 const leaf = createTextNode('VISIBLE-TEXT')
@@ -27,6 +28,7 @@ const output = new Output({ width: 40, height: 20, stylePool, screen: blank })
 try {
   renderNode(node, output, { offsetY: 30, prevScreen: undefined })
   assert.equal(reads, 0, 'a fully offscreen text leaf must not be read for paint')
+  assert.equal(node.dirty, false, 'culling must finish the text paint lifecycle')
   output.get()
   const next = createScreen(40, 20, stylePool, blank.charPool, blank.hyperlinkPool)
   output.reset(40, 20, next)
@@ -40,6 +42,40 @@ try {
   assert.ok(didLayoutShift(), 'culling moved text must retain old-position invalidation')
 } finally {
   node.yogaNode!.freeRecursive()
+}
+
+const parent = createNode('ink-box')
+parent.yogaNode!.setWidth(40)
+parent.yogaNode!.setHeight(20)
+parent.yogaNode!.setFlexDirection('column')
+const offscreen = createNode('ink-text')
+insertBeforeNode(offscreen, createTextNode('OFFSCREEN'), offscreen.childNodes[0])
+offscreen.yogaNode!.setPosition('top', 30)
+const sibling = createNode('ink-text')
+const siblingText = createTextNode('CACHED-SIBLING')
+insertBeforeNode(sibling, siblingText, sibling.childNodes[0])
+appendChildNode(parent, offscreen)
+appendChildNode(parent, sibling)
+parent.yogaNode!.calculateLayout(40)
+let siblingReads = 0
+Object.defineProperty(siblingText, 'nodeValue', { get() { siblingReads++; return 'CACHED-SIBLING' } })
+let previous: Screen | undefined
+try {
+  for (let frame = 0; frame < 3; frame++) {
+    // An unrelated parent repaint must not make a clean visible sibling
+    // inherit the culled text's dirty state on every following frame.
+    parent.dirty = true
+    siblingReads = 0
+    output.reset(40, 20, createScreen(40, 20, stylePool, blank.charPool, blank.hyperlinkPool))
+    renderNode(parent, output, { prevScreen: previous })
+    previous = output.get()
+    assert.equal(offscreen.dirty, false)
+    assert.equal(scanPositions(previous, 'CACHED-SIBLING').length, 1)
+    if (frame === 0) assert.ok(siblingReads > 0)
+    else assert.equal(siblingReads, 0, 'a culled text leaf must not disable later sibling blits')
+  }
+} finally {
+  parent.yogaNode!.freeRecursive()
 }
 
 class Input extends PassThrough {

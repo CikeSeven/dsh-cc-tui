@@ -18,7 +18,7 @@ process.env.FORCE_COLOR = '3'
 // locale, none of which a runner is obliged to agree with.
 process.env.DSH_TUI_LANG = 'zh'
 
-const [{ PassThrough, Writable }, React, { Terminal: XTerm }, { render }, { Chat }, { QuestionStore }, { settled, sleep }] =
+const [{ PassThrough, Writable }, React, { Terminal: XTerm }, { render }, { Chat }, { QuestionStore }, { settled, sleep, viewportLines }] =
   await Promise.all([
     import('node:stream'),
     import('react'),
@@ -223,10 +223,10 @@ for (const pendingFrame of [false, true]) {
 
   harness.stdin.write(CTRL_P)
   check('Ctrl+P collapses the panel again', await settled(() => {
-    const text = harness.screen()
+    const text = viewportLines(harness.term).join('\n')
     return panelHeader(text).includes('Ctrl+P') && !text.includes('你是 dsh')
   }),
-    panelHeader(harness.screen()).trim())
+    panelHeader(viewportLines(harness.term).join('\n')).trim())
 
   harness.stdin.write(CTRL_T)
   check('Ctrl+T opens the trajectory even before the first message', await settled(() => isScene(harness.screen())),

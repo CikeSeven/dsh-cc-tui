@@ -235,8 +235,8 @@ export function StreamingMarkdown({
   const boundary = prefixRef.current.length
   const tokens = marked.lexer(stripped.substring(boundary))
   const blocks = blocksRef.current
-  // Reference definitions have document-wide scope. Keep the original
-  // whole-prefix parser when they occur, including definitions arriving late.
+  // Reference definitions have document-wide scope, including references
+  // in the growing suffix. These documents cannot use independent parsers.
   if (!blocks.definitions && Object.keys(tokens.links).length > 0) {
     blocks.definitions = true
     blocks.blocks = []
@@ -288,8 +288,12 @@ export function StreamingMarkdown({
     }
   }
 
+  if (blocks.definitions) {
+    return <Markdown dimColor={dimColor} cacheTokens={false}>{stripped}</Markdown>
+  }
+
   const stablePrefix = prefixRef.current
-  const prefixTail = blocks.definitions ? stablePrefix : blocks.tail
+  const prefixTail = blocks.tail
   const suffixSource = stripped.substring(stablePrefix.length)
   const unstableSuffix = clipSuffixTail(suffixSource, cutRef)
   const suffixStart = cutRef.current > 0
@@ -323,7 +327,7 @@ export function StreamingMarkdown({
         </Box>
       ))}
       {prefixTail && (
-        <Box key="prefix" flexDirection="column" marginTop={blocks.definitions ? 0 : blocks.tailGap}>
+        <Box key="prefix" flexDirection="column" marginTop={blocks.tailGap}>
           <Markdown dimColor={dimColor}>{prefixTail}</Markdown>
         </Box>
       )}

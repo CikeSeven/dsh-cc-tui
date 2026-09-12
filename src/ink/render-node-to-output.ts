@@ -936,6 +936,7 @@ function renderNodeToOutput(
     // Keep the old-position cleanup above, but cull before squash/wrap/style.
     if (node.nodeName === 'ink-text' && width > 0 && height > 0 && !output.isRectVisible(x, y, width, height)) {
       nodeCache.delete(node)
+      node.dirty = false
       return
     }
 

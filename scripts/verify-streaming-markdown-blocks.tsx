@@ -63,6 +63,9 @@ const cases = [
   prefix + '> a quoted paragraph\n> another line\n\ntail',
   prefix + '| a | b |\n| - | - |\n| 1 | 2 |\n\n| c |\n| - |\n| 3 |\n\ntail',
   '[link][target]\n\n' + prefix + '[target]: https://example.invalid\n\ntail',
+  '[target]: https://example.invalid\n\n' + prefix + '[go][target]',
+  prefix + '[target]: https://example.invalid\n\n[go][target]',
+  '[target]: https://example.invalid\n\n' + prefix + '[go][target] ' + 'growing tail '.repeat(400),
   prefix + '<div>hidden</div>\n\nvisible tail',
   prefix + '\u4e2d\u6587 e\u0301 \ud83d\ude00 final text',
   prefix.slice(0, 7600) + '\n\n| a | b |\n| - | - |\n' + '| long cell content | another cell |\n'.repeat(40) + '\ntail',
@@ -128,6 +131,15 @@ try {
   app.rerender(<StreamingMarkdown>{defined}</StreamingMarkdown>)
   assert.ok(await settled(() => scanPositions(ink.frontFrame.screen, 'LINK-END').length === 1))
   assert.deepEqual(screenSnapshot(ink.frontFrame.screen, undefined, false), snapshot(unsplit(defined), 55, false), 'late definitions update earlier references')
+
+  const referencePrefix = '[target]: https://example.invalid\n\n' + prefix
+  for (const [index, tail] of ['[go][target]', '[go][target] more text', '[go][target]\n\n[next][target]'].entries()) {
+    const marker = `REFERENCE-END-${index}`
+    const source = referencePrefix + tail + ' ' + marker
+    app.rerender(<StreamingMarkdown>{source}</StreamingMarkdown>)
+    assert.ok(await settled(() => scanPositions(ink.frontFrame.screen, marker).length === 1))
+    assert.deepEqual(screenSnapshot(ink.frontFrame.screen, undefined, false), snapshot(unsplit(source), 55, false), 'growing suffix resolves definitions from the stable prefix')
+  }
 } finally {
   await app.unmount()
 }
