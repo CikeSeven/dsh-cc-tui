@@ -193,13 +193,25 @@ const panelHeader = (text: string): string =>
 
 // ── empty transcript: the panel is collapsed; Ctrl+P toggles it, Ctrl+T
 //    still opens the trajectory ────────────────────────────────────────────
-{
+for (const pendingFrame of [false, true]) {
+  console.log(`\nEmpty transcript: ${pendingFrame ? 'pending paint during collapse' : 'normal scheduling'}`)
   const harness = makeHarness(100, 30)
   const localReports: Array<{ title: string; lines: readonly string[] }> = []
   const instance = await mount(harness, makeChannel({
     rows: [],
     pushLocal: (title: string, lines: readonly string[]) => { localReports.push({ title, lines }) },
   }))
+  if (pendingFrame) {
+    const ink = instances.get(harness.stdout as never)!
+    const reanchor = ink.reanchorViewport.bind(ink)
+    let reanchors = 0
+    ink.reanchorViewport = () => {
+      reanchor()
+      // Reproduce a queued animation paint consuming the collapse request
+      // before React commits. Reanchoring must observe the new layout.
+      if (++reanchors === 2) ink.onRender()
+    }
+  }
   check('the startup context panel is on screen', await settled(() => /已加载上下文/.test(harness.screen())))
   check('the collapsed panel claims Ctrl+P', await settled(() => panelHeader(harness.screen()).includes('Ctrl+P')), panelHeader(harness.screen()).trim())
 
@@ -210,7 +222,10 @@ const panelHeader = (text: string): string =>
     harness.screen().split('\n').filter(line => line.includes('/context')).join(' | '))
 
   harness.stdin.write(CTRL_P)
-  check('Ctrl+P collapses the panel again', await settled(() => !harness.screen().includes('你是 dsh')),
+  check('Ctrl+P collapses the panel again', await settled(() => {
+    const text = harness.screen()
+    return panelHeader(text).includes('Ctrl+P') && !text.includes('你是 dsh')
+  }),
     panelHeader(harness.screen()).trim())
 
   harness.stdin.write(CTRL_T)
