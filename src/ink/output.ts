@@ -31,6 +31,7 @@ import {
   type CellRun,
 } from './screen.js'
 import { stringWidth } from './stringWidth.js'
+import { expandTabs } from './tabstops.js'
 import type { DOMElement } from './dom.js'
 import {
   TERMINAL_IMAGE_MAX_CELLS,
@@ -1038,6 +1039,9 @@ export default class Output {
           const clipHorizontally = typeof clip?.x1 === 'number' && typeof clip?.x2 === 'number'
           if (clipHorizontally && x >= clip.x2!) continue
           const clipLine = (line: string): string => {
+            // Width/slicing treat raw tabs as zero cells. Expand at the
+            // ORIGINAL x before clipping, also for the soft-wrap predecessor.
+            line = expandTabs(line, undefined, x)
             if (!clipHorizontally) return line
             const start = Math.max(0, clip.x1! - x)
             const width = stringWidth(line)

@@ -10,11 +10,11 @@ import type { Screen } from '../src/ink/screen.js'
 const [{
   appendChildNode, createNode, createTextNode, markTreeDirty,
   removeChildNode, setAttribute, setStyle, setTextNodeValue, setTextStyles,
-}, { default: Output }, { default: renderNode }, {
+}, { default: Output }, { default: renderNode }, { expandTabs }, {
   cellAtIndex, CharPool, createScreen, HyperlinkPool, StylePool,
 }] = await Promise.all([
   import('../src/ink/dom.js'), import('../src/ink/output.js'),
-  import('../src/ink/render-node-to-output.js'), import('../src/ink/screen.js'),
+  import('../src/ink/render-node-to-output.js'), import('../src/ink/tabstops.js'), import('../src/ink/screen.js'),
 ])
 
 const stylePool = new StylePool()
@@ -111,7 +111,7 @@ try {
 // A tall prepared block should read only the viewport and, for copy joins,
 // its one preceding soft-wrapped line. Nested clips and screen-only clips
 // must have the same bounded work, including content above the screen.
-const lines = Array.from({ length: 20_000 }, (_, i) => `\x1b[32m${i} 中文 👩‍💻 ${'x'.repeat(80)}\x1b[0m`)
+const lines = Array.from({ length: 20_000 }, (_, i) => `\x1b[32m${i}\t中文 👩‍💻 ${'x'.repeat(80)}\x1b[0m`)
 const text = lines.join('\n')
 const softWrap = lines.map(() => true)
 for (const clipped of [false, true]) {
@@ -149,4 +149,49 @@ for (const clipped of [false, true]) {
   assert.ok(cellAtIndex(screen, 2 * 12 + 2).hyperlink, 'clipping retains OSC 8 links')
 }
 
-console.log('text viewport paint passed (warm scroll, invalidation, styles, links, clipped work and copy joins)')
+// Tabs occupy cells up to the next absolute 8-column stop. Neither
+// stringWidth nor sliceAnsi can infer that width from a raw tab alone.
+// Compare with explicit spaces, including clips that begin/end inside a tab.
+assert.equal(expandTabs('\tX\n\tY'), '        X\n        Y', 'measurement callers retain zero-based tab stops')
+assert.equal(expandTabs('\tX\n\tY', undefined, 3), '     X\n     Y', 'each line starts at the original column')
+assert.equal(expandTabs('\tX\n\tY', 4, 3), ' X\n Y', 'custom tab intervals remain supported')
+const tabCases = [
+  { text: '\tX', expanded: '        X', x: 0, left: 4, right: 12 },
+  { text: '\tX', expanded: '     X', x: 3, left: 4, right: 12 },
+  { text: '\tX', expanded: '        X', x: 8, left: 10, right: 20 },
+  { text: '\tX', expanded: '           X', x: -3, left: 2, right: 12 },
+  { text: 'AB\tX', expanded: 'AB   X', x: 3, left: 6, right: 12 },
+  { text: 'A\tB\tC', expanded: 'A       B       C', x: 0, left: 4, right: 14 },
+  { text: '中文\tX', expanded: '中文    X', x: 0, left: 5, right: 12 },
+  { text: 'e\u0301👩‍💻\tX', expanded: 'e\u0301👩‍💻     X', x: 0, left: 4, right: 12 },
+  { text: '\x1b[41m\tX\x1b[0m', expanded: '\x1b[41m        X\x1b[0m', x: 0, left: 4, right: 12 },
+  { text: '\x1b[41m\t\x1b[0m', expanded: '\x1b[41m        \x1b[0m', x: 0, left: 4, right: 6 },
+  {
+    text: '\t\x1b]8;;https://example.test/tab\x07X\x1b]8;;\x07',
+    expanded: '     \x1b]8;;https://example.test/tab\x07X\x1b]8;;\x07',
+    x: 3, left: 4, right: 12,
+  },
+]
+for (const test of tabCases) {
+  for (const prepared of [false, true]) {
+    const paintLines = (lines: string[], y: number, horizontal = true): Screen => {
+      const screen = createScreen(24, 2, stylePool, charPool, hyperlinkPool)
+      const output = new Output({ width: 24, height: 2, stylePool, screen })
+      output.clip({ y1: 0, y2: 2, ...(horizontal ? { x1: test.left, x2: test.right } : {}) })
+      output.write(test.x, y, lines.join('\n'), [false, true], prepared ? lines : undefined)
+      return output.get()
+    }
+    assert.deepEqual(snapshot(paintLines([test.text], 0)), snapshot(paintLines([test.expanded], 0)),
+      `tab clipping at x=${test.x}, clip=${test.left}..${test.right}, prepared=${prepared}: ${JSON.stringify(test.text)}`)
+    // Vertical clipping removes the tabbed predecessor, but its effective
+    // content end must still anchor copying from the visible continuation.
+    for (const horizontal of [false, true]) {
+      const actual = paintLines([test.text, '0123456789'], -1, horizontal)
+      const expected = paintLines([test.expanded, '0123456789'], -1, horizontal)
+      assert.deepEqual(snapshot(actual), snapshot(expected),
+        `tabbed soft-wrap predecessor at x=${test.x}, horizontal=${horizontal}, prepared=${prepared}`)
+    }
+  }
+}
+
+console.log('text viewport paint passed (warm scroll, invalidation, styles, links, clipped work, tabs and copy joins)')
