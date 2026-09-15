@@ -20,7 +20,7 @@ const [React, { PassThrough, Writable }, { Terminal }, ui, { MessageList }, { Sc
   import('../src/ui.js'), import('../src/components/MessageList.js'),
   import('../src/components/ScrollbarGutter.js'), import('./lib/term-test.mjs'),
 ])
-const { Box, Text, ScrollBox, AlternateScreen, render, useInput } = ui
+const { Box, Text, ScrollBox, AlternateScreen, render, useInput, useTerminalSize } = ui
 const { settled, sleep, viewportLines } = termTest
 const columns = Number(process.env.DSH_TEST_COLUMNS ?? 100)
 const height = 36
@@ -63,6 +63,7 @@ const registerRowRef = (id: number, el: DOMElement | null): void => {
 const noop = (): void => {}
 const expandedRows = new Set<number>()
 function Harness(): ReactNode {
+  const { columns: terminalWidth } = useTerminalSize()
   const [scroll, setScroll] = React.useState<ScrollBoxHandle | null>(null)
   const [, setTimeline] = React.useState<unknown>(null)
   handle = scroll
@@ -74,7 +75,7 @@ function Harness(): ReactNode {
           selectedId={null} onToggleRow={noop} model="test" showAll onToggleAll={noop}
           historyPaintEnabled={false} scrollHandle={scroll} registerRowRef={registerRowRef} onTimeline={setTimeline} />
       </ScrollBox>
-      <ScrollbarGutter handle={scroll} terminalWidth={columns} />
+      <ScrollbarGutter handle={scroll} terminalWidth={terminalWidth} />
     </Box>
     <Text>COMPOSER</Text>
   </Box>
@@ -166,6 +167,21 @@ try {
   scroll.scrollToBottom()
   assert.ok(await settled(() => scroll.isSticky() && screen().includes('COLD TAIL')), 'can jump back after wheel-up')
   console.log('PASS: cold tail, pending-wheel cancellation and sticky recovery')
+
+  // Width changes discard cached row heights. A manual position can then
+  // exceed the entire estimated list; it must not unmount every row and
+  // collapse scrollHeight to the viewport (which also hides the gutter).
+  scroll.scrollBy(-10)
+  assert.ok(await settled(() => !scroll.isSticky() && !screen().includes('COLD TAIL')), 'manual position before resize')
+  for (const width of [59, columns]) {
+    const before = frames.length
+    stdout.columns = width
+    term.resize(width, height)
+    stdout.emit('resize')
+    assert.ok(await settled(() => frames.length > before && mounted.size > 0 && screen().includes('ANSWER')), `resize to ${width} never leaves an empty virtual window`)
+  }
+  assert.ok(await settled(() => screen().includes('██')), 'gutter returns after narrow-to-wide resize')
+  console.log('PASS: nonempty virtual window and gutter restoration across resize')
 } finally {
   await instance.unmount()
   term.dispose()
