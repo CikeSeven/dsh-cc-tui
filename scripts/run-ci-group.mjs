@@ -98,6 +98,9 @@ const GROUPS = {
 // shrunk 帧冻结的旧 scrollTop 与失准的 clamp 边界越过内容底，整屏裁剪
 // 成"只剩输入框"（Orca pane 宽度抖动的现场取证复现）。
     ["repro-resize-blank", ['node', '--import', 'tsx/esm', 'scripts/repro-resize-blank.tsx']],
+// Windows Terminal 最大化后的同尺寸 resize 必须修复丢失的静态格（#891），
+// 不提前擦屏、不打断外部编辑器；inline 与非 ConPTY 路径继续保持安静。
+    ['verify-conpty-surface-resize', ['node', '--import', 'tsx/esm', 'scripts/verify-conpty-surface-resize.tsx']],
 // 空转重渲染风暴回归（issue #433）：长历史 + 30ms 空转 commit 风暴下
 // renderScrollTop / 画面 / 输入框行数必须逐帧恒定，几何不震荡。
     ["repro-idle-oscillation", ['node', '--import', 'tsx/esm', 'scripts/repro-idle-oscillation.tsx']],
