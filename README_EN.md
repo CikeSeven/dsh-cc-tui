@@ -127,6 +127,11 @@ the interface, and removing it leaves no core modifications behind.
   subagents, and `ask_user_question` are connected through existing services
   and registries. `/skills` shows skills discovered from the active profile,
   user, and project; dsh-TUI does not preinstall general-purpose skills.
+  Incomplete skill catalogs preserve the last complete skill menu and command
+  registrations, with at most three retries after 800/1600/3200ms. Once exhausted,
+  recovery waits for DSH's `skills/change` notification or an explicit refresh
+  instead of polling indefinitely. Only complete observations remove absent
+  skills, including a complete empty catalog.
 - **Designed for long sessions**: event-driven projection, differential output,
   message virtualization, replay coalescing, and bounded caches prevent render
   cost and memory from growing without limit; fingerprint-memoized hot paths

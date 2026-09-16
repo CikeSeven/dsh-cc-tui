@@ -477,6 +477,9 @@ const GROUPS = {
 // 菜单与 Tab 补全（skill 标记、与 locals/注册表撞名让位），
 // skills/change 实时增删，读取失败保留 last-good。
     ["verify-skill-commands", ['node', 'scripts/verify-skill-commands.mjs']],
+// 真实命令注册事件 + 虚拟时钟：完整技能缓存、不完整观测保留 handler、
+// 有界退避、恢复、异步代际与释放后不再排程。
+    ["verify-skill-catalog-recovery", ['node', 'scripts/verify-skill-catalog-recovery.mjs']],
 // 轨迹投影回归（issue #80 演进）：增量折叠与全量折叠在每个切分点终态
 // 等价（机械 oracle）、六类括号配对、增广事件守卫的全变异模糊测试、
 // 未知事件前向兼容、连发折叠边界、无 chunk 的步不伪造 TTFT。
